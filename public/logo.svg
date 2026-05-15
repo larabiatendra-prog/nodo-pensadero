@@ -1,0 +1,18 @@
+<svg viewBox="0 0 160 48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pensadero">
+  <!-- Cuenco (Pensieve) -->
+  <g transform="translate(4 6)">
+    <ellipse cx="18" cy="13" rx="14" ry="3.2" fill="none" stroke="#C8B6FF" stroke-width="1.6"/>
+    <path d="M4 13.2 Q18 25 32 13.2 L29 30 Q18 35 7 30 Z" fill="none" stroke="#C8B6FF" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M9 18 Q13 20.5 17 18 T25 18" fill="none" stroke="#DACDFF" stroke-width="1.1" opacity="0.75" stroke-linecap="round"/>
+    <circle cx="11.5" cy="16.5" r="0.7" fill="#DACDFF" opacity="0.6"/>
+    <circle cx="23" cy="17.5" r="0.55" fill="#DACDFF" opacity="0.5"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="48" y="31"
+        font-family="Geist, Inter, system-ui, sans-serif"
+        font-size="20"
+        font-weight="500"
+        letter-spacing="0.5"
+        fill="#F5F1FF">Pensadero</text>
+</svg>

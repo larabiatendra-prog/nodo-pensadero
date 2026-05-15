@@ -1,0 +1,440 @@
+/**
+ * Catalog Reader — Pensadero
+ *
+ * Lee y mergea metadatos enriquecidos generados por Marina Video Batch.
+ *
+ * Soporta dos formatos:
+ *  Precedencia (específico gana sobre general):
+ *   1. sidecar `<archivo.ext>.json`
+ *   2. sidecar `<archivo>.json`
+ *   3. entrada en catálogo `_marina.json`/`_pensadero.json`
+ *
+ *  Catálogo por carpeta: `_marina.json` o `_pensadero.json` con
+ *     estructura `{ clips: { <basename>: {...} } }`. El orden de búsqueda
+ *     es `_marina.json` primero, luego `_pensadero.json`.
+ *  2. Sidecar individual por archivo: `<archivo.ext>.json` o `<archivo>.json`
+ *     junto al archivo. Mismo schema (puede ser un clip directo sin envoltorio
+ *     `{clips: {...}}`, en cuyo caso se trata como tal).
+ *
+ * Para cada `MediaFile`, el lookup es:
+ *   1. catálogo por carpeta (`_marina.json` → `_pensadero.json`)
+ *   2. sidecar `<archivo.ext>.json`
+ *   3. sidecar `<archivo>.json`
+ *
+ * Primer match gana, sin merge entre fuentes.
+ *
+ * Schema canónico de `face` y `space` (compat con dos versiones del pipeline):
+ *   face: person_id := face.person_id ?? face.id
+ *         display_name := registry.display_name ?? face.display_name ?? face.name ?? person_id
+ *   space: igual con space_id / display_name.
+ *
+ * Estrategia de cache:
+ *  - Caché en memoria por carpeta. Map: dirPath → { mtime, catalog, source }.
+ *  - Recargar cuando cambie el `mtime` del JSON.
+ *  - Mergeo al vuelo (no se persiste en `media_cache.json`).
+ */
+
+const path = require('path');
+const fs = require('fs').promises;
+const peopleRegistry = require('./peopleRegistry');
+
+// Nombres de catálogo por carpeta (orden de prioridad).
+const CATALOG_FILENAMES = ['_marina.json', '_pensadero.json'];
+// Mantengo esta constante exportada por compat con código legacy del server.
+const CATALOG_FILENAME = '_marina.json';
+
+// Map<dirPath, { mtime: number, catalog: object|null, source: string|null }>
+const catalogCache = new Map();
+
+// Map<filePath_sin_ext_o_con_ext, { mtime, clip }>  para sidecars individuales.
+// Clave = ruta absoluta del JSON sidecar concreto leído.
+const sidecarCache = new Map();
+
+/**
+ * Devuelve el catalog parseado para una carpeta, o null si no existe.
+ * Busca `_marina.json` y luego `_pensadero.json`. Cachea por dirPath.
+ */
+async function getCatalogForDir(dirPath) {
+  // Intentar cada nombre de catálogo en orden
+  for (const filename of CATALOG_FILENAMES) {
+    const catalogPath = path.join(dirPath, filename);
+
+    let stats;
+    try {
+      stats = await fs.stat(catalogPath);
+    } catch {
+      continue; // Probar el siguiente nombre
+    }
+
+    const mtime = stats.mtime.getTime();
+    const cached = catalogCache.get(dirPath);
+    if (cached && cached.source === catalogPath && cached.mtime === mtime) {
+      return cached.catalog;
+    }
+
+    try {
+      const raw = await fs.readFile(catalogPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      catalogCache.set(dirPath, { mtime, catalog: parsed, source: catalogPath });
+      return parsed;
+    } catch (err) {
+      console.warn(`⚠️ Error leyendo ${catalogPath}: ${err.message}`);
+      catalogCache.set(dirPath, { mtime, catalog: null, source: catalogPath });
+      return null;
+    }
+  }
+
+  // Ningún catálogo en esta carpeta — invalidar cache si la había
+  if (catalogCache.has(dirPath)) {
+    catalogCache.delete(dirPath);
+  }
+  return null;
+}
+
+/**
+ * Busca un sidecar individual para `filePath`. Prueba `<archivo.ext>.json`
+ * primero y luego `<archivo>.json` (sin la extensión original). Devuelve
+ * el objeto parseado o null si ninguno existe.
+ *
+ * Si el sidecar tiene envoltorio `{clips: {<basename>: {...}}}`, devuelve
+ * el clip directamente (extraído por basename del archivo o el primero).
+ * Si tiene un clip directo (sin envoltorio), lo devuelve tal cual.
+ */
+async function getSidecarForFile(filePath) {
+  const dir = path.dirname(filePath);
+  const basename = path.basename(filePath);
+  const basenameNoExt = basename.replace(/\.[^/.]+$/, '');
+
+  const candidates = [
+    path.join(dir, `${basename}.json`),       // <archivo.ext>.json
+    path.join(dir, `${basenameNoExt}.json`),  // <archivo>.json
+  ];
+
+  for (const sidecarPath of candidates) {
+    let stats;
+    try {
+      stats = await fs.stat(sidecarPath);
+    } catch {
+      continue;
+    }
+
+    const mtime = stats.mtime.getTime();
+    const cached = sidecarCache.get(sidecarPath);
+    if (cached && cached.mtime === mtime) {
+      return cached.clip;
+    }
+
+    try {
+      const raw = await fs.readFile(sidecarPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+
+      // Detectar envoltorio `{clips: {...}}` vs clip directo
+      let clip;
+      if (parsed && typeof parsed === 'object' && parsed.clips && typeof parsed.clips === 'object') {
+        // Envoltorio tipo catálogo. Buscar por basename, si no encontrar, primer clip.
+        clip = parsed.clips[basename];
+        if (!clip) {
+          const keys = Object.keys(parsed.clips);
+          if (keys.length > 0) clip = parsed.clips[keys[0]];
+        }
+        // Adjuntar batch/processed del envoltorio para preservar info en el merge.
+        if (clip) {
+          clip = { ...clip, __wrapper_batch: parsed.batch, __wrapper_processed: parsed.processed };
+        }
+      } else {
+        // Clip directo
+        clip = parsed;
+      }
+
+      sidecarCache.set(sidecarPath, { mtime, clip });
+      return clip;
+    } catch (err) {
+      console.warn(`⚠️ Error leyendo ${sidecarPath}: ${err.message}`);
+      sidecarCache.set(sidecarPath, { mtime, clip: null });
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Invalida la entrada de cache para una carpeta concreta (catálogo).
+ */
+function invalidateCatalog(dirPath) {
+  catalogCache.delete(dirPath);
+}
+
+/**
+ * Invalida la entrada de cache para un sidecar individual concreto.
+ */
+function invalidateSidecar(sidecarPath) {
+  sidecarCache.delete(sidecarPath);
+}
+
+/**
+ * Limpia todo el cache de catalogs y sidecars.
+ */
+function clearCatalogCache() {
+  catalogCache.clear();
+  sidecarCache.clear();
+}
+
+/**
+ * Aplana cualquier valor textual de un campo del clip a un array de strings
+ * limpios, listos para añadir como tags. Acepta strings, arrays, objetos
+ * con `.name`/`.id`, y arrays mixtos.
+ */
+function toTagStrings(value) {
+  if (!value) return [];
+  if (typeof value === 'string') {
+    return value.trim() ? [value.trim()] : [];
+  }
+  if (Array.isArray(value)) {
+    const out = [];
+    for (const item of value) {
+      if (!item) continue;
+      if (typeof item === 'string') {
+        if (item.trim()) out.push(item.trim());
+      } else if (typeof item === 'object') {
+        if (typeof item.name === 'string' && item.name.trim()) out.push(item.name.trim());
+        else if (typeof item.id === 'string' && item.id.trim()) out.push(item.id.trim());
+      }
+    }
+    return out;
+  }
+  if (typeof value === 'object') {
+    if (typeof value.name === 'string' && value.name.trim()) return [value.name.trim()];
+    if (typeof value.id === 'string' && value.id.trim()) return [value.id.trim()];
+  }
+  return [];
+}
+
+/**
+ * Normaliza un face a `{ person_id, display_name, confidence }`.
+ * Compat con dos versiones del pipeline:
+ *   - person_id: face.person_id ?? face.id
+ *   - display_name: registry.display_name ?? face.display_name ?? face.name ?? person_id
+ *
+ * Devuelve null si no se puede determinar un person_id.
+ */
+function normalizeFace(face) {
+  if (!face || typeof face !== 'object') return null;
+  const personId = (typeof face.person_id === 'string' && face.person_id.trim())
+    ? face.person_id.trim()
+    : (typeof face.id === 'string' && face.id.trim() ? face.id.trim() : null);
+  if (!personId) return null;
+
+  // Resolver display_name: registry primero, luego face.display_name/name, fallback al id
+  const fromRegistry = peopleRegistry.getDisplayName(personId);
+  let displayName;
+  // Si registry devuelve algo distinto del personId, vale ese. Si no, fallback al face.
+  if (fromRegistry && fromRegistry !== personId) {
+    displayName = fromRegistry;
+  } else if (typeof face.display_name === 'string' && face.display_name.trim()) {
+    displayName = face.display_name.trim();
+  } else if (typeof face.name === 'string' && face.name.trim()) {
+    displayName = face.name.trim();
+  } else {
+    displayName = personId;
+  }
+
+  const confidence = typeof face.confidence === 'number' ? face.confidence : null;
+
+  const out = { person_id: personId, display_name: displayName };
+  if (confidence !== null) out.confidence = confidence;
+  return out;
+}
+
+/**
+ * Normaliza un space a `{ space_id, display_name, confidence }`.
+ *   - space_id: space.space_id ?? space.id
+ *   - display_name: space.display_name ?? space.name ?? space_id
+ *
+ * Devuelve null si no se puede determinar un space_id.
+ */
+function normalizeSpace(space) {
+  if (!space || typeof space !== 'object') return null;
+  const spaceId = (typeof space.space_id === 'string' && space.space_id.trim())
+    ? space.space_id.trim()
+    : (typeof space.id === 'string' && space.id.trim() ? space.id.trim() : null);
+  if (!spaceId) return null;
+
+  let displayName;
+  if (typeof space.display_name === 'string' && space.display_name.trim()) {
+    displayName = space.display_name.trim();
+  } else if (typeof space.name === 'string' && space.name.trim()) {
+    displayName = space.name.trim();
+  } else {
+    displayName = spaceId;
+  }
+
+  const confidence = typeof space.confidence === 'number' ? space.confidence : null;
+
+  const out = { space_id: spaceId, display_name: displayName };
+  if (confidence !== null) out.confidence = confidence;
+  return out;
+}
+
+/**
+ * Mergea los datos del clip sobre el fileData base.
+ * Devuelve un OBJETO NUEVO; no muta el original.
+ *
+ * @param {object} fileData - MediaFile base
+ * @param {object} clip - entrada del clip (con o sin envoltorio)
+ * @param {object|null} catalog - catalog completo (para batch/processed) — opcional
+ */
+function mergeClipIntoFile(fileData, clip, catalog) {
+  if (!clip) return fileData;
+
+  const result = { ...fileData };
+
+  // visual_description
+  if (typeof clip.description === 'string' && clip.description.trim()) {
+    result.visual_description = clip.description.trim();
+  }
+
+  // Tags adicionales: objects + actions + expressions + shot_type +
+  // people_framing + attire. Mantener los que ya venían del nombre/ruta.
+  // IMPORTANTE: las personas (faces[].name) NO entran en tags.
+  const newTags = [];
+  if (clip.semantics) {
+    newTags.push(...toTagStrings(clip.semantics.objects));
+    newTags.push(...toTagStrings(clip.semantics.actions));
+    newTags.push(...toTagStrings(clip.semantics.expressions));
+  }
+  if (clip.composition) {
+    if (typeof clip.composition.shot_type === 'string' && clip.composition.shot_type.trim()) {
+      newTags.push(clip.composition.shot_type.trim());
+    }
+    if (typeof clip.composition.people_framing === 'string' && clip.composition.people_framing.trim()) {
+      newTags.push(clip.composition.people_framing.trim());
+    }
+  }
+  if (clip.demographics && typeof clip.demographics.attire === 'string' && clip.demographics.attire.trim()) {
+    newTags.push(clip.demographics.attire.trim());
+  }
+
+  const baseTags = Array.isArray(fileData.tags) ? fileData.tags : [];
+  const merged = [...baseTags, ...newTags].filter(t => typeof t === 'string' && t.trim().length > 0);
+  result.tags = [...new Set(merged)];
+
+  // OCR text — concatenado con espacios; ruidoso, mejor no como tags.
+  if (clip.semantics && Array.isArray(clip.semantics.text) && clip.semantics.text.length > 0) {
+    const cleaned = clip.semantics.text
+      .filter(t => typeof t === 'string' && t.trim())
+      .map(t => t.trim());
+    if (cleaned.length > 0) {
+      result.ocr_text = cleaned.join(' ');
+    }
+  }
+
+  // Dominant colors
+  if (clip.semantics && Array.isArray(clip.semantics.dominant_colors) && clip.semantics.dominant_colors.length > 0) {
+    const colors = clip.semantics.dominant_colors
+      .filter(c => c !== null && c !== undefined)
+      .map(c => (typeof c === 'string' ? c : (c.name || c.hex || String(c))))
+      .filter(c => c && c.trim());
+    if (colors.length > 0) {
+      result.dominant_colors = colors;
+      // Compat: primer color como dominant_color (string)
+      if (!result.dominant_color) {
+        result.dominant_color = colors[0];
+      }
+    }
+  }
+
+  // Identity — normalizar al schema canónico
+  if (clip.identity) {
+    if (Array.isArray(clip.identity.faces)) {
+      result.faces = clip.identity.faces
+        .map(normalizeFace)
+        .filter(Boolean);
+    }
+    if (Array.isArray(clip.identity.spaces)) {
+      result.spaces = clip.identity.spaces
+        .map(normalizeSpace)
+        .filter(Boolean);
+    }
+  }
+
+  // Demographics / composition / technical (objetos completos)
+  if (clip.demographics && typeof clip.demographics === 'object') {
+    result.demographics = clip.demographics;
+  }
+  if (clip.composition && typeof clip.composition === 'object') {
+    result.composition = clip.composition;
+  }
+  if (clip.technical && typeof clip.technical === 'object') {
+    result.technical = clip.technical;
+    // Sobreescribir duration/resolution/fps si vienen
+    if (typeof clip.technical.duration === 'number') {
+      result.duration = clip.technical.duration;
+    }
+    if (typeof clip.technical.resolution === 'string') {
+      result.resolution = clip.technical.resolution;
+    }
+    if (typeof clip.technical.fps === 'number') {
+      result.fps = clip.technical.fps;
+    }
+  }
+
+  // Flags
+  result.has_catalog = true;
+
+  // Resolver batch/processed: del catálogo > del envoltorio del sidecar > nada
+  const batch = (catalog && typeof catalog.batch === 'string') ? catalog.batch : clip.__wrapper_batch;
+  const processed = (catalog && typeof catalog.processed === 'string') ? catalog.processed : clip.__wrapper_processed;
+  if (typeof batch === 'string') result.catalog_batch = batch;
+  if (typeof processed === 'string') result.catalog_processed = processed;
+
+  return result;
+}
+
+/**
+ * Aplica metadatos sobre el fileData. Precedencia (lo específico gana,
+ * permitiendo a un sidecar corregir el catálogo común de la carpeta):
+ *   1. sidecar `<archivo.ext>.json`
+ *   2. sidecar `<archivo>.json`
+ *   3. entrada en catálogo `_marina.json`/`_pensadero.json`
+ * Primer match gana, sin merge entre fuentes.
+ *
+ * @param {object} fileData - MediaFile con `fullPath` y `name` poblados
+ */
+async function applyCatalog(fileData) {
+  if (!fileData || !fileData.fullPath) return fileData;
+
+  const dir = path.dirname(fileData.fullPath);
+  const basename = fileData.name || path.basename(fileData.fullPath);
+
+  // 1/2) Sidecar individual primero (.ext.json → .json). Lo específico gana.
+  const sidecarClip = await getSidecarForFile(fileData.fullPath);
+  if (sidecarClip) {
+    return mergeClipIntoFile(fileData, sidecarClip, null);
+  }
+
+  // 3) Catálogo por carpeta como fallback general.
+  const catalog = await getCatalogForDir(dir);
+  if (catalog && catalog.clips && typeof catalog.clips === 'object') {
+    const clip = catalog.clips[basename];
+    if (clip) {
+      return mergeClipIntoFile(fileData, clip, catalog);
+    }
+  }
+
+  return fileData;
+}
+
+module.exports = {
+  CATALOG_FILENAME,
+  CATALOG_FILENAMES,
+  getCatalogForDir,
+  getSidecarForFile,
+  invalidateCatalog,
+  invalidateSidecar,
+  clearCatalogCache,
+  applyCatalog,
+  mergeClipIntoFile,
+  normalizeFace,
+  normalizeSpace,
+};

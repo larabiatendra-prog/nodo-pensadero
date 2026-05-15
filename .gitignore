@@ -1,0 +1,52 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencias y builds
+node_modules/
+dist/
+dist-ssr
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Entorno
+.env
+.env.local
+
+# Node portable embebido (se distribuye en zip pero no se versiona)
+tools/node/
+
+# Datos persistentes del backend (no versionar)
+backend/thumbnails/
+backend/media_cache.json
+backend/media_cache_backup_*.json
+backend/favorites_persistent.json
+backend/collections_persistent.json
+backend/embeddings_index.json
+backend/visual_search_data/
+backend/temp/
+backend/reports/
+
+# Patrones genericos heredados
+embeddings_index.json
+media_cache.json
+vector_index.json
+**/thumbnails/
+**/temp/
+**/training_data/
+media_cache_backup*

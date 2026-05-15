@@ -480,7 +480,163 @@ Output:`;
   }
 
   /**
+   * Selecciona el pool de candidatos para Stage 2 (re-ranking semántico).
+   *
+   * Estrategia:
+   *  1. Empezar por los resultados de Stage 1 con score > 1 (algún match
+   *     parcial, aunque sea débil).
+   *  2. Completar con archivos del corpus que tengan visual_description rica
+   *     y, si el intent extrae un tipo (image/video/audio), de ese tipo.
+   *  3. Limitar a STAGE2_CANDIDATE_LIMIT (30) para no saturar el contexto.
+   */
+  selectStage2Candidates(intent, mediaFiles, stage1Results) {
+    const STAGE2_CANDIDATE_LIMIT = 30;
+    const MIN_DESC_LENGTH = 20;
+
+    const baseFiles = (stage1Results || [])
+      .filter(r => r.file && r.score > 1)
+      .slice(0, STAGE2_CANDIDATE_LIMIT)
+      .map(r => r.file);
+
+    if (baseFiles.length >= STAGE2_CANDIDATE_LIMIT) return baseFiles;
+
+    const baseIds = new Set(baseFiles.map(f => f.id));
+    const typeN = intent && intent.type ? this.normalizeText(intent.type) : null;
+
+    const additional = [];
+    for (const f of mediaFiles) {
+      if (additional.length + baseFiles.length >= STAGE2_CANDIDATE_LIMIT) break;
+      if (baseIds.has(f.id)) continue;
+      if (typeN && f.type !== typeN) continue;
+      const desc = f.visual_description || '';
+      if (desc.length < MIN_DESC_LENGTH) continue;
+      additional.push(f);
+    }
+
+    return [...baseFiles, ...additional];
+  }
+
+  /**
+   * Stage 2: re-ranking semántico con LLM.
+   *
+   * Recibe un pool de candidatos y les pide al LLM que los clasifique en
+   * `alto` (claramente relevantes) / `medio` (relacionados / interpretación
+   * amplia) según la query del usuario. El LLM puede leer la
+   * visual_description en cualquier idioma e interpretar semánticamente,
+   * lo que resuelve queries como "edificios" o "imagen exterior" que el
+   * matching literal (Stage 1) no puede.
+   *
+   * Si el LLM falla o devuelve algo no parseable, retorna null y el caller
+   * cae a los resultados de Stage 1.
+   */
+  async reRankWithLLM(query, candidates) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+    // Construir cada candidato con campos mínimos pero suficientes para
+    // razonamiento semántico: nombre, descripción visual, tags clave.
+    const candidateLines = candidates.map((f, i) => {
+      const desc = (f.visual_description || '').slice(0, 200);
+      const tags = (f.tags || []).slice(0, 8).join(', ');
+      return `[${i}] id:${f.id}\n  nombre: ${(f.name || '').slice(0, 80)}\n  desc: ${desc || '(sin descripción)'}\n  tags: ${tags || '(sin tags)'}`;
+    }).join('\n');
+
+    const rerankPrompt = `Eres un asistente que clasifica archivos audiovisuales según su relevancia para una consulta del usuario.
+
+REGLAS:
+1. Para cada archivo, decide si es "alto" o "medio":
+   - "alto": claramente relevante. El usuario lo quiere ver entre los primeros resultados.
+   - "medio": podría ser relevante (interpretación amplia, conceptos adyacentes). Sugerencia secundaria.
+2. Las descripciones pueden estar en INGLÉS u otro idioma. Interpreta SEMÁNTICAMENTE, no por coincidencia literal. Ej: la consulta "edificios" debe matchear descripciones que mencionan "building", "facade", "tower" o similar.
+3. Sé generoso con "medio" cuando haya conexión razonable. Sé estricto con "alto".
+4. OMITE los archivos que no tengan nada que ver — no los incluyas en la respuesta.
+5. Responde SOLO con JSON válido (sin explicaciones, sin markdown, sin texto antes ni después).
+
+FORMATO:
+{"classifications": [{"id": "<fileId>", "tier": "alto"}, {"id": "<fileId>", "tier": "medio"}]}
+
+CONSULTA: "${query}"
+
+ARCHIVOS:
+${candidateLines}
+
+Respuesta JSON:`;
+
+    let response;
+    try {
+      response = await this.callOllamaChat([{ role: 'user', content: rerankPrompt }]);
+    } catch (err) {
+      console.warn('[Stage 2] LLM no respondió:', err && err.message);
+      return null;
+    }
+
+    const text = (response && response.message && response.message.content || '').trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.warn('[Stage 2] sin JSON parseable en respuesta del LLM');
+      return null;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      console.warn('[Stage 2] JSON inválido:', err.message);
+      return null;
+    }
+
+    if (!parsed || !Array.isArray(parsed.classifications)) {
+      console.warn('[Stage 2] respuesta sin array classifications');
+      return null;
+    }
+
+    // Mapa id -> tier según el LLM.
+    const tierMap = new Map();
+    for (const c of parsed.classifications) {
+      if (c && typeof c.id === 'string' && (c.tier === 'alto' || c.tier === 'medio')) {
+        tierMap.set(c.id, c.tier);
+      }
+    }
+
+    // Reconstruir resultados. Score sintético (100/50) solo para preservar
+    // orden y rellenar metadata; lo que realmente importa es `tier`.
+    const altos = [];
+    const medios = [];
+    for (const f of candidates) {
+      const tier = tierMap.get(f.id);
+      if (tier === 'alto') {
+        altos.push({ fileId: f.id, file: f, score: 100, matchedIn: ['stage2'], tier: 'primary' });
+      } else if (tier === 'medio') {
+        medios.push({ fileId: f.id, file: f, score: 50, matchedIn: ['stage2'], tier: 'secondary' });
+      }
+      // Resto: descarte por omisión.
+    }
+
+    const out = [...altos, ...medios];
+    Object.defineProperty(out, '__relevance', {
+      value: {
+        topScore: altos.length > 0 ? 100 : (medios.length > 0 ? 50 : 0),
+        primaryCutoff: 100,
+        secondaryCutoff: 50,
+        primaryCount: altos.length,
+        secondaryCount: medios.length,
+        totalCandidates: candidates.length,
+        stage: 2,
+      },
+      enumerable: false,
+    });
+    return out;
+  }
+
+  /**
    * Procesa una consulta natural y devuelve resultados puntuados.
+   *
+   * Flujo:
+   *  - Stage 1: matching literal con scoring (rápido, sin LLM).
+   *  - Stage 2 (condicional): re-ranking semántico con LLM cuando Stage 1
+   *    devuelve pocos resultados claros. El LLM razona sobre las
+   *    visual_descriptions y rescata candidatos que el matching literal
+   *    no podría encontrar (sinónimos, idiomas mezclados, conceptos).
+   *
    * @param {string} query
    * @param {Array} mediaFiles
    * @param {Array} peopleHints - lista del registry/aggregate
@@ -491,10 +647,42 @@ Output:`;
     }
     const startTime = Date.now();
     const intent = await this.extractSearchIntent(query, peopleHints);
-    const results = this.scoreMediaFiles(intent, mediaFiles);
-    const relevance = results.__relevance || null;
+
+    // === STAGE 1 ===
+    const stage1Results = this.scoreMediaFiles(intent, mediaFiles);
+    const stage1Relevance = stage1Results.__relevance || null;
+    const stage1PrimaryCount = stage1Relevance?.primaryCount ?? 0;
+
+    // === STAGE 2 (condicional) ===
+    // Se invoca cuando Stage 1 devuelve menos de N resultados claros.
+    // Configurable vía AI_RERANK_ENABLED y AI_RERANK_MIN_PRIMARY.
+    const RERANK_ENABLED = process.env.AI_RERANK_ENABLED !== 'false';
+    const MIN_PRIMARY_TO_SKIP = parseInt(process.env.AI_RERANK_MIN_PRIMARY || '5', 10);
+
+    let finalResults = stage1Results;
+    let stage2Applied = false;
+    let stage2Reason = null;
+    let stage2Time = 0;
+
+    if (RERANK_ENABLED && stage1PrimaryCount < MIN_PRIMARY_TO_SKIP) {
+      const candidates = this.selectStage2Candidates(intent, mediaFiles, stage1Results);
+      if (candidates.length > 0) {
+        const stage2Start = Date.now();
+        const reranked = await this.reRankWithLLM(query, candidates);
+        stage2Time = Date.now() - stage2Start;
+        if (reranked && Array.isArray(reranked)) {
+          finalResults = reranked;
+          stage2Applied = true;
+          stage2Reason = `stage1 primary=${stage1PrimaryCount} < ${MIN_PRIMARY_TO_SKIP}`;
+        }
+      } else {
+        stage2Reason = 'sin candidatos elegibles para stage 2';
+      }
+    }
+
+    const relevance = finalResults.__relevance || null;
     return {
-      results,
+      results: finalResults,
       intent,
       metadata: {
         model: this.model,
@@ -502,8 +690,11 @@ Output:`;
         originalQuery: query,
         totalScanned: mediaFiles.length,
         peopleHintsCount: Array.isArray(peopleHints) ? peopleHints.length : 0,
-        // Diagnóstico de relevancia: útil para calibrar umbrales y para que
-        // el frontend sepa dónde poner el separador entre primary y secondary.
+        // Diagnóstico de Stage 2.
+        stage2Applied,
+        stage2Reason,
+        stage2Time,
+        // Diagnóstico de relevancia para el separador y el debug.
         topScore: relevance?.topScore ?? 0,
         primaryCutoff: relevance?.primaryCutoff ?? 0,
         secondaryCutoff: relevance?.secondaryCutoff ?? 0,

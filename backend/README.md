@@ -329,6 +329,38 @@ Los filtros visuales (shot/framing/movement/exposure/colors) son **bonus
 no estrictos**: una query como "primer plano azul" no descarta resultados
 que matcheen sólo uno de los dos.
 
+#### Stage 2 — Re-ranking semántico con LLM
+
+Cuando Stage 1 (matching literal) devuelve pocos resultados claros (menos de
+`AI_RERANK_MIN_PRIMARY` archivos en primary, default 5), se invoca un
+segundo pase del LLM como reranker:
+
+1. Se selecciona un pool de hasta 30 candidatos: primero los archivos que ya
+   tienen algún score parcial en Stage 1, luego se completa con archivos del
+   tipo solicitado por el intent que tengan `visual_description` rica
+   (>20 caracteres).
+2. El LLM recibe los candidatos (id, nombre, visual_description, tags) y la
+   query original. Se le pide que clasifique cada uno en `alto` (claramente
+   relevante) o `medio` (interpretación amplia). Los archivos sin relación
+   los omite.
+3. Se reconstruye el array de resultados con la clasificación del LLM:
+   `alto → primary`, `medio → secondary`. Los descartados no aparecen.
+
+Esto resuelve queries semánticas como "edificios", "imagen exterior" o
+"personas mayores" que el matching literal no puede porque el corpus no
+tiene esos términos exactos (vocabulario diferente, idioma diferente, o
+concepto que el VLM no clasificó).
+
+Activación:
+- `AI_RERANK_ENABLED=true|false` (default true). `false` desactiva Stage 2
+  por completo y siempre devuelve los resultados de Stage 1.
+- `AI_RERANK_MIN_PRIMARY=N` (default 5). Si Stage 1 ya devolvió ≥ N
+  resultados primary, no se invoca Stage 2 (matching literal ya es bueno).
+
+Coste: añade una llamada LLM extra (~5-10s en GPU 16 GB, ~10-20s en 10 GB).
+Solo se paga cuando Stage 1 no llegó. En queries con buen matching literal
+(persona conocida, tags exactos, etc.), Stage 2 ni se invoca.
+
 **Corte de relevancia en dos tramos.** Cada resultado se etiqueta con un
 campo `tier`:
 

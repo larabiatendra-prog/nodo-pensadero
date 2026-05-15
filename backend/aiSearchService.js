@@ -416,7 +416,38 @@ Output:`;
     }
 
     results.sort((a, b) => b.score - a.score);
-    return results.slice(0, limit);
+
+    // === CORTE DE RELEVANCIA ===
+    //
+    // Para búsqueda en lenguaje natural el filtro no es binario: se ordena
+    // por score y se devuelven los que superen un umbral relativo al mejor
+    // resultado, con un suelo absoluto para que no se cuelen archivos sin
+    // match real cuando todo el corpus puntúa bajo.
+    //
+    // - RELEVANCE_RATIO: fracción del top score que un archivo debe alcanzar.
+    //   0.5 = "al menos la mitad de relevante que el mejor".
+    // - SCORE_FLOOR: puntuación mínima absoluta. 5 equivale aprox. a "al
+    //   menos un match real en algún campo" (un tag o un free_term en visual).
+    //   Sin esto, una query sin matches devolvería todo el corpus porque
+    //   el top sería también ~0.
+    //
+    // Ajustar a 0.4 / 3 si parece conservador, o 0.6 / 8 si parece ruidoso.
+    const RELEVANCE_RATIO = 0.5;
+    const SCORE_FLOOR = 5;
+
+    const topScore = results[0]?.score ?? 0;
+    const cutoff = Math.max(topScore * RELEVANCE_RATIO, SCORE_FLOOR);
+    const filtered = results.filter(r => r.score >= cutoff);
+
+    const out = filtered.slice(0, limit);
+    // Adjuntar diagnóstico en una propiedad oculta del array para que la
+    // capa de parseNaturalQuery pueda volcarlo al metadata sin alterar la
+    // forma del resultado iterable.
+    Object.defineProperty(out, '__relevance', {
+      value: { topScore, cutoff, totalCandidates: results.length, totalPassed: filtered.length },
+      enumerable: false,
+    });
+    return out;
   }
 
   /**
@@ -432,6 +463,7 @@ Output:`;
     const startTime = Date.now();
     const intent = await this.extractSearchIntent(query, peopleHints);
     const results = this.scoreMediaFiles(intent, mediaFiles);
+    const relevance = results.__relevance || null;
     return {
       results,
       intent,
@@ -441,6 +473,12 @@ Output:`;
         originalQuery: query,
         totalScanned: mediaFiles.length,
         peopleHintsCount: Array.isArray(peopleHints) ? peopleHints.length : 0,
+        // Diagnóstico de relevancia: útil para calibrar umbrales y para que
+        // el frontend pueda mostrar score % por resultado si quiere.
+        topScore: relevance?.topScore ?? 0,
+        cutoff: relevance?.cutoff ?? 0,
+        totalCandidates: relevance?.totalCandidates ?? 0,
+        totalPassed: relevance?.totalPassed ?? 0,
       }
     };
   }

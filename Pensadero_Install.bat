@@ -12,18 +12,19 @@ echo.
 set "ROOT=%~dp0"
 set "NODE_DIR=%ROOT%tools\node"
 
-if exist "%NODE_DIR%\node.exe" (
-    set "PATH=%NODE_DIR%;%PATH%"
-    echo [OK] Node portable detectado en tools\node\
-    goto :node_ready
-)
+if exist "%NODE_DIR%\node.exe" goto :use_portable
 
 where node >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo [OK] Usando Node del sistema
-    goto :node_ready
-)
+if %ERRORLEVEL% NEQ 0 goto :no_node
+echo [OK] Usando Node del sistema
+goto :node_ready
 
+:use_portable
+set "PATH=%NODE_DIR%;%PATH%"
+echo [OK] Node portable detectado en tools\node\
+goto :node_ready
+
+:no_node
 echo [ERROR] No se encontro Node.js.
 echo         Opciones:
 echo         A) Instala Node.js desde https://nodejs.org/

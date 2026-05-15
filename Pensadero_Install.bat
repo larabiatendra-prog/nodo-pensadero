@@ -33,8 +33,8 @@ pause
 exit /b 1
 
 :node_ready
-node --version
-npm --version
+call node --version
+call npm --version
 echo.
 
 echo ==============================================================

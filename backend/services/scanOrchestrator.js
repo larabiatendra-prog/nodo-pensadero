@@ -17,6 +17,8 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
 const sharp = require('sharp');
 const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getFaceService } = require('./faceService');
@@ -36,6 +38,10 @@ function ageBucket(age) {
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif']);
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg']);
+const SCANNABLE_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS]);
+
+function isVideoExt(ext) { return VIDEO_EXTS.has(ext.toLowerCase()); }
 
 // Jobs en curso: jobId → { status, total, done, errors, cancelRequested }
 const activeJobs = new Map();
@@ -64,7 +70,7 @@ async function collectImages(folderPath) {
         await walk(full);
       } else if (ent.isFile()) {
         const ext = path.extname(ent.name).toLowerCase();
-        if (IMAGE_EXTS.has(ext)) results.push(full);
+        if (SCANNABLE_EXTS.has(ext)) results.push(full);
       }
     }
   }
@@ -88,6 +94,42 @@ async function readExistingCatalog(folderPath) {
     }
   }
   return { catalog: null, source: null };
+}
+
+/**
+ * Extrae un frame representativo de un vídeo (~30% del total) y lo escribe
+ * a un archivo temporal JPG. Devuelve la ruta del archivo o null si falla.
+ * Se usa para pasar el frame a InsightFace y detectar caras.
+ */
+async function extractRepresentativeFrame(videoPath, durationSec) {
+  const seek = (typeof durationSec === 'number' && durationSec > 1) ? durationSec * 0.3 : 0;
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pensadero-frame-'));
+  const outPath = path.join(tmpDir, 'rep.jpg');
+  const args = [
+    '-y',
+    '-ss', String(seek),
+    '-i', videoPath,
+    '-frames:v', '1',
+    '-q:v', '3',
+    outPath,
+  ];
+
+  return new Promise((resolve) => {
+    const p = spawn('ffmpeg', args, { stdio: 'ignore' });
+    const timer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch {}
+      resolve(null);
+    }, 30_000);
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(outPath);
+      else resolve(null);
+    });
+    p.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
 }
 
 /**
@@ -253,14 +295,43 @@ async function scanFolder(folderPath, opts = {}) {
     const dir = path.dirname(filePath);
     const basename = path.basename(filePath);
 
+    const ext = path.extname(basename).toLowerCase();
+    const isVideo = isVideoExt(ext);
+
     try {
-      const [entry, technical, faceDetections] = await Promise.all([
-        scanner.scanImage(filePath),
-        extractTechnical(filePath),
-        facesEnabled ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
-      ]);
-      // Mezclar technical de sharp con lo que diga el VLM (sharp manda)
-      entry.technical = { ...(entry.technical || {}), ...technical };
+      let entry;
+      let technical = {};
+      let faceDetections = [];
+
+      if (isVideo) {
+        // Para vídeo: scanVideo orquesta ffprobe + extracción de frames + VLM.
+        // La detección de caras no es por archivo sino por uno de los frames
+        // intermedios (compromiso: una pasada de InsightFace en ese frame).
+        entry = await scanner.scanVideo(filePath);
+        // technical lo rellena scanVideo desde ffprobe; no llamamos a sharp
+        // que daría error en vídeos.
+        // Caras: extraemos un solo frame representativo (centro del vídeo) y
+        // lo pasamos por InsightFace. Es heurístico pero económico.
+        if (facesEnabled) {
+          try {
+            const repFrame = await extractRepresentativeFrame(filePath, entry.technical?.duration);
+            if (repFrame) {
+              faceDetections = await faceSvc.detectFaces(repFrame).catch(() => []);
+              try { await fs.unlink(repFrame); } catch {}
+            }
+          } catch (err) {
+            console.warn(`[scan-video] face detection skip ${basename}: ${err.message}`);
+          }
+        }
+      } else {
+        [entry, technical, faceDetections] = await Promise.all([
+          scanner.scanImage(filePath),
+          extractTechnical(filePath),
+          facesEnabled ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
+        ]);
+        // Mezclar technical de sharp con lo que diga el VLM (sharp manda)
+        entry.technical = { ...(entry.technical || {}), ...technical };
+      }
 
       // Identidad: si tenemos detección de caras, sobrescribir lo que dijo
       // el VLM con datos reales de InsightFace.

@@ -15,11 +15,16 @@
  */
 
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
 const { Ollama } = require('ollama');
 
 const DEFAULT_VLM_MODEL = 'qwen2.5vl:7b';
 const PER_IMAGE_TIMEOUT_MS = 90_000; // 90s por imagen (cold-start de modelo grande puede tardar)
+const VIDEO_FRAMES_PER_SCAN = parseInt(process.env.VLM_VIDEO_FRAMES || '3', 10); // 3 frames es buen balance calidad/coste
+const VIDEO_MAX_FRAMES = 6;
 
 class VisualScanService {
   constructor() {
@@ -79,6 +84,68 @@ class VisualScanService {
     const text = (response && response.message && response.message.content || '').trim();
     const parsed = this._extractJson(text);
     return this._normalizeEntry(parsed, filePath);
+  }
+
+  /**
+   * Describe un vídeo extrayendo N frames con ffmpeg, pasándolos al VLM,
+   * y agregando los resultados en un único entry compatible con el schema
+   * de fotos. Los tags se unionan; la descripción se toma del frame con
+   * más contenido; technical viene de ffprobe (duración, fps, codec).
+   */
+  async scanVideo(filePath) {
+    // 1. ffprobe para duración + fps + codec + resolución
+    const probe = await probeVideo(filePath);
+    if (!probe) {
+      throw new Error(`No se pudo leer metadata del vídeo: ${path.basename(filePath)}`);
+    }
+
+    // 2. Extraer N frames repartidos (skip 5% inicio/final para evitar negros)
+    const frameCount = Math.min(VIDEO_MAX_FRAMES, Math.max(1, VIDEO_FRAMES_PER_SCAN));
+    const timestamps = [];
+    if (probe.duration > 1) {
+      const start = probe.duration * 0.05;
+      const end = probe.duration * 0.95;
+      const step = (end - start) / Math.max(1, frameCount - 1);
+      for (let i = 0; i < frameCount; i++) {
+        timestamps.push(start + i * step);
+      }
+    } else {
+      timestamps.push(0);
+    }
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pensadero-frames-'));
+    const framePaths = [];
+    try {
+      for (let i = 0; i < timestamps.length; i++) {
+        const out = path.join(tempDir, `frame_${i}.jpg`);
+        const ok = await extractFrame(filePath, timestamps[i], out);
+        if (ok) framePaths.push(out);
+      }
+
+      if (framePaths.length === 0) {
+        throw new Error('No se pudo extraer ningún frame del vídeo');
+      }
+
+      // 3. Escanear cada frame con el VLM
+      const frameResults = [];
+      for (const fp of framePaths) {
+        try {
+          const entry = await this.scanImage(fp);
+          frameResults.push(entry);
+        } catch (err) {
+          console.warn(`[scanVideo] frame ${path.basename(fp)}: ${err.message}`);
+        }
+      }
+
+      if (frameResults.length === 0) {
+        throw new Error('Ningún frame pudo ser descrito por el VLM');
+      }
+
+      return aggregateFrameEntries(frameResults, probe);
+    } finally {
+      // Limpieza de temporales (best-effort)
+      try { await fs.rm(tempDir, { recursive: true, force: true }); } catch {}
+    }
   }
 
   /**
@@ -225,6 +292,208 @@ REGLAS:
       },
     };
   }
+}
+
+// ============================================================================
+// Helpers para vídeo (ffmpeg/ffprobe)
+// ============================================================================
+
+/**
+ * Ejecuta un comando spawn y devuelve { code, stdout, stderr }.
+ */
+function runCommand(cmd, args, timeoutMs = 60_000) {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch {}
+      resolve({ code: -1, stdout, stderr: stderr + '\n[timeout]', timedOut: true });
+    }, timeoutMs);
+    p.stdout.on('data', (c) => { stdout += c.toString(); });
+    p.stderr.on('data', (c) => { stderr += c.toString(); });
+    p.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: stderr + '\n' + err.message });
+    });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+/**
+ * ffprobe a un fichero. Devuelve { duration, width, height, fps, codec } o null.
+ */
+async function probeVideo(filePath) {
+  const args = [
+    '-v', 'error',
+    '-print_format', 'json',
+    '-show_format',
+    '-show_streams',
+    '-select_streams', 'v:0',
+    filePath,
+  ];
+  const r = await runCommand('ffprobe', args, 30_000);
+  if (r.code !== 0) return null;
+  try {
+    const data = JSON.parse(r.stdout);
+    const stream = data.streams && data.streams[0];
+    const format = data.format || {};
+    if (!stream) return null;
+    const duration = parseFloat(format.duration || stream.duration || '0') || 0;
+    const width = stream.width || 0;
+    const height = stream.height || 0;
+    // fps puede venir como "30000/1001"
+    let fps = 0;
+    if (stream.r_frame_rate && stream.r_frame_rate.includes('/')) {
+      const [a, b] = stream.r_frame_rate.split('/').map(parseFloat);
+      if (b > 0) fps = a / b;
+    } else if (stream.avg_frame_rate && stream.avg_frame_rate.includes('/')) {
+      const [a, b] = stream.avg_frame_rate.split('/').map(parseFloat);
+      if (b > 0) fps = a / b;
+    }
+    return {
+      duration,
+      width,
+      height,
+      fps: Math.round(fps * 100) / 100,
+      codec: stream.codec_name || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extrae un frame en `timestampSec` a `outPath` con ffmpeg.
+ * Devuelve true si funcionó (archivo escrito y no vacío).
+ */
+async function extractFrame(filePath, timestampSec, outPath) {
+  // Seeking pre-input (rápido), single frame de salida.
+  const args = [
+    '-y',
+    '-ss', String(timestampSec),
+    '-i', filePath,
+    '-frames:v', '1',
+    '-q:v', '3',
+    outPath,
+  ];
+  const r = await runCommand('ffmpeg', args, 30_000);
+  if (r.code !== 0) return false;
+  try {
+    const st = fsSync.statSync(outPath);
+    return st.size > 100; // bytes mínimos para considerarlo válido
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Une las entries de varios frames en un único entry compatible con el
+ * schema photos[basename]. Estrategia:
+ *  - description: del frame con descripción más larga (más detallada).
+ *  - shot_type / people_framing: moda (más frecuente).
+ *  - tags (objects/actions/expressions): unión deduplicada, hasta 10/5/5.
+ *  - dominant_colors: del primer frame con color.
+ *  - demographics: unión.
+ *  - technical: de ffprobe.
+ *  - identity: vacío aquí; la integración de caras la hace scanOrchestrator.
+ */
+function aggregateFrameEntries(frames, probe) {
+  if (!Array.isArray(frames) || frames.length === 0) return null;
+
+  // description: la más larga (heurística de "más contenido")
+  const description = frames
+    .map(f => f.description || '')
+    .sort((a, b) => b.length - a.length)[0] || '';
+
+  // Moda de shot_type / people_framing
+  const mode = (arr) => {
+    const counts = new Map();
+    for (const v of arr) {
+      if (!v) continue;
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    let best = null;
+    let bestCount = 0;
+    for (const [v, c] of counts.entries()) {
+      if (c > bestCount) { best = v; bestCount = c; }
+    }
+    return best;
+  };
+
+  const shotType = mode(frames.map(f => f.composition?.shot_type)) || null;
+  const peopleFraming = mode(frames.map(f => f.composition?.people_framing)) || 'ninguno';
+
+  // Unión deduplicada respetando primer orden de aparición
+  const unionLimit = (arrays, limit) => {
+    const seen = new Set();
+    const out = [];
+    for (const arr of arrays) {
+      if (!Array.isArray(arr)) continue;
+      for (const v of arr) {
+        if (typeof v !== 'string' || !v.trim()) continue;
+        const key = v.trim();
+        if (seen.has(key.toLowerCase())) continue;
+        seen.add(key.toLowerCase());
+        out.push(key);
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
+  };
+
+  const objects = unionLimit(frames.map(f => f.semantics?.objects), 10);
+  const actions = unionLimit(frames.map(f => f.semantics?.actions), 5);
+  const expressions = unionLimit(frames.map(f => f.semantics?.expressions), 5);
+  const ocrText = unionLimit(frames.map(f => f.semantics?.text), 10);
+
+  // Demographics: unión
+  const ageRanges = unionLimit(frames.map(f => f.demographics?.age_ranges), 4);
+  const genders = unionLimit(frames.map(f => f.demographics?.genders), 2);
+  const attire = mode(frames.map(f => f.demographics?.attire).filter(Boolean)) || '';
+
+  // Colores del primer frame con datos
+  const dominantColors = (frames.find(f => f.semantics?.dominant_colors?.length)?.semantics?.dominant_colors) || [];
+
+  // Detectar movimiento: si las descripciones mencionan acciones (correr,
+  // caminar, etc.) o si los frames difieren mucho. Heurística simple:
+  // si actions > 1, asumir movimiento.
+  const movementType = actions.length > 0 ? 'moving' : 'estatico';
+
+  return {
+    description,
+    technical: {
+      duration: probe?.duration || null,
+      resolution: probe ? `${probe.width}x${probe.height}` : null,
+      fps: probe?.fps || null,
+      codec: probe?.codec || null,
+      movement_type: movementType,
+    },
+    identity: {
+      faces: [],
+      face_count: 0,
+      spaces: [],
+    },
+    demographics: {
+      age_ranges: ageRanges,
+      genders,
+      attire,
+    },
+    composition: {
+      shot_type: shotType,
+      people_framing: peopleFraming,
+    },
+    semantics: {
+      objects,
+      expressions,
+      actions,
+      dominant_colors: dominantColors,
+      text: ocrText,
+    },
+  };
 }
 
 // Singleton para reusar la conexión Ollama

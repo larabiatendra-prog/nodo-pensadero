@@ -333,32 +333,38 @@ Output:`;
         if (!ok) continue;
       }
 
-      if (spaceIdSet.size > 0) {
-        const ok = (file.spaces || []).some(s => s && s.space_id && spaceIdSet.has(s.space_id));
-        if (!ok) continue;
-      }
+      // NOTA: space_ids YA NO es filtro estricto. Antes excluía cualquier
+      // archivo cuyo `spaces[]` no tuviera al menos uno de los space_ids del
+      // intent. Pero el LLM extrae conceptos espaciales en lenguaje natural
+      // ("aula", "auditorio") que rara vez coinciden literalmente con los
+      // `space_id` controlados del corpus — y muchos archivos no tienen
+      // spaces[] etiquetados en absoluto. El filtro descartaba todo y la
+      // query salía vacía. Ahora es scoring (bonus +10 por space coincidente)
+      // igual que tags: precisión vía ranking, no vía exclusión.
 
       // === SCORING (incluye bonus para ranking) ===
-      //
-      // NOTA: los tags del intent son scoring, no filtro estricto. Antes era
-      // AND duro (`every`), pero el LLM a menudo extrae tags semánticos
-      // ("gente", "experiencia") que no existen en el vocabulario controlado
-      // de la biblioteca y eso descartaba resultados claramente relevantes.
-      // Ahora un archivo con N de M tags coincidentes suma 10*N y sigue en
-      // el ranking; los que matchean todo ranquean arriba de forma natural.
 
       let score = 1;
       const matchedIn = [];
       const addMatch = (k) => { if (!matchedIn.includes(k)) matchedIn.push(k); };
 
-      // Bonus por person_ids (cada match)
+      // Bonus por person_ids (cada match). Sigue siendo strict via filter
+      // arriba (line 331): person_ids viene del registry, son IDs reales y
+      // controlados — si dices "fotos de Ester", filtrar por Ester es
+      // correcto. No así para space_ids, que son free-text del LLM.
       if (personIdSet.size > 0) {
         score += 15 * (file.faces || []).filter(f => f && f.person_id && personIdSet.has(f.person_id)).length;
         addMatch('person_ids');
       }
       if (spaceIdSet.size > 0) {
-        score += 10;
-        addMatch('space_ids');
+        const fileSpaceIds = (file.spaces || [])
+          .map(s => s && s.space_id)
+          .filter(Boolean);
+        const matchedSpaces = fileSpaceIds.filter(sid => spaceIdSet.has(sid));
+        if (matchedSpaces.length > 0) {
+          score += 10 * matchedSpaces.length;
+          addMatch('space_ids');
+        }
       }
       if (tagsN.length > 0) {
         const fileTagsN = (file.tags || []).map(N);
@@ -485,11 +491,20 @@ Output:`;
    * Estrategia:
    *  1. Empezar por los resultados de Stage 1 con score > 1 (algún match
    *     parcial, aunque sea débil).
-   *  2. Completar con archivos del corpus que tengan visual_description rica
-   *     y, si el intent extrae un tipo (image/video/audio), de ese tipo.
+   *  2. Completar con archivos del corpus de tipo correcto y descripción rica,
+   *     PERO ORDENADOS por número de tokens del query original/intent que
+   *     aparezcan en `name + visual_description + tags`. Esto evita que el
+   *     pool se llene de los primeros 30 archivos alfabéticos cuando lo que
+   *     queremos es lo más cercano semánticamente a la consulta.
    *  3. Limitar a STAGE2_CANDIDATE_LIMIT (30) para no saturar el contexto.
+   *
+   * Por qué este ranking importa: en queries donde Stage 1 da cero (filtros
+   * estrictos o cero coincidencias literales), si dejamos que cualquier
+   * archivo entre al pool, el LLM acaba puntuando "lo menos malo" del azar.
+   * Si dejamos pasar arriba los archivos que ya tenían alguna pista literal,
+   * el LLM trabaja sobre material genuinamente parecido.
    */
-  selectStage2Candidates(intent, mediaFiles, stage1Results) {
+  selectStage2Candidates(intent, mediaFiles, stage1Results, query) {
     const STAGE2_CANDIDATE_LIMIT = 30;
     const MIN_DESC_LENGTH = 20;
 
@@ -503,15 +518,49 @@ Output:`;
     const baseIds = new Set(baseFiles.map(f => f.id));
     const typeN = intent && intent.type ? this.normalizeText(intent.type) : null;
 
-    const additional = [];
+    // Tokens para rankear el pool extra: combinamos query original (tras
+    // quitar stopwords cortas) con free_terms y tags del intent. Todo
+    // normalizado a minúsculas sin acentos para matching robusto.
+    const STOPWORDS = new Set(['a','de','en','el','la','los','las','un','una','y','o','con','por','para','sin','del','al','que','es','se','su','sus','lo','le','les','mi','tu','ni','o','u']);
+    const queryTokens = (query || '')
+      .split(/\s+/)
+      .map(t => this.normalizeText(t))
+      .filter(t => t.length > 2 && !STOPWORDS.has(t));
+    const intentTokens = [
+      ...(intent && Array.isArray(intent.tags) ? intent.tags : []),
+      ...(intent && Array.isArray(intent.free_terms) ? intent.free_terms : []),
+      ...(intent && Array.isArray(intent.space_ids) ? intent.space_ids : []),
+    ].map(t => this.normalizeText(t)).filter(Boolean);
+    const allTokens = [...new Set([...queryTokens, ...intentTokens])];
+
+    const scoreCandidate = (f) => {
+      if (allTokens.length === 0) return 0;
+      const haystack = [
+        this.normalizeText(f.name || ''),
+        this.normalizeText(f.visual_description || ''),
+        ...(f.tags || []).map(t => this.normalizeText(t)),
+      ].join(' ');
+      let hits = 0;
+      for (const t of allTokens) {
+        if (haystack.includes(t)) hits++;
+      }
+      return hits;
+    };
+
+    const eligibles = [];
     for (const f of mediaFiles) {
-      if (additional.length + baseFiles.length >= STAGE2_CANDIDATE_LIMIT) break;
       if (baseIds.has(f.id)) continue;
       if (typeN && f.type !== typeN) continue;
       const desc = f.visual_description || '';
       if (desc.length < MIN_DESC_LENGTH) continue;
-      additional.push(f);
+      eligibles.push({ file: f, hits: scoreCandidate(f) });
     }
+
+    // Ordenar por hits desc (más coincidencias literales arriba), tomar
+    // top hasta llenar el límite.
+    eligibles.sort((a, b) => b.hits - a.hits);
+    const slotsLeft = STAGE2_CANDIDATE_LIMIT - baseFiles.length;
+    const additional = eligibles.slice(0, slotsLeft).map(e => e.file);
 
     return [...baseFiles, ...additional];
   }
@@ -544,11 +593,11 @@ Output:`;
 
 REGLAS:
 1. Para cada archivo, decide si es "alto" o "medio":
-   - "alto": claramente relevante. El usuario lo quiere ver entre los primeros resultados.
-   - "medio": podría ser relevante (interpretación amplia, conceptos adyacentes). Sugerencia secundaria.
-2. Las descripciones pueden estar en INGLÉS u otro idioma. Interpreta SEMÁNTICAMENTE, no por coincidencia literal. Ej: la consulta "edificios" debe matchear descripciones que mencionan "building", "facade", "tower" o similar.
-3. Sé generoso con "medio" cuando haya conexión razonable. Sé estricto con "alto".
-4. OMITE los archivos que no tengan nada que ver — no los incluyas en la respuesta.
+   - "alto": el archivo claramente representa lo que pide la consulta. Sin dudas.
+   - "medio": el archivo tiene una conexión razonable y articulable con la consulta (concepto adyacente, contexto similar). NO uses "medio" como cajón de sastre.
+2. Las descripciones pueden estar en INGLÉS u otro idioma. Interpreta SEMÁNTICAMENTE, no por coincidencia literal. Ej: "edificios" matchea descripciones con "building", "facade", "tower". "aula" matchea "classroom", "lecture hall", "people sitting at desks".
+3. SI TIENES QUE ESTIRAR para justificar relevancia, OMITE el archivo. Es mejor devolver pocos buenos que muchos dudosos.
+4. OMITE explícitamente los archivos que no tienen relación clara con la consulta — no los incluyas en la respuesta.
 5. Responde SOLO con JSON válido (sin explicaciones, sin markdown, sin texto antes ni después).
 
 FORMATO:
@@ -665,7 +714,7 @@ Respuesta JSON:`;
     let stage2Time = 0;
 
     if (RERANK_ENABLED && stage1PrimaryCount < MIN_PRIMARY_TO_SKIP) {
-      const candidates = this.selectStage2Candidates(intent, mediaFiles, stage1Results);
+      const candidates = this.selectStage2Candidates(intent, mediaFiles, stage1Results, query);
       if (candidates.length > 0) {
         const stage2Start = Date.now();
         const reranked = await this.reRankWithLLM(query, candidates);

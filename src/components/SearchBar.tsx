@@ -69,6 +69,15 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   const [naturalLoading, setNaturalLoading] = useState(false);
   const [naturalIntent, setNaturalIntent] = useState<NaturalIntent | null>(null);
   const [naturalNotice, setNaturalNotice] = useState<string | null>(null);
+  // Metadata de la última búsqueda natural (para indicar si Stage 2 entró,
+  // cuántos resultados, etc.). null cuando no hay búsqueda activa.
+  const [naturalMetadata, setNaturalMetadata] = useState<{
+    stage2Applied?: boolean;
+    stage2Time?: number;
+    primaryCount?: number;
+    secondaryCount?: number;
+    processingTime?: number;
+  } | null>(null);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -194,6 +203,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         ? json.metadata.primaryCount
         : (Array.isArray(json.results) ? json.results.filter((r: any) => r.tier !== 'secondary').length : 0);
       setNaturalIntent(json.intent || null);
+      setNaturalMetadata(json.metadata || null);
       onNaturalSearch?.(fileIds, json.intent || null, primaryCount);
     } catch (err: any) {
       console.warn('[SearchBar] Búsqueda natural falló:', err);
@@ -220,6 +230,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       // Al pasar a tags: limpiar resultados de búsqueda natural (la query
       // que generó esos resultados ya no aplica como modo activo).
       setNaturalIntent(null);
+      setNaturalMetadata(null);
       onNaturalSearch?.(null, null);
     }
     setSearchMode(next);
@@ -539,6 +550,31 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               )}
               {naturalIntent.free_terms && naturalIntent.free_terms.length > 0 && (
                 <Chip>términos: {naturalIntent.free_terms.join(', ')}</Chip>
+              )}
+            </>
+          )}
+          {/* Indicadores de comportamiento de la búsqueda: si entró Stage 2
+              (re-ranking semántico con LLM), conteo y tiempo. Permite al
+              usuario entender por qué tarda más o por qué aparecen
+              resultados "no literales". */}
+          {naturalMetadata && (
+            <>
+              {naturalMetadata.stage2Applied && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-lavanda/15 text-lavanda text-[11px] font-medium"
+                  title={`Stage 2: el LLM refinó los resultados leyendo las descripciones. Tardó ${naturalMetadata.stage2Time ?? '?'}ms.`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  IA refinó
+                </span>
+              )}
+              {typeof naturalMetadata.primaryCount === 'number' && naturalMetadata.primaryCount > 0 && (
+                <span className="text-humo text-[11px]">
+                  {naturalMetadata.primaryCount} {naturalMetadata.primaryCount === 1 ? 'resultado claro' : 'resultados claros'}
+                  {typeof naturalMetadata.secondaryCount === 'number' && naturalMetadata.secondaryCount > 0 && (
+                    <span> · {naturalMetadata.secondaryCount} menos probables</span>
+                  )}
+                </span>
               )}
             </>
           )}

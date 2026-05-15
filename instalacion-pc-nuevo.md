@@ -7,14 +7,15 @@ cualquier equipo equivalente con NVIDIA CUDA.
 
 ---
 
-## Resumen en 6 pasos
+## Resumen en 7 pasos
 
 1. Clonar el repo en `C:\DEV\pensadero\`.
 2. Instalar Node.js 20+ (https://nodejs.org/).
-3. Instalar Ollama (https://ollama.com).
-4. Descargar los modelos: `qwen2.5:14b-instruct` y `qwen2.5vl:7b`.
-5. Doble click en `Pensadero_Install.bat` (la primera vez).
-6. Doble click en `Pensadero_Start.bat` para arrancar.
+3. Instalar Python 3.10+ (https://python.org/) — necesario para el módulo de reconocimiento facial. Opcional pero recomendado.
+4. Instalar Ollama (https://ollama.com).
+5. Descargar los modelos: `qwen2.5:14b-instruct` y `qwen2.5vl:7b`.
+6. Doble click en `Pensadero_Install.bat` (la primera vez). Instala dependencias frontend + backend + Python venv con InsightFace.
+7. Doble click en `Pensadero_Start.bat` para arrancar.
 
 A partir de ahí: siempre `Pensadero_Start.bat`. Tiempo total primera vez:
 ~15-20 minutos (sin contar la descarga de modelos Ollama, que son ~15 GB
@@ -28,17 +29,19 @@ combinados).
 
 - **Windows 10/11.**
 - **Node.js 20+** instalado. El bat detecta automáticamente si está en el PATH del sistema.
+- **Python 3.10+** (opcional pero recomendado, para el módulo de reconocimiento facial).
+- **ffmpeg** en el PATH (para escanear vídeos). En Windows: descargar de https://ffmpeg.org/ y añadir al PATH.
 - **Ollama** corriendo como servicio en `localhost:11434`.
 - **Modelos Ollama**:
   - `qwen2.5:14b-instruct` (~9 GB) — LLM multilingüe para extracción de intent y re-ranking semántico.
-  - `qwen2.5vl:7b` (~6 GB) — VLM multimodal para describir imágenes (escaneo visual).
+  - `qwen2.5vl:7b` (~6 GB) — VLM multimodal para describir imágenes y frames de vídeo (escaneo visual).
 - **Letras de unidad fijas** para discos externos donde estén tus bibliotecas
   (Administración de discos → Cambiar letra y rutas) si los vas a indexar.
 
 ### Lo que NO necesita
 
-- **Python** ni dependencias del sistema.
 - **Configuración manual de rutas o env vars**: Pensadero arranca con valores por defecto sensatos.
+- **Visual C++ Redistributable**: ya viene con Python 3.10+ Windows installer en la mayoría de casos. Si InsightFace falla en el primer arranque, instálalo desde https://aka.ms/vs/17/release/vc_redist.x64.exe.
 
 ---
 
@@ -164,10 +167,14 @@ foto se marca como avatar automáticamente.
 Las personas aparecen en las búsquedas en lenguaje natural ("fotos de Ester
 en el cumpleaños") porque el LLM sabe qué `person_id` mapean al nombre.
 
-> **Próximamente**: detección automática de caras al escanear (InsightFace
-> u otro modelo de embeddings faciales). Por ahora las personas se
-> reconocen por mención manual o por lo que el VLM detecte en la
-> descripción visual.
+**El reconocimiento facial es automático** desde la primera versión de NODO:
+- Al subir fotos de referencia, Pensadero calcula embeddings con InsightFace
+  ArcFace en background (verás "Entrenando embeddings faciales..." en la UI).
+- Al escanear nuevo material con ✨, las caras detectadas se comparan contra
+  las personas entrenadas. Si la similitud supera el umbral (default 0.5),
+  el archivo queda asociado a esa persona.
+- El umbral se ajusta vía env var `FACE_MATCH_THRESHOLD` (0.4 más permisivo,
+  0.6 más estricto).
 
 ### d) Búsqueda en lenguaje natural
 
@@ -280,3 +287,4 @@ se versiona en git (todos los archivos sensibles están en `.gitignore`).
 |---|---|
 | 2026-05-06 | Versión inicial con LLM local (qwen2.5:14b) |
 | 2026-05-15 | NODO Visión B: añadido escaneo visual integrado (qwen2.5vl:7b), gestión de personas con UI, Stage 2 re-ranking semántico, defaults out-of-the-box sin configuración manual |
+| 2026-05-15 | P1+P2+P5: reconocimiento facial automático con InsightFace, soporte de vídeo (ffmpeg + frames + VLM), code-splitting del bundle (main 855→253 KB), indicador IA refinó en SearchBar |

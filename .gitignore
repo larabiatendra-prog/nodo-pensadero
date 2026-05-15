@@ -31,6 +31,11 @@ dist-ssr
 # Node portable embebido (se distribuye en zip pero no se versiona)
 tools/node/
 
+# Python venv y caches del módulo de reconocimiento facial
+backend/python/.venv/
+backend/python/__pycache__/
+backend/python/*.pyc
+
 # Datos persistentes del backend (no versionar)
 backend/thumbnails/
 backend/media_cache.json

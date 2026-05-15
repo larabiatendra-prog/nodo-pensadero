@@ -62,7 +62,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo ==============================================================
-echo  [3/3] Construyendo build de produccion del frontend...
+echo  [3/4] Construyendo build de produccion del frontend...
 echo ==============================================================
 cd /d "%ROOT%"
 call npm run build
@@ -72,6 +72,44 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+echo.
+echo ==============================================================
+echo  [4/4] Modulo de reconocimiento facial (Python + InsightFace)
+echo ==============================================================
+echo  Opcional. Sin esto, Pensadero funciona pero NO reconoce caras
+echo  en los escaneos. Necesitas Python 3.10+ en el PATH del sistema.
+echo.
+
+where python >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [AVISO] Python no encontrado. Salto el modulo de caras.
+    echo         Instala Python 3.10+ desde https://python.org/ y vuelve a ejecutar
+    echo         este instalador si quieres activar el reconocimiento facial.
+    goto :install_done
+)
+
+cd /d "%ROOT%backend\python"
+if not exist ".venv\Scripts\python.exe" (
+    echo Creando venv local en backend\python\.venv...
+    python -m venv .venv
+    if %ERRORLEVEL% NEQ 0 (
+        echo [AVISO] No se pudo crear el venv. Salto el modulo de caras.
+        goto :install_done
+    )
+)
+echo Instalando dependencias Python (insightface, onnxruntime...). Tarda 1-3 min.
+call .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
+call .venv\Scripts\python.exe -m pip install -r requirements.txt --quiet
+if %ERRORLEVEL% NEQ 0 (
+    echo [AVISO] pip install ha fallado. El modulo de caras quedara deshabilitado.
+    echo         Pensadero arrancara igualmente sin reconocimiento facial.
+) else (
+    echo [OK] Modulo de reconocimiento facial instalado.
+    echo      El modelo de InsightFace (~270 MB) se descargara en la primera deteccion.
+)
+
+:install_done
+cd /d "%ROOT%"
 echo.
 echo ==============================================================
 echo                    INSTALACION COMPLETA

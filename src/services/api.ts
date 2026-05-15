@@ -569,6 +569,16 @@ class ApiService {
       body: JSON.stringify({ filename }),
     });
   }
+
+  async trainPerson(personId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/train`, {
+      method: 'POST',
+    });
+  }
+
+  async faceServiceStatus() {
+    return this.fetchWithErrorHandling<ApiResponse<{ ready: boolean; unavailable: boolean; lastError: string | null; threshold: number; trainedPersons: number }>>(`${API_BASE_URL}/persons/face-service/status`);
+  }
 }
 
 // Tipos para Image Search

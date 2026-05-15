@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus } from 'lucide-react';
+import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG } from '../config';
 
@@ -39,6 +39,11 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Estado del servicio de reconocimiento facial (InsightFace via Python)
+  const [faceStatus, setFaceStatus] = useState<{ ready: boolean; unavailable: boolean; lastError: string | null; threshold: number; trainedPersons: number } | null>(null);
+  // Entrenamiento en curso por persona
+  const [trainingIds, setTrainingIds] = useState<Set<string>>(new Set());
+
   // Form state
   const [newPersonId, setNewPersonId] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
@@ -48,7 +53,17 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
 
   useEffect(() => {
     loadPersons();
+    loadFaceStatus();
   }, []);
+
+  async function loadFaceStatus() {
+    try {
+      const r = await api.faceServiceStatus();
+      if (r.success && r.data) setFaceStatus(r.data);
+    } catch {
+      setFaceStatus({ ready: false, unavailable: true, lastError: 'No se pudo consultar', threshold: 0.5, trainedPersons: 0 });
+    }
+  }
 
   useEffect(() => {
     if (selectedPerson) {
@@ -146,14 +161,50 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
   async function handleUploadPhoto(personId: string, files: FileList | null) {
     if (!files || files.length === 0) return;
     setError(null);
+    // Marcar como "entrenando" visualmente — el backend dispara el train automático
+    if (faceStatus?.ready) {
+      setTrainingIds(prev => new Set(prev).add(personId));
+    }
     try {
       for (const f of Array.from(files)) {
         await api.uploadPersonPhoto(personId, f);
       }
       await loadPhotos(personId);
       await loadPersons();
+      // Refrescar status después de 3s para reflejar nuevo trainedPersons count
+      setTimeout(() => {
+        loadFaceStatus();
+        setTrainingIds(prev => {
+          const next = new Set(prev);
+          next.delete(personId);
+          return next;
+        });
+      }, 3000);
     } catch (err: any) {
       setError(err.message || 'Error subiendo foto');
+      setTrainingIds(prev => {
+        const next = new Set(prev);
+        next.delete(personId);
+        return next;
+      });
+    }
+  }
+
+  async function handleRetrain(personId: string) {
+    setError(null);
+    setTrainingIds(prev => new Set(prev).add(personId));
+    try {
+      const r = await api.trainPerson(personId);
+      if (!r.success) throw new Error(r.error || 'Error entrenando');
+      await loadFaceStatus();
+    } catch (err: any) {
+      setError(err.message || 'Error entrenando');
+    } finally {
+      setTrainingIds(prev => {
+        const next = new Set(prev);
+        next.delete(personId);
+        return next;
+      });
     }
   }
 
@@ -219,6 +270,43 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
         <div className="mb-4 p-3 bg-pizarra border border-red-400/30 rounded-2xl text-sm text-red-300 flex items-start justify-between gap-3">
           <span>{error}</span>
           <button onClick={() => setError(null)} className="text-red-300 hover:text-red-200"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+
+      {/* Estado del reconocimiento facial — siempre visible para que el usuario sepa si funciona */}
+      {faceStatus && (
+        <div className={`mb-6 p-4 rounded-2xl border flex items-start gap-3 ${
+          faceStatus.ready
+            ? 'bg-pizarra border-pizarra'
+            : 'bg-pizarra border-bruma/40'
+        }`}>
+          {faceStatus.ready ? (
+            <Brain className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5" />
+          ) : (
+            <AlertTriangle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+          )}
+          <div className="flex-1 text-sm">
+            {faceStatus.ready ? (
+              <>
+                <p className="font-medium text-marfil mb-0.5">
+                  Reconocimiento facial activo
+                  {faceStatus.trainedPersons > 0 && (
+                    <span className="ml-2 text-xs text-lavanda-archivo">· {faceStatus.trainedPersons} {faceStatus.trainedPersons === 1 ? 'persona entrenada' : 'personas entrenadas'}</span>
+                  )}
+                </p>
+                <p className="text-xs text-lavanda-archivo">
+                  Al subir fotos, el sistema entrena automáticamente. Umbral de similitud: {faceStatus.threshold}.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium text-marfil mb-0.5">Reconocimiento facial no disponible</p>
+                <p className="text-xs text-lavanda-archivo">
+                  {faceStatus.lastError || 'Servicio Python (InsightFace) no responde. Puedes seguir registrando personas; el reconocimiento automático en los escaneos se activará cuando arregles el servicio.'}
+                </p>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -349,14 +437,38 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
                     <p className="text-sm text-lavanda-archivo font-mono">{selectedPerson.person_id}</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDelete(selectedPerson)}
-                  className="p-2 rounded-lg bg-pizarra text-red-300 hover:bg-red-500/20 transition-colors"
-                  title="Eliminar persona"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  {faceStatus?.ready && photos.length > 0 && (
+                    <button
+                      onClick={() => handleRetrain(selectedPerson.person_id)}
+                      disabled={trainingIds.has(selectedPerson.person_id)}
+                      className={`p-2 rounded-lg transition-colors ${
+                        trainingIds.has(selectedPerson.person_id)
+                          ? 'bg-lavanda/20 text-lavanda cursor-wait'
+                          : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
+                      }`}
+                      title="Re-entrenar embeddings desde las fotos actuales"
+                    >
+                      <Brain className={`w-4 h-4 ${trainingIds.has(selectedPerson.person_id) ? 'animate-pulse' : ''}`} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDelete(selectedPerson)}
+                    className="p-2 rounded-lg bg-pizarra text-red-300 hover:bg-red-500/20 transition-colors"
+                    title="Eliminar persona"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
+
+              {/* Indicador de estado de entrenamiento */}
+              {trainingIds.has(selectedPerson.person_id) && (
+                <div className="mb-4 p-2.5 bg-lavanda/10 border border-lavanda/30 rounded-2xl flex items-center gap-2 text-sm">
+                  <Brain className="w-4 h-4 text-lavanda animate-pulse" />
+                  <span className="text-marfil">Entrenando embeddings faciales...</span>
+                </div>
+              )}
 
               {/* Aliases editables */}
               <div className="mb-6">
@@ -444,10 +556,13 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
 
       {/* Nota informativa */}
       <div className="mt-8 p-4 bg-pizarra/50 border border-pizarra rounded-2xl">
-        <h4 className="text-sm font-medium text-marfil mb-1">Próximamente: reconocimiento automático</h4>
+        <h4 className="text-sm font-medium text-marfil mb-1">Cómo funciona el reconocimiento</h4>
         <p className="text-xs text-lavanda-archivo">
-          Estas fotos serán la base para que Pensadero identifique automáticamente a cada persona cuando escanees nuevo material.
-          Por ahora se usan como referencia visual y el sistema sabe quién es quién en las búsquedas en lenguaje natural.
+          Al subir fotos de referencia (5-10 con caras claras y distintos ángulos funciona mejor), Pensadero calcula un
+          <span className="font-mono text-bruma"> embedding facial</span> con InsightFace y lo guarda junto a las fotos.
+          Cuando escanees nuevas carpetas, las caras detectadas se comparan contra el registry y, si la similitud supera el umbral,
+          se asocian al <span className="font-mono text-bruma">person_id</span> correspondiente. Esto alimenta las búsquedas tipo
+          "fotos de Ester en el cumpleaños".
         </p>
       </div>
     </div>

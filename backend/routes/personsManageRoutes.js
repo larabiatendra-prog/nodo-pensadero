@@ -22,6 +22,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
+const { getInstance: getFaceService } = require('../services/faceService');
 
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
@@ -135,6 +136,19 @@ module.exports = function createPersonsManageRoutes(deps) {
       }
 
       if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+
+      // Auto-train: si InsightFace está disponible, re-entrenar los
+      // embeddings de la persona en background. No bloquea la respuesta.
+      const faceSvc = getFaceService();
+      faceSvc.init().then(ok => {
+        if (!ok) return;
+        return faceSvc.trainPerson(dir).then(result => {
+          console.log(`[persons] auto-train ${personId}: count=${result?.count} mean_sim=${result?.mean_similarity_to_centroid?.toFixed(3)}`);
+        }).catch(err => {
+          console.warn(`[persons] auto-train ${personId} falló:`, err.message);
+        });
+      });
+
       res.json({
         success: true,
         data: {
@@ -145,6 +159,29 @@ module.exports = function createPersonsManageRoutes(deps) {
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }
+  });
+
+  // POST — entrenar manualmente (recalcula embeddings desde las fotos actuales)
+  router.post('/persons/registry/:id/train', async (req, res) => {
+    const personId = req.params.id;
+    const dir = getPersonDir(personId);
+    if (!dir) return res.status(500).json({ success: false, error: 'avatarsBase no configurado' });
+    if (!fs.existsSync(dir)) return res.status(404).json({ success: false, error: 'sin fotos para esta persona' });
+    const faceSvc = getFaceService();
+    const ok = await faceSvc.init();
+    if (!ok) return res.status(503).json({ success: false, error: faceSvc.getStatus().lastError || 'face service no disponible' });
+    try {
+      const result = await faceSvc.trainPerson(dir);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET — estado del servicio de reconocimiento facial
+  router.get('/persons/face-service/status', (req, res) => {
+    const faceSvc = getFaceService();
+    res.json({ success: true, data: faceSvc.getStatus() });
   });
 
   // DELETE — borrar una foto concreta
@@ -169,6 +206,14 @@ module.exports = function createPersonsManageRoutes(deps) {
       peopleRegistry.upsertPerson({ person_id: req.params.id, avatar_path: '' });
     }
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+
+    // Re-train con las fotos restantes (en background, no bloqueante)
+    const faceSvc = getFaceService();
+    faceSvc.init().then(ok => {
+      if (!ok) return;
+      return faceSvc.trainPerson(dir).catch(() => {});
+    });
+
     res.json({ success: true, deleted: true });
   });
 

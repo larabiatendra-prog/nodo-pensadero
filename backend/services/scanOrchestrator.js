@@ -19,7 +19,20 @@ const fs = require('fs').promises;
 const path = require('path');
 const sharp = require('sharp');
 const { getInstance: getScanner } = require('../visualScanService');
+const { getInstance: getFaceService } = require('./faceService');
+const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
+
+// Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
+const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
+// Mapeo edad (años) → rango. Usa los mismos buckets que el VLM.
+function ageBucket(age) {
+  if (typeof age !== 'number' || !isFinite(age)) return null;
+  if (age < 16) return 'niño';
+  if (age < 30) return 'joven';
+  if (age < 60) return 'adulto';
+  return 'senior';
+}
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif']);
@@ -121,6 +134,21 @@ async function scanFolder(folderPath, opts = {}) {
   } = opts;
 
   const scanner = getScanner();
+  const faceSvc = getFaceService();
+
+  // Cargar embeddings del registry en el cache del faceService antes del
+  // batch. Si falla (sin Python/InsightFace), seguimos sin reconocimiento.
+  let facesEnabled = false;
+  try {
+    await faceSvc.init();
+    if (faceSvc.getStatus().ready) {
+      await faceSvc.loadAllEmbeddings(peopleRegistry.getState().avatarsBase);
+      facesEnabled = true;
+    }
+  } catch (err) {
+    console.warn('[scan] face service no disponible:', err.message);
+    facesEnabled = false;
+  }
 
   // Estado inicial del job
   const job = {
@@ -226,12 +254,51 @@ async function scanFolder(folderPath, opts = {}) {
     const basename = path.basename(filePath);
 
     try {
-      const [entry, technical] = await Promise.all([
+      const [entry, technical, faceDetections] = await Promise.all([
         scanner.scanImage(filePath),
         extractTechnical(filePath),
+        facesEnabled ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
       ]);
       // Mezclar technical de sharp con lo que diga el VLM (sharp manda)
       entry.technical = { ...(entry.technical || {}), ...technical };
+
+      // Identidad: si tenemos detección de caras, sobrescribir lo que dijo
+      // el VLM con datos reales de InsightFace.
+      if (facesEnabled) {
+        const identified = faceSvc.identifyFaces(faceDetections);
+        const named = identified
+          .filter(f => f.person_id)
+          .map(f => {
+            const displayName = peopleRegistry.getDisplayName(f.person_id);
+            return {
+              person_id: f.person_id,
+              display_name: displayName,
+              confidence: f.similarity,
+            };
+          });
+        // De-duplicar por person_id quedándonos con la mejor confianza
+        const byId = new Map();
+        for (const f of named) {
+          const prev = byId.get(f.person_id);
+          if (!prev || f.confidence > prev.confidence) byId.set(f.person_id, f);
+        }
+        entry.identity = entry.identity || {};
+        entry.identity.faces = Array.from(byId.values());
+        entry.identity.face_count = faceDetections.length;
+
+        // Inferir demographics globales: tomar moda de gender/age de TODAS
+        // las caras detectadas (no sólo las identificadas) para enriquecer
+        // la búsqueda ("personas mayores", "grupo de mujeres").
+        const ageRanges = new Set();
+        const genders = new Set();
+        for (const f of faceDetections) {
+          const a = ageBucket(f.age);
+          if (a) ageRanges.add(a);
+          if (f.gender != null && GENDER_MAP[f.gender]) genders.add(GENDER_MAP[f.gender]);
+        }
+        if (ageRanges.size > 0) entry.demographics.age_ranges = Array.from(ageRanges);
+        if (genders.size > 0) entry.demographics.genders = Array.from(genders);
+      }
 
       const c = catalogsByDir.get(dir);
       // Usar siempre `photos` como clave canónica para nuevas entradas

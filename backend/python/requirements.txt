@@ -1,0 +1,19 @@
+# Pensadero NODO — Reconocimiento facial
+#
+# Dependencias Python para el módulo de detección y reconocimiento facial
+# (face_detector.py). Instalar dentro de un venv local del proyecto:
+#
+#   cd backend/python
+#   python -m venv .venv
+#   .venv\Scripts\activate    # Windows
+#   pip install -r requirements.txt
+#
+# Para GPU NVIDIA (NODO RTX 5070 Ti), sustituye `onnxruntime` por
+# `onnxruntime-gpu` y asegúrate de tener CUDA 12.x instalado. Da una
+# aceleración de ~10x (1s/imagen vs 8s en CPU).
+
+insightface==0.7.3
+onnxruntime>=1.18      # CPU. Para CUDA usa: onnxruntime-gpu
+numpy>=1.24
+opencv-python>=4.8
+pillow>=10.0

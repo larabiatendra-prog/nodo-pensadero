@@ -41,6 +41,8 @@ const createAiRoutes = require('./routes/aiRoutes');
 const createOrganizationRoutes = require('./routes/organizationRoutes');
 const createMediaRoutes = require('./routes/mediaRoutes');
 const createSystemRoutes = require('./routes/systemRoutes');
+const createScanRoutes = require('./routes/scanRoutes');
+const createPersonsManageRoutes = require('./routes/personsManageRoutes');
 
 // Multer para uploads de imagen (lo conservamos por si lo usa el frontend en
 // la búsqueda por imagen futura; actualmente no hay endpoint que lo consuma).
@@ -70,8 +72,15 @@ const CONTENT_DIR = pathsConfig.getContentDir();
 const THUMBNAILS_DIR = pathsConfig.systemPaths.thumbnails;
 
 // People registry (config desde .env)
-const PERSONS_REGISTRY_PATH = (process.env.PERSONS_REGISTRY || '').trim() || null;
-const PERSONS_AVATARS_BASE = (process.env.PERSONS_AVATARS_BASE || '').trim() || null;
+// Si las variables de entorno no están definidas, usamos una ubicación
+// por defecto dentro de backend/data/ para que NODO arranque "out of the box"
+// sin necesidad de configurar nada manualmente. La carpeta y el archivo se
+// crean al primer guardado desde la UI de gestión de personas.
+const DEFAULT_DATA_DIR = path.join(__dirname, 'data');
+const PERSONS_REGISTRY_PATH = (process.env.PERSONS_REGISTRY || '').trim() ||
+  path.join(DEFAULT_DATA_DIR, 'people_registry.json');
+const PERSONS_AVATARS_BASE = (process.env.PERSONS_AVATARS_BASE || '').trim() ||
+  DEFAULT_DATA_DIR;
 
 // Rutas de exports cargadas desde scan_paths.json
 let EXPORTS_PATHS = [];
@@ -848,6 +857,23 @@ const systemRoutes = createSystemRoutes({
 });
 app.use('/api', systemRoutes);
 
+// Escaneo visual con VLM local (qwen2.5vl via Ollama). Genera _pensadero.json
+// en cada carpeta procesada y refresca el sync para que el frontend vea la
+// metadata sin pulsar "sincronizar".
+const scanRoutes = createScanRoutes({
+  broadcastProgress,
+  syncFiles,
+});
+app.use('/api', scanRoutes);
+
+// CRUD del registry de personas + fotos de referencia. Se aplica a continuación
+// del agregado memoizado (que ya escucha /api/persons en GET para listado de
+// apariciones). Estas rutas son /api/persons/registry/... — sin colisión.
+const personsManageRoutes = createPersonsManageRoutes({
+  recomputePersonsAggregate,
+});
+app.use('/api', personsManageRoutes);
+
 // === PERSONS (registry + agregado memoizado) ===
 
 // GET /api/persons — devuelve el agregado memoizado. Sin I/O por request.
@@ -916,13 +942,25 @@ async function initialize() {
 
   // Cargar registry de personas ANTES del primer sync — así applyCatalog
   // resuelve display_name desde el registry desde el primer pase.
-  if (PERSONS_REGISTRY_PATH) {
-    peopleRegistry.loadRegistry(PERSONS_REGISTRY_PATH, PERSONS_AVATARS_BASE);
-    mountPersonsAvatars();
-    watchPersonsRegistry();
-  } else {
-    console.log('👥 PERSONS_REGISTRY no configurado. Personas operan sin display_name ni avatares.');
+  // Si el archivo no existe aún (primer arranque), creamos la carpeta y
+  // dejamos el registry vacío pero con la ruta lista para escrituras desde
+  // la UI de gestión de personas.
+  try {
+    await fs.mkdir(path.dirname(PERSONS_REGISTRY_PATH), { recursive: true });
+    await fs.mkdir(path.join(PERSONS_AVATARS_BASE, 'people'), { recursive: true });
+  } catch (err) {
+    console.warn(`⚠️ No se pudo preparar carpeta de personas: ${err.message}`);
   }
+
+  const loadResult = peopleRegistry.loadRegistry(PERSONS_REGISTRY_PATH, PERSONS_AVATARS_BASE);
+  if (!loadResult.ok && loadResult.count === 0) {
+    // El archivo no existe todavía: dejamos la ruta configurada para futuros
+    // saveToDisk(), sin warnings ruidosos.
+    peopleRegistry.setRegistryPath(PERSONS_REGISTRY_PATH, PERSONS_AVATARS_BASE);
+    console.log(`👥 Registry vacío. Se creará en ${PERSONS_REGISTRY_PATH} al guardar la primera persona.`);
+  }
+  mountPersonsAvatars();
+  watchPersonsRegistry();
 
   await loadCache();
   await syncFiles();

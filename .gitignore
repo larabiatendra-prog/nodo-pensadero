@@ -42,6 +42,8 @@ backend/embeddings_index.json
 backend/visual_search_data/
 backend/temp/
 backend/reports/
+# Datos del registry de personas (fotos personales, identidades)
+backend/data/
 
 # Patrones genericos heredados
 embeddings_index.json

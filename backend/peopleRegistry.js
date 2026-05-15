@@ -211,12 +211,115 @@ function entries() {
   return Array.from(peopleById.entries());
 }
 
+// ============================================================================
+// ESCRITURA — gestión del registry desde la UI de Pensadero
+// ============================================================================
+
+/**
+ * Lista todas las personas del registry como array plano (con avatar_url
+ * resuelto). Para servir a la UI de gestión.
+ */
+function listAll() {
+  const out = [];
+  for (const [id, entry] of peopleById.entries()) {
+    out.push({
+      person_id: id,
+      display_name: (entry && entry.display_name) || id,
+      aliases: Array.isArray(entry.aliases) ? entry.aliases : [],
+      avatar_path: (entry && entry.avatar_path) || null,
+      avatar_url: getAvatarUrl(id),
+    });
+  }
+  out.sort((a, b) => a.display_name.localeCompare(b.display_name, 'es'));
+  return out;
+}
+
+/**
+ * Crea o actualiza una persona. Persiste a disco.
+ * @param {object} data { person_id, display_name, aliases?, avatar_path? }
+ * @returns {object} entrada normalizada
+ */
+function upsertPerson(data) {
+  if (!data || typeof data !== 'object') throw new Error('data requerido');
+  const personId = (data.person_id || '').toString().trim();
+  if (!personId) throw new Error('person_id requerido');
+  if (!/^[a-zA-Z0-9_\-]+$/.test(personId)) {
+    throw new Error('person_id debe ser alfanumérico (a-z, 0-9, _, -)');
+  }
+
+  const existing = peopleById.get(personId) || {};
+  const entry = {
+    person_id: personId,
+    display_name: (data.display_name || '').toString().trim() || existing.display_name || personId,
+    aliases: Array.isArray(data.aliases)
+      ? data.aliases.filter(a => typeof a === 'string' && a.trim()).map(a => a.trim())
+      : (existing.aliases || []),
+    avatar_path: typeof data.avatar_path === 'string' && data.avatar_path.trim()
+      ? data.avatar_path.trim()
+      : (existing.avatar_path || null),
+  };
+  peopleById.set(personId, entry);
+  saveToDisk();
+  return entry;
+}
+
+/**
+ * Elimina una persona del registry. Persiste.
+ */
+function deletePerson(personId) {
+  if (!personId) return false;
+  const existed = peopleById.delete(personId);
+  if (existed) saveToDisk();
+  return existed;
+}
+
+/**
+ * Persiste el estado actual de peopleById a disco como JSON.
+ * Si registryPath no está definido, se inicializa al default que el server
+ * configure (la primera vez via loadRegistry o setRegistryPath).
+ */
+function saveToDisk() {
+  if (!registryPath) {
+    console.warn('⚠️ saveToDisk sin registryPath; descartando.');
+    return false;
+  }
+  const data = {
+    version: 1,
+    people: Array.from(peopleById.values()),
+  };
+  // Asegurar carpeta padre
+  try {
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true });
+    fs.writeFileSync(registryPath, JSON.stringify(data, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('❌ Error escribiendo registry:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Permite establecer registryPath sin recargar (útil para escribir el
+ * primer registro cuando aún no existía el archivo).
+ */
+function setRegistryPath(filePath, avatarsBaseOverride = null) {
+  if (filePath) registryPath = path.normalize(filePath);
+  if (avatarsBaseOverride) avatarsBase = path.normalize(avatarsBaseOverride);
+  else if (registryPath && !avatarsBase) avatarsBase = path.dirname(registryPath);
+}
+
 module.exports = {
   loadRegistry,
+  setRegistryPath,
   getDisplayName,
   getAliases,
   getAvatarUrl,
   validateAvatarPath,
   getState,
   entries,
+  // CRUD desde la UI
+  listAll,
+  upsertPerson,
+  deletePerson,
+  saveToDisk,
 };

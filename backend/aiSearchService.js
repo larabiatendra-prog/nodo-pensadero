@@ -143,21 +143,22 @@ Campos esperados:
 - exposure: "under" | "normal" | "over" | null
 - color_terms: array de colores en español (rojo, azul, lavanda, ...)
 ${peopleBlock}
-EJEMPLOS:
-Input: "videos de Alumni con seriedad de 2023"
-Output: {"type":"video","year":2023,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["alumni","seriedad"],"free_terms":[],"expanded_terms":["graduates","alumni network","serious","formal","reunion"],"shot_type":null,"people_framing":null,"movement_type":null,"exposure":null,"color_terms":[]}
+EJEMPLOS (uso personal — viajes, familia, amigos, música, conceptos visuales):
 
-Input: "primer plano de Ester en agosto"
-Output: {"type":null,"year":null,"month":"08","month_name":"agosto","person_ids":["ester"],"space_ids":[],"tags":[],"free_terms":[],"expanded_terms":[],"shot_type":"primer_plano","people_framing":"individual","movement_type":null,"exposure":null,"color_terms":[]}
+Input: "fotos del viaje a Pirineos con amigos en julio"
+Output: {"type":"image","year":null,"month":"07","month_name":"julio","person_ids":[],"space_ids":[],"tags":["pirineos","amigos","viaje"],"free_terms":[],"expanded_terms":["trip","mountain","nature","friends","hiking","landscape","outdoors","vacation"],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
 
-Input: "fotos del auditorio con gente"
-Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":["auditorio"],"tags":["gente"],"free_terms":[],"expanded_terms":["auditorium","audience","crowd","seats","stage","people sitting"],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
+Input: "primer plano del abuelo en su cumpleaños"
+Output: {"type":null,"year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["abuelo","cumpleaños"],"free_terms":[],"expanded_terms":["grandfather","birthday","cake","candles","celebration","portrait","elderly"],"shot_type":"primer_plano","people_framing":"individual","movement_type":null,"exposure":null,"color_terms":[]}
 
-Input: "clase formativa en aula"
-Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":["aula"],"tags":["clase","formativa"],"free_terms":[],"expanded_terms":["classroom","lecture","training","students","desks","whiteboard","teacher","seminar","educational"],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
+Input: "atardecer en la playa"
+Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["atardecer","playa"],"free_terms":[],"expanded_terms":["sunset","beach","dusk","golden hour","sea","ocean","sky","coast"],"shot_type":null,"people_framing":null,"movement_type":null,"exposure":null,"color_terms":[]}
 
-Input: "edificios al atardecer"
-Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["edificios","atardecer"],"free_terms":[],"expanded_terms":["building","buildings","facade","tower","sunset","dusk","golden hour","skyline"],"shot_type":null,"people_framing":null,"movement_type":null,"exposure":null,"color_terms":[]}
+Input: "concierto de música en Valencia"
+Output: {"type":null,"year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["concierto","valencia","musica"],"free_terms":[],"expanded_terms":["concert","music","stage","band","crowd","performance","live","musicians","lights"],"shot_type":null,"people_framing":"multitud","movement_type":null,"exposure":null,"color_terms":[]}
+
+Input: "comida en familia"
+Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["comida","familia"],"free_terms":[],"expanded_terms":["family meal","family dinner","table","food","eating","gathering","home","plates"],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
 
 Input: "${query}"
 Output:`;

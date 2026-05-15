@@ -13,7 +13,9 @@
  *  - month_name: nombre del mes en español o null
  *  - person_ids: array de person_id resueltos contra el registry
  *  - space_ids: array de space_id (cuando se mencione un lugar)
- *  - tags: array de tags (cada uno debe matchear AND sobre file.tags)
+ *  - tags: array de tags. Scoring (bonus +10 por tag coincidente), NO filtro
+ *    estricto. Archivos sin todos los tags siguen apareciendo si encajan por
+ *    otros campos; los que matchean más tags ranquean arriba.
  *  - free_terms: términos de texto libre (búsqueda OR sobre name/visual_description/etc.)
  *  - shot_type: vocabulario controlado (plano_general, primer_plano, ...) | null
  *  - people_framing: ninguno|individual|pareja|grupo|multitud|null
@@ -132,7 +134,7 @@ Campos esperados:
 - month_name: nombre del mes en minúsculas (enero, febrero, ...) o null
 - person_ids: array de identificadores de la lista de PERSONAS CONOCIDAS abajo (vacío si nadie mencionado o no resoluble)
 - space_ids: array de identificadores de espacios mencionados (auditorio, cocina, ...) — vacío si no aplica
-- tags: array de etiquetas que el usuario pide que aparezcan (filtro AND sobre file.tags)
+- tags: array de etiquetas que el usuario pide que aparezcan (suman puntos al ranking, no filtran)
 - free_terms: array de términos de texto libre que NO encajan en los demás campos
 - shot_type: "plano_general" | "plano_americano" | "plano_medio" | "plano_medio_corto" | "primer_plano" | "plano_detalle" | null
 - people_framing: "ninguno" | "individual" | "pareja" | "grupo" | "multitud" | null
@@ -336,13 +338,14 @@ Output:`;
         if (!ok) continue;
       }
 
-      if (tagsN.length > 0) {
-        const fileTagsN = (file.tags || []).map(N);
-        const ok = tagsN.every(t => fileTagsN.some(ft => ft.includes(t) || t.includes(ft)));
-        if (!ok) continue;
-      }
-
       // === SCORING (incluye bonus para ranking) ===
+      //
+      // NOTA: los tags del intent son scoring, no filtro estricto. Antes era
+      // AND duro (`every`), pero el LLM a menudo extrae tags semánticos
+      // ("gente", "experiencia") que no existen en el vocabulario controlado
+      // de la biblioteca y eso descartaba resultados claramente relevantes.
+      // Ahora un archivo con N de M tags coincidentes suma 10*N y sigue en
+      // el ranking; los que matchean todo ranquean arriba de forma natural.
 
       let score = 1;
       const matchedIn = [];
@@ -358,8 +361,12 @@ Output:`;
         addMatch('space_ids');
       }
       if (tagsN.length > 0) {
-        score += 10 * tagsN.length;
-        addMatch('tags');
+        const fileTagsN = (file.tags || []).map(N);
+        const matchedTags = tagsN.filter(t => fileTagsN.some(ft => ft.includes(t) || t.includes(ft)));
+        if (matchedTags.length > 0) {
+          score += 10 * matchedTags.length;
+          addMatch('tags');
+        }
       }
 
       // Bonus filtros visuales

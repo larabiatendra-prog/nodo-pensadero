@@ -355,59 +355,50 @@ export default function MediaModal({
 
             {/* File details */}
             <div className="space-y-4">
-              {/* Actions */}
-              <div className="flex items-center space-x-2 md:space-x-3 flex-wrap gap-2">
+              {/* Actions — burbujas solo icono */}
+              <div className="flex items-center gap-2">
                 <button
                   onClick={() => onToggleFavorite(file.id)}
-                  className={`flex items-center space-x-2 px-3 py-2 md:px-4 rounded-lg transition-colors ${
+                  title={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
+                  aria-label={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
+                  className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
                     file.isFavorite
                       ? 'bg-lavanda bg-opacity-10 text-lavanda hover:bg-opacity-20'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} />
-                  <span className="text-sm font-medium">
-                    {file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
-                  </span>
                 </button>
                 <button
                   onClick={() => onDownload(file)}
-                  className="flex items-center space-x-2 px-3 py-2 md:px-4 bg-bruma text-white rounded-lg hover:bg-opacity-90 transition-colors"
+                  title="Descargar"
+                  aria-label="Descargar"
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-bruma text-white hover:bg-opacity-90 transition-colors"
                 >
                   <Download className="w-4 h-4" />
-                  <span className="text-sm font-medium">Descargar</span>
                 </button>
-              </div>
-
-              {/* Botón Quitar Fondo - Solo para imágenes */}
-              {file.type === 'image' && (
-                <div className="space-y-2">
+                {file.type === 'image' && (
                   <button
                     onClick={handleRemoveBackground}
                     disabled={isRemovingBackground}
-                    className={`flex items-center space-x-2 px-4 py-2 w-full justify-center rounded-lg transition-colors ${
+                    title={isRemovingBackground ? 'Procesando…' : 'Quitar fondo (beta) — genera una copia PNG transparente'}
+                    aria-label="Quitar fondo (beta)"
+                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors border ${
                       isRemovingBackground
-                        ? 'bg-purple-100 text-purple-400 cursor-wait'
-                        : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
+                        ? 'bg-purple-100 text-purple-400 border-purple-200 cursor-wait'
+                        : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-200'
                     }`}
-                    title="Genera una copia de la imagen con el fondo eliminado (PNG transparente)"
                   >
                     {isRemovingBackground ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span className="text-sm font-medium">Procesando...</span>
-                      </>
+                      <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
-                      <>
-                        <Scissors className="w-4 h-4" />
-                        <span className="text-sm font-medium">Quitar fondo (beta)</span>
-                      </>
+                      <Scissors className="w-4 h-4" />
                     )}
                   </button>
-                  {backgroundRemovalError && (
-                    <p className="text-xs text-red-500 text-center">{backgroundRemovalError}</p>
-                  )}
-                </div>
+                )}
+              </div>
+              {file.type === 'image' && backgroundRemovalError && (
+                <p className="text-xs text-red-500">{backgroundRemovalError}</p>
               )}
 
               {/* File info */}

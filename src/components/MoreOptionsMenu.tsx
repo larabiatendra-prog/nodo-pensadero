@@ -4,6 +4,7 @@ import {
   Tag,
   BarChart3,
   FolderSync,
+  Users,
   X
 } from 'lucide-react';
 
@@ -23,6 +24,7 @@ export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuPro
   // Reactivar requiere reintroducir el pipeline vectorial.
   const menuItems = [
     { id: 'tags',        icon: Tag,        label: 'Gestión de Etiquetas', description: 'Administrar etiquetas del sistema' },
+    { id: 'persons',     icon: Users,      label: 'Personas',             description: 'Registrar caras y entrenar identidades' },
     { id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
     { id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
   ];

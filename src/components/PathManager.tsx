@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock } from 'lucide-react';
+import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
@@ -14,6 +14,16 @@ interface ScanPath {
   errorMessage?: string;
 }
 
+interface AiScanState {
+  jobId: string | null;
+  total: number;
+  done: number;
+  errors: number;
+  currentFile?: string;
+  status: 'idle' | 'running' | 'done' | 'error' | 'cancelled';
+  errorMessage?: string;
+}
+
 interface PathManagerProps {
   onSyncComplete?: () => void;
 }
@@ -24,30 +34,120 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [newPath, setNewPath] = useState('');
   const [showAddPath, setShowAddPath] = useState(false);
   const [scanningPaths, setScanningPaths] = useState<Set<string>>(new Set());
-  
+
+  // Estado de escaneo visual con IA por ruta. Map: pathId → estado.
+  const [aiScansByPath, setAiScansByPath] = useState<Map<string, AiScanState>>(new Map());
+  // Map: jobId → pathId para resolver eventos WebSocket
+  const [jobIdToPathId, setJobIdToPathId] = useState<Map<string, string>>(new Map());
+
+  // Estado de salud del VLM (Ollama + modelo). Se consulta al montar.
+  const [vlmHealth, setVlmHealth] = useState<{ ollamaRunning: boolean; modelAvailable: boolean; model: string; error?: string } | null>(null);
+
   // WebSocket para progreso en tiempo real
   const { isConnected, progressData } = useWebSocket(config.wsUrl);
 
   useEffect(() => {
     loadPaths();
+    // Cargar health del VLM al entrar — diagnóstico al usuario si Ollama
+    // o el modelo no están listos.
+    api.scanHealth().then(r => {
+      if (r.success && r.data) setVlmHealth(r.data);
+    }).catch(() => setVlmHealth({ ollamaRunning: false, modelAvailable: false, model: 'qwen2.5vl:7b' }));
   }, []);
-  
-  // Escuchar progreso de sincronización
+
+  // Escuchar progreso de sincronización Y de escaneo visual IA
   useEffect(() => {
-    if (progressData) {
-      if (progressData.type === 'sync_complete') {
-        // Recargar las rutas para actualizar los contadores
-        loadPaths();
-        
-        // Notificar al componente padre para refrescar los archivos
-        if (onSyncComplete) {
-          setTimeout(() => {
-            onSyncComplete();
-          }, 1000); // Pequeño delay para asegurar que el backend completó todo
-        }
+    if (!progressData) return;
+
+    if (progressData.type === 'sync_complete') {
+      // Recargar las rutas para actualizar los contadores
+      loadPaths();
+
+      // Notificar al componente padre para refrescar los archivos
+      if (onSyncComplete) {
+        setTimeout(() => {
+          onSyncComplete();
+        }, 1000); // Pequeño delay para asegurar que el backend completó todo
       }
     }
-  }, [progressData, onSyncComplete]);
+
+    // Eventos del escaneo visual IA (visualScanService)
+    if (progressData.type === 'scan_start' && progressData.jobId) {
+      const pid = jobIdToPathId.get(progressData.jobId);
+      if (pid) {
+        setAiScansByPath(prev => {
+          const next = new Map(prev);
+          next.set(pid, {
+            jobId: progressData.jobId,
+            total: 0,
+            done: 0,
+            errors: 0,
+            status: 'running',
+          });
+          return next;
+        });
+      }
+    }
+
+    if (progressData.type === 'scan_progress' && progressData.jobId) {
+      const pid = jobIdToPathId.get(progressData.jobId);
+      if (pid) {
+        setAiScansByPath(prev => {
+          const next = new Map(prev);
+          const cur = next.get(pid) || { jobId: progressData.jobId, total: 0, done: 0, errors: 0, status: 'running' as const };
+          next.set(pid, {
+            ...cur,
+            jobId: progressData.jobId,
+            total: progressData.total ?? cur.total,
+            done: progressData.done ?? cur.done,
+            errors: progressData.errors ?? cur.errors,
+            currentFile: progressData.file,
+            status: 'running',
+          });
+          return next;
+        });
+      }
+    }
+
+    if (progressData.type === 'scan_done' && progressData.jobId) {
+      const pid = jobIdToPathId.get(progressData.jobId);
+      if (pid) {
+        setAiScansByPath(prev => {
+          const next = new Map(prev);
+          const cur = next.get(pid);
+          if (cur) {
+            next.set(pid, {
+              ...cur,
+              total: progressData.total ?? cur.total,
+              done: progressData.done ?? cur.done,
+              errors: progressData.errors ?? cur.errors,
+              status: 'done',
+              currentFile: undefined,
+            });
+          }
+          return next;
+        });
+      }
+    }
+
+    if (progressData.type === 'scan_error' && progressData.jobId) {
+      const pid = jobIdToPathId.get(progressData.jobId);
+      if (pid) {
+        setAiScansByPath(prev => {
+          const next = new Map(prev);
+          const cur = next.get(pid);
+          if (cur) {
+            next.set(pid, {
+              ...cur,
+              errors: progressData.errors ?? cur.errors,
+              currentFile: progressData.file,
+            });
+          }
+          return next;
+        });
+      }
+    }
+  }, [progressData, onSyncComplete, jobIdToPathId]);
 
   const loadPaths = async () => {
     try {
@@ -160,6 +260,57 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
+  /**
+   * Lanza un escaneo visual con IA sobre la carpeta de la ruta. El backend
+   * recorre todas las imágenes, las describe con qwen2.5vl, y guarda los
+   * resultados en `_pensadero.json` por carpeta.
+   */
+  const handleAiScan = async (pathId: string, force: boolean = false) => {
+    const path = paths.find(p => p.id === pathId);
+    if (!path) return;
+
+    // Limpiar estado previo de esta ruta
+    setAiScansByPath(prev => {
+      const next = new Map(prev);
+      next.set(pathId, { jobId: null, total: 0, done: 0, errors: 0, status: 'running' });
+      return next;
+    });
+
+    try {
+      const response: any = await api.startScan(path.path, force);
+      if (!response.success) {
+        throw new Error(response.error || 'Error iniciando escaneo');
+      }
+      const jobId = response.jobId;
+      if (jobId) {
+        setJobIdToPathId(prev => {
+          const next = new Map(prev);
+          next.set(jobId, pathId);
+          return next;
+        });
+        setAiScansByPath(prev => {
+          const next = new Map(prev);
+          const cur = next.get(pathId);
+          if (cur) next.set(pathId, { ...cur, jobId });
+          return next;
+        });
+      }
+    } catch (err: any) {
+      setAiScansByPath(prev => {
+        const next = new Map(prev);
+        next.set(pathId, {
+          jobId: null,
+          total: 0,
+          done: 0,
+          errors: 0,
+          status: 'error',
+          errorMessage: err.message || 'Error desconocido',
+        });
+        return next;
+      });
+    }
+  };
+
   const handleRemovePath = async (pathId: string) => {
     if (!confirm('¿Estás seguro de que quieres eliminar esta ruta?')) return;
 
@@ -220,6 +371,31 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           Gestiona las carpetas que el sistema escanea en busca de archivos multimedia
         </p>
       </div>
+
+      {/* Banner de estado del VLM. Solo se muestra si hay problemas que
+          impiden el escaneo con IA — invisible cuando todo está OK. */}
+      {vlmHealth && (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable) && (
+        <div className="mb-6 p-4 bg-pizarra border border-lavanda-archivo rounded-2xl">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+            <div className="flex-1 text-sm">
+              <p className="font-medium text-marfil mb-1">Escaneo con IA no disponible</p>
+              {!vlmHealth.ollamaRunning && (
+                <p className="text-lavanda-archivo">
+                  Ollama no responde en localhost:11434. Comprueba que está arrancado
+                  (instálalo desde <span className="font-mono text-bruma">https://ollama.com</span> si todavía no).
+                </p>
+              )}
+              {vlmHealth.ollamaRunning && !vlmHealth.modelAvailable && (
+                <p className="text-lavanda-archivo">
+                  El modelo <span className="font-mono text-bruma">{vlmHealth.model}</span> no está descargado.
+                  Ábrete una terminal y ejecuta: <span className="font-mono text-bruma">ollama pull {vlmHealth.model}</span>
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Botón para añadir nueva ruta */}
       <div className="mb-6">
@@ -329,6 +505,31 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                     <RefreshCw className={`w-4 h-4 ${scanningPaths.has(path.id) ? 'animate-spin' : ''}`} />
                   </button>
 
+                  {/* Escanear con IA — genera _pensadero.json con descripciones */}
+                  <button
+                    onClick={() => handleAiScan(path.id, false)}
+                    disabled={
+                      !path.isActive ||
+                      aiScansByPath.get(path.id)?.status === 'running' ||
+                      !vlmHealth?.ollamaRunning ||
+                      !vlmHealth?.modelAvailable
+                    }
+                    className={`p-2 rounded-lg transition-colors ${
+                      aiScansByPath.get(path.id)?.status === 'running'
+                        ? 'bg-lavanda text-white cursor-wait'
+                        : !path.isActive || !vlmHealth?.ollamaRunning || !vlmHealth?.modelAvailable
+                          ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
+                          : 'bg-grafito text-lavanda hover:bg-lavanda hover:text-white'
+                    }`}
+                    title={
+                      !vlmHealth?.ollamaRunning ? 'Ollama no disponible' :
+                      !vlmHealth?.modelAvailable ? `Falta modelo: ollama pull ${vlmHealth.model}` :
+                      'Escanear con IA (describir cada imagen con qwen2.5vl)'
+                    }
+                  >
+                    <Sparkles className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />
+                  </button>
+
                   <button
                     onClick={() => handleTogglePath(path.id, path.isActive)}
                     className={`p-2 rounded-lg transition-colors ${
@@ -352,6 +553,48 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                   )}
                 </div>
               </div>
+
+              {/* Barra de progreso de escaneo IA */}
+              {(() => {
+                const scan = aiScansByPath.get(path.id);
+                if (!scan || scan.status === 'idle') return null;
+                const pct = scan.total > 0 ? Math.round((scan.done / scan.total) * 100) : 0;
+                return (
+                  <div className="mt-4 p-3 bg-pizarra rounded-2xl">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className={`w-4 h-4 text-lavanda ${scan.status === 'running' ? 'animate-pulse' : ''}`} />
+                        <span className="text-sm font-medium text-marfil">
+                          {scan.status === 'running' && 'Escaneando con IA...'}
+                          {scan.status === 'done' && '✓ Escaneo completado'}
+                          {scan.status === 'error' && '✗ Error al iniciar escaneo'}
+                          {scan.status === 'cancelled' && 'Escaneo cancelado'}
+                        </span>
+                      </div>
+                      <span className="text-xs text-lavanda-archivo">
+                        {scan.total > 0 ? `${scan.done}/${scan.total}` : 'preparando...'}
+                        {scan.errors > 0 && ` · ${scan.errors} errores`}
+                      </span>
+                    </div>
+                    {scan.total > 0 && (
+                      <div className="w-full bg-grafito rounded-full h-2 overflow-hidden">
+                        <div
+                          className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    )}
+                    {scan.currentFile && scan.status === 'running' && (
+                      <p className="text-xs text-lavanda-archivo mt-2 truncate">
+                        Procesando: {scan.currentFile}
+                      </p>
+                    )}
+                    {scan.errorMessage && (
+                      <p className="text-xs text-red-400 mt-2">{scan.errorMessage}</p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ))
         )}

@@ -1,214 +1,276 @@
-# Pensadero — Instalación en PC nuevo
+# Pensadero — Instalación en NODO (PC nuevo)
 
-Guía paso a paso para dejar Pensadero operativo en una máquina Windows 11 limpia, incluyendo la búsqueda en lenguaje natural con LLM local. Pensado para el PC Locura (RTX 5070 Ti 16 GB) pero válido para cualquier equipo equivalente.
-
----
-
-## Resumen en 4 pasos
-
-1. Copiar la carpeta `pensadero/` al disco del PC nuevo.
-2. Instalar Ollama y descargar `qwen2.5:14b-instruct`.
-3. Doble click en `Pensadero_Install.bat` (la primera vez).
-4. Doble click en `Pensadero_Start.bat`.
-
-A partir de ahí: arrancar siempre con `Pensadero_Start.bat`. Tiempo total primera vez: ~10 minutos (sin contar la descarga del modelo Ollama).
+Guía paso a paso para dejar Pensadero operativo en una máquina Windows 11 limpia,
+con búsqueda en lenguaje natural por LLM local y escaneo visual integrado.
+Pensado para NODO (Ryzen 7 9800X3D + RTX 5070 Ti 16 GB) pero válido para
+cualquier equipo equivalente con NVIDIA CUDA.
 
 ---
 
-## 1. Requisitos previos
+## Resumen en 6 pasos
+
+1. Clonar el repo en `C:\DEV\pensadero\`.
+2. Instalar Node.js 20+ (https://nodejs.org/).
+3. Instalar Ollama (https://ollama.com).
+4. Descargar los modelos: `qwen2.5:14b-instruct` y `qwen2.5vl:7b`.
+5. Doble click en `Pensadero_Install.bat` (la primera vez).
+6. Doble click en `Pensadero_Start.bat` para arrancar.
+
+A partir de ahí: siempre `Pensadero_Start.bat`. Tiempo total primera vez:
+~15-20 minutos (sin contar la descarga de modelos Ollama, que son ~15 GB
+combinados).
+
+---
+
+## 1. Requisitos
 
 ### Lo que SÍ necesita la máquina
 
 - **Windows 10/11.**
-- **Ollama** instalado (https://ollama.com/download). Tras instalarlo, queda como servicio en segundo plano escuchando en `localhost:11434`.
-- **Modelo `qwen2.5:14b-instruct`** descargado. ~9 GB en disco, cabe entero en VRAM de 16 GB.
-- **Letras de unidad fijas** para los discos externos donde estén las bibliotecas (K:, Y:, etc.). Si en el PC nuevo se mapean con otras letras, hay que reasignarlas en *Administración de discos* o se rompen las rutas de `scan_paths.json`.
+- **Node.js 20+** instalado. El bat detecta automáticamente si está en el PATH del sistema.
+- **Ollama** corriendo como servicio en `localhost:11434`.
+- **Modelos Ollama**:
+  - `qwen2.5:14b-instruct` (~9 GB) — LLM multilingüe para extracción de intent y re-ranking semántico.
+  - `qwen2.5vl:7b` (~6 GB) — VLM multimodal para describir imágenes (escaneo visual).
+- **Letras de unidad fijas** para discos externos donde estén tus bibliotecas
+  (Administración de discos → Cambiar letra y rutas) si los vas a indexar.
 
-### Lo que NO necesita la máquina
+### Lo que NO necesita
 
-- **Node.js no hace falta instalarlo aparte.** Pensadero trae su propio Node portable en `tools/node/` (ver `Pensadero_Install.bat`). Ese Node se usa para todo: `npm install`, build del frontend, arranque del backend.
-- **Sin librerías de Python ni dependencias del sistema.** El reconocimiento facial y de espacios lo hace Marina Video Batch en otra máquina/proceso. Pensadero solo *lee* los sidecar JSON resultantes.
-
----
-
-## 2. Copiar el proyecto
-
-Ruta sugerida en el PC nuevo:
-
-```
-D:\projects\Personal\pensadero\
-```
-
-Copiar **toda** la carpeta excepto:
-
-- `node_modules/` (raíz y `backend/node_modules/`) — se regeneran solos.
-- `dist/` — se reconstruye en el primer arranque.
-
-Si por velocidad quieres copiarlos también, no pasa nada; el `.bat` los detectará y los reutilizará.
+- **Python** ni dependencias del sistema.
+- **Configuración manual de rutas o env vars**: Pensadero arranca con valores por defecto sensatos.
 
 ---
 
-## 3. Ollama y el modelo de IA
+## 2. Clonar el repo
 
-Una vez instalado Ollama, abrir una terminal:
-
+```powershell
+cd C:\DEV
+git clone https://github.com/larabiatendra-prog/nodo-pensadero.git pensadero
+cd pensadero
 ```
+
+Si todavía no tienes Git, instálalo desde https://git-scm.com/ y usa
+GitHub Desktop o GitHub CLI con la cuenta `larabiatendra-prog`.
+
+---
+
+## 3. Ollama y modelos
+
+Tras instalar Ollama, abrir terminal y descargar los dos modelos:
+
+```powershell
 ollama pull qwen2.5:14b-instruct
+ollama pull qwen2.5vl:7b
 ```
 
-Verificar:
+Verificación:
 
-```
+```powershell
 ollama list
 ```
 
-Debe aparecer la línea con `qwen2.5:14b-instruct` y tamaño ~9 GB.
+Deben aparecer ambos. Tamaños aproximados: 9 GB y 6 GB.
 
-> Si en algún momento se quiere ir más rápido a costa de calidad: `ollama pull qwen2.5:7b-instruct` y cambiar `OLLAMA_MODEL` en `backend/.env`. El stack tolera cualquiera de los dos.
+> **Más adelante puedes cambiar los modelos** vía `backend/.env` editando
+> `OLLAMA_MODEL` (LLM de búsqueda) o `VLM_MODEL` (VLM de escaneo). Cualquier
+> modelo compatible con Ollama vale. Para equipos con menos VRAM,
+> alternativas: `qwen2.5:7b-instruct` y mantener `qwen2.5vl:7b`.
 
 ---
 
-## 4. Configuración (`.env`)
+## 4. Configuración por defecto (no hace falta tocar nada)
 
-Las dos `.env` del repo ya vienen rellenadas con valores válidos para arrancar en local. Solo se tocan si:
+Si **no** creas un `backend/.env`, Pensadero arranca con estos defaults:
 
-### `pensadero/.env` (frontend)
+| Variable | Valor por defecto |
+|---|---|
+| `PORT` | `5000` |
+| `OLLAMA_HOST` | `http://localhost:11434` |
+| `OLLAMA_MODEL` | `qwen2.5:14b-instruct` |
+| `VLM_MODEL` | `qwen2.5vl:7b` |
+| `PERSONS_REGISTRY` | `backend/data/people_registry.json` (se crea al guardar primera persona) |
+| `PERSONS_AVATARS_BASE` | `backend/data/` (fotos de personas en `backend/data/people/<id>/`) |
+| `AI_RERANK_ENABLED` | `true` (Stage 2 con LLM activado) |
+| `AI_RERANK_MIN_PRIMARY` | `5` (umbral para activar Stage 2) |
 
-```
-VITE_API_URL=http://localhost:5000
-VITE_WS_URL=ws://localhost:5000/ws
-```
-
-Dejar como está salvo que se cambie el puerto del backend.
-
-### `pensadero/backend/.env` (backend)
-
-```
-PORT=5000
-CONTENT_DIR=
-SERVER_URL=http://localhost:5000
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:14b-instruct
-
-PERSONS_REGISTRY=
-PERSONS_AVATARS_BASE=
-```
-
-Variables a revisar en el PC nuevo:
-
-- `PERSONS_REGISTRY` — ruta absoluta al `people_registry.json` que genera Marina Video Batch. Si está vacío, la búsqueda funciona pero las caras aparecen sin nombre/avatar. Ejemplo: `D:\projects\Personal\pensadero\data\people_registry.json`.
-- `CONTENT_DIR` — solo se usa como fallback si `scan_paths.json` está vacío. Lo normal es dejarlo vacío y añadir las rutas desde la UI.
+Si quieres ajustar algo, copia `backend/.env.example` a `backend/.env` y modifica.
 
 ---
 
 ## 5. Primer arranque
 
-Doble click en `Pensadero_Install.bat`.
+Doble click en `Pensadero_Install.bat`. Hace:
 
-Hace lo siguiente:
-
-1. Verifica Node portable en `tools/node/`.
-2. `npm install` en la raíz (frontend).
-3. `npm install` en `backend/` (backend).
+1. Detecta Node (portable en `tools/node/` o del sistema).
+2. `npm install` en raíz (frontend).
+3. `npm install` en `backend/`.
 4. `npm run build` (genera `dist/`).
 
-Tarda 3–5 minutos. Si falla, lee el error en la consola; suelen ser problemas de permisos o de antivirus bloqueando archivos en `node_modules`.
+Tarda 3-5 minutos. Si falla: probablemente antivirus bloqueando archivos en
+`node_modules`. Excluye la carpeta `pensadero/` en Windows Defender.
 
 Cuando termine, doble click en `Pensadero_Start.bat`:
 
-- Levanta backend en `http://localhost:5000`.
-- Levanta frontend (Vite preview) en `http://localhost:5173`.
+- Backend en `http://localhost:5000`.
+- Frontend (Vite preview) en `http://localhost:5173`.
 - Abre el navegador automáticamente.
 
-Para detener todo: cerrar la ventana negra principal titulada "Pensadero".
+Para detener todo: cerrar la ventana negra titulada "Pensadero".
 
 ---
 
-## 6. Añadir bibliotecas
+## 6. Primer uso
 
-Desde la UI, pestaña **Rutas**. Añadir las carpetas que se quieran indexar, por ejemplo:
+### a) Añadir rutas a indexar
 
-```
-K:\Fotos
-Y:\Brutos
-D:\Proyectos
-```
+UI → menú "..." (arriba derecha) → **Administrar Rutas** → "Añadir Nueva Ruta".
 
-El primer escaneo de cada ruta tarda en función del número de archivos. La barra de progreso usa el WebSocket en `:5000/ws`, no hay que recargar la página.
+Ejemplos:
+- `C:\Biblioteca Proyectos\` (proyectos editables)
+- `E:\Biblioteca Brutos\` (LaCie 10 TB con material)
+- `K:\Fotos personales\`
+
+Cada ruta se indexa al añadirla. Aparecen los archivos en la grid principal.
+
+### b) Escanear con IA (generar metadata visual)
+
+En la misma vista "Administrar Rutas", al lado del botón de sincronizar, el
+botón ✨ (Sparkles) lanza el escaneo visual: el VLM describe cada imagen,
+extrae composición, framing, objetos, expresiones, OCR, colores dominantes.
+
+Genera `_pensadero.json` en cada carpeta procesada. Pensadero lo consume
+automáticamente al terminar.
+
+Tiempo aproximado: 2-4 segundos por imagen en RTX 5070 Ti (NODO). El proceso
+es idempotente: si vuelves a pulsar, salta las que ya tengan metadata.
+
+> **Importante**: el escaneo no toca los archivos originales. Solo escribe
+> un `_pensadero.json` con la metadata. Si no quieres ese archivo en una
+> carpeta concreta, simplemente bórralo.
+
+### c) Registrar personas
+
+UI → menú "..." → **Personas** → "Añadir persona".
+
+Crea entradas con:
+- `person_id` (interno, alfanumérico): ej. `ester`, `carlos99`, `sara_g`.
+- Nombre a mostrar: ej. "Ester García".
+- Aliases (opcional): "Ester, Esti".
+
+Sube fotos de referencia (5-10 por persona, distintos ángulos). La primera
+foto se marca como avatar automáticamente.
+
+Las personas aparecen en las búsquedas en lenguaje natural ("fotos de Ester
+en el cumpleaños") porque el LLM sabe qué `person_id` mapean al nombre.
+
+> **Próximamente**: detección automática de caras al escanear (InsightFace
+> u otro modelo de embeddings faciales). Por ahora las personas se
+> reconocen por mención manual o por lo que el VLM detecte en la
+> descripción visual.
+
+### d) Búsqueda en lenguaje natural
+
+En la barra de búsqueda, cambia a modo "natural". Escribe consultas como:
+
+- "fotos del viaje a Pirineos con amigos"
+- "atardecer en la playa"
+- "cumpleaños de Ester con tarta"
+- "concierto de música en Valencia"
+
+El sistema usa dos etapas:
+- **Stage 1**: matching literal con scoring sobre tags, descripciones, fechas.
+- **Stage 2** (cuando Stage 1 da pocos resultados): el LLM razona sobre las
+  descripciones visuales y clasifica los candidatos en "claros" y "menos
+  probables". El resultado se divide visualmente en dos tramos.
 
 ---
 
-## 7. Migrar datos del PC anterior (opcional)
+## 7. Salud del sistema
 
-Si quieres conservar favoritos, colecciones y miniaturas del PC viejo, **antes del primer arranque** copia estos archivos sobre los del PC nuevo:
-
-| Archivo | Qué guarda |
-|---|---|
-| `backend/favorites_persistent.json` | IDs de favoritos |
-| `backend/collections_persistent.json` | Colecciones manuales y orden |
-| `backend/scan_paths.json` | Rutas de bibliotecas (solo si las letras de unidad coinciden) |
-| `backend/media_cache.json` | Cache de metadatos (acelera el primer arranque) |
-| `backend/thumbnails/` | Miniaturas ya generadas |
-
-Si las letras de unidad **no coinciden**, no copies `scan_paths.json` ni `media_cache.json`: añade las rutas desde la UI y deja que Pensadero reconstruya la cache. Es más limpio que perseguir paths rotos.
-
----
-
-## 8. Acceso directo en el escritorio
-
-Click derecho sobre `Pensadero_Start.bat` → **Crear acceso directo** → mover el `.lnk` al escritorio. Renombrarlo a "Pensadero". Cambiar icono opcionalmente con `Pensadero-Logo.png` (convertir a `.ico` si Windows lo pide).
-
----
-
-## 9. Comprobación rápida de salud
-
-Con Pensadero arrancado, en una terminal PowerShell:
+Con Pensadero arrancado, en una terminal:
 
 ```powershell
 Invoke-RestMethod -Uri "http://localhost:5000/api/ai/health" -Method GET
+Invoke-RestMethod -Uri "http://localhost:5000/api/scan/health" -Method GET
 ```
 
-Resultado esperado:
-
+Esperas:
 ```
-ollamaRunning: True
-modelAvailable: True
-model: qwen2.5:14b-instruct
+ollamaRunning : True
+modelAvailable : True
+model : qwen2.5:14b-instruct  (o qwen2.5vl:7b para scan)
 ```
 
-Si `ollamaRunning: False` → arranca Ollama (`ollama serve` o reinicia el servicio de Windows).
-Si `modelAvailable: False` → falta el `ollama pull qwen2.5:14b-instruct`.
+Si `ollamaRunning: False` → arranca Ollama o reinicia su servicio.
+Si `modelAvailable: False` → falta el `ollama pull <modelo>`.
 
 ---
 
-## Resolución de problemas
+## 8. Migrar datos del Dell (opcional)
+
+Si quieres conservar lo que tenías en el entorno de pruebas del Dell:
+
+| Archivo | Qué guarda | Conservar? |
+|---|---|---|
+| `backend/favorites_persistent.json` | Favoritos | Sólo si quieres |
+| `backend/collections_persistent.json` | Colecciones manuales | Sólo si quieres |
+| `backend/scan_paths.json` | Rutas escaneadas | **NO** (las letras de unidad cambian) |
+| `backend/media_cache.json` | Cache de metadatos | **NO** (se reconstruye) |
+| `backend/thumbnails/` | Miniaturas | **NO** (se regeneran) |
+| `backend/data/people_registry.json` | Personas | **Sí** si tienes registry de pruebas |
+| `backend/data/people/<id>/*.jpg` | Fotos de referencia | **Sí** junto con el registry |
+
+Las cosas marcadas "NO" se reconstruyen desde cero al escanear las rutas
+del nuevo equipo. Es más limpio.
+
+---
+
+## 9. Acceso directo en el escritorio
+
+Click derecho sobre `Pensadero_Start.bat` → **Crear acceso directo** → mueve
+el `.lnk` al escritorio. Renómbralo "Pensadero".
+
+Para el icono: `Pensadero-Logo.png` convertido a `.ico`.
+
+---
+
+## 10. Resolución de problemas frecuentes
 
 | Síntoma | Causa probable | Solución |
 |---|---|---|
-| El navegador abre `:5173` y no carga nada | El frontend aún está construyendo o backend no responde | Espera 10 s y refresca. Si persiste, mira la ventana del backend |
-| Búsqueda natural devuelve 503 | Ollama no corre o falta el modelo | `ollama list` y comprobar que está `qwen2.5:14b-instruct` |
-| Escaneo no encuentra archivos | Letra de unidad cambió | Reasignar letras en *Administración de discos* o reañadir rutas desde la UI |
-| Primera consulta IA tarda >20 s | Cold start del modelo (normal) | Las siguientes son rápidas. Si quieres tenerlo siempre caliente, lanza una query al arrancar |
-| `npm install` falla con `EPERM` | Antivirus bloqueando | Excluir la carpeta `pensadero/` en Windows Defender |
-| Puerto 5000 o 5173 ocupado | Otra app está usándolo | Cerrar la app o cambiar `PORT` en `backend/.env` y `VITE_API_URL` en `.env` |
+| El navegador abre `:5173` y no carga nada | El frontend aún construye o backend no responde | Espera 10 s y refresca |
+| Búsqueda natural devuelve 503 | Ollama no corre o falta el modelo LLM | `ollama list` y `ollama pull qwen2.5:14b-instruct` |
+| Botón ✨ deshabilitado en Rutas | Falta Ollama o `qwen2.5vl:7b` | `ollama pull qwen2.5vl:7b` |
+| Escaneo IA tarda mucho | Cold-start del modelo (normal en la 1ª imagen) | Las siguientes son rápidas |
+| Escaneo IA falla con timeout | Imagen muy grande o modelo lento | Reduce el modelo en `.env`, o procesa en lotes pequeños |
+| `npm install` falla con `EPERM` | Antivirus bloqueando | Excluye carpeta `pensadero/` en Defender |
+| Puerto 5000 o 5173 ocupado | Otra app usándolo | Cierra la app o cambia `PORT` en `backend/.env` |
+| Las fotos de personas no se ven | Falta `backend/data/people/<id>/` | El backend lo crea al subir la primera foto |
 
 ---
 
-## Estructura mental
+## 11. Estructura del proyecto
 
 ```
 pensadero/
-├── tools/node/          → Node.js portable (no tocar)
-├── backend/             → API Node + Express, datos persistentes
-├── src/                 → Frontend React+TS
-├── dist/                → Build de produccion (regenerable)
-├── .env                 → Config frontend
-├── backend/.env         → Config backend (puerto, Ollama, registry)
-├── Pensadero_Install.bat
-└── Pensadero_Start.bat  → Doble click aquí siempre
+├── tools/node/             → Node portable (opcional, fallback)
+├── backend/                → API Node + Express + Ollama
+│   ├── data/               → Registry de personas + avatares (NO se versiona)
+│   ├── services/           → Orquestador de escaneo
+│   ├── routes/             → Endpoints REST
+│   └── *.js                → Servicios (visual scan, ai search, etc.)
+├── src/                    → Frontend React + TS + Tailwind
+│   └── components/         → UI (PathManager, PersonsManager, SearchBar...)
+├── dist/                   → Build de producción (regenerable)
+├── .env                    → Frontend config (opcional)
+├── backend/.env            → Backend config (opcional)
+├── Pensadero_Install.bat   → Primera vez
+└── Pensadero_Start.bat     → Doble click siempre
 ```
 
-Persistencia local en `backend/`: nada se sube a la nube, nada se versiona en git.
+Persistencia local en `backend/` y `backend/data/`. Nada va a la nube. Nada
+se versiona en git (todos los archivos sensibles están en `.gitignore`).
 
 ---
 
@@ -216,4 +278,5 @@ Persistencia local en `backend/`: nada se sube a la nube, nada se versiona en gi
 
 | Fecha | Descripción |
 |---|---|
-| 2026-05-06 | Documento creado tras verificar circuito completo de IA en local con `qwen2.5:14b-instruct` |
+| 2026-05-06 | Versión inicial con LLM local (qwen2.5:14b) |
+| 2026-05-15 | NODO Visión B: añadido escaneo visual integrado (qwen2.5vl:7b), gestión de personas con UI, Stage 2 re-ranking semántico, defaults out-of-the-box sin configuración manual |

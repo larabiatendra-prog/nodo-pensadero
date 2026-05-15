@@ -483,6 +483,92 @@ class ApiService {
       throw error;
     }
   }
+
+  // ============================================
+  // ESCANEO VISUAL CON VLM (NODO Visión B)
+  // ============================================
+
+  async scanHealth() {
+    return this.fetchWithErrorHandling<ApiResponse<{ ollamaRunning: boolean; modelAvailable: boolean; model: string; error?: string }>>(`${API_BASE_URL}/scan/health`);
+  }
+
+  async startScan(path: string, force: boolean = false) {
+    return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/scan/start`, {
+      method: 'POST',
+      body: JSON.stringify({ path, force }),
+    });
+  }
+
+  async listScanJobs() {
+    return this.fetchWithErrorHandling<ApiResponse<any[]>>(`${API_BASE_URL}/scan/jobs`);
+  }
+
+  async scanStatus(jobId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan/status/${jobId}`);
+  }
+
+  async cancelScan(jobId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan/cancel/${jobId}`, {
+      method: 'POST',
+    });
+  }
+
+  // ============================================
+  // GESTIÓN DE PERSONAS (registry CRUD + fotos)
+  // ============================================
+
+  async listPersonsRegistry() {
+    return this.fetchWithErrorHandling<ApiResponse<any[]>>(`${API_BASE_URL}/persons/registry`);
+  }
+
+  async upsertPerson(person: { person_id: string; display_name?: string; aliases?: string[]; avatar_path?: string }) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry`, {
+      method: 'POST',
+      body: JSON.stringify(person),
+    });
+  }
+
+  async deletePerson(personId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listPersonPhotos(personId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ filename: string; url: string }[]>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/photos`);
+  }
+
+  /**
+   * Sube una foto de referencia para una persona. El backend devuelve el
+   * filename asignado y la URL pública.
+   */
+  async uploadPersonPhoto(personId: string, file: File) {
+    const formData = new FormData();
+    formData.append('photo', file);
+    const response = await fetch(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/photos`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try { const j = await response.json(); if (j.error) errMsg = j.error; } catch {}
+      throw new Error(errMsg);
+    }
+    return response.json();
+  }
+
+  async deletePersonPhoto(personId: string, filename: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/photos/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async setPersonAvatar(personId: string, filename: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/avatar`, {
+      method: 'POST',
+      body: JSON.stringify({ filename }),
+    });
+  }
 }
 
 // Tipos para Image Search

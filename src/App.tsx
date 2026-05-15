@@ -24,6 +24,7 @@ import ProgressBar from './components/ProgressBar';
 import PersonBubbles from './components/PersonBubbles';
 import PathManager from './components/PathManager';
 import TagManager from './components/TagManager';
+import PersonsManager from './components/PersonsManager';
 
 import { CollectionsCarousel } from './components/CollectionsCarousel';
 import { CoverImageSelector } from './components/CoverImageSelector';
@@ -2307,6 +2308,9 @@ function App() {
               </div>
             );
           }
+
+        case 'persons':
+          return <PersonsManager onBack={() => setActiveView('home')} />;
 
         case 'paths':
           // Single-user: PathManager siempre disponible

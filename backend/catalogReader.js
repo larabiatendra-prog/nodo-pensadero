@@ -10,8 +10,9 @@
  *   3. entrada en catálogo `_marina.json`/`_pensadero.json`
  *
  *  Catálogo por carpeta: `_marina.json` o `_pensadero.json` con
- *     estructura `{ clips: { <basename>: {...} } }`. El orden de búsqueda
- *     es `_marina.json` primero, luego `_pensadero.json`.
+ *     estructura `{ clips | photos | audios: { <basename>: {...} } }`. El
+ *     orden de búsqueda es `_marina.json` primero, luego `_pensadero.json`.
+ *     La clave de envoltorio depende del tipo de media; el primer match gana.
  *  2. Sidecar individual por archivo: `<archivo.ext>.json` o `<archivo>.json`
  *     junto al archivo. Mismo schema (puede ser un clip directo sin envoltorio
  *     `{clips: {...}}`, en cuyo caso se trata como tal).
@@ -311,8 +312,12 @@ function mergeClipIntoFile(fileData, clip, catalog) {
       newTags.push(clip.composition.people_framing.trim());
     }
   }
-  if (clip.demographics && typeof clip.demographics.attire === 'string' && clip.demographics.attire.trim()) {
-    newTags.push(clip.demographics.attire.trim());
+  if (clip.demographics) {
+    newTags.push(...toTagStrings(clip.demographics.age_ranges));
+    newTags.push(...toTagStrings(clip.demographics.genders));
+    if (typeof clip.demographics.attire === 'string' && clip.demographics.attire.trim()) {
+      newTags.push(clip.demographics.attire.trim());
+    }
   }
 
   const baseTags = Array.isArray(fileData.tags) ? fileData.tags : [];
@@ -414,11 +419,20 @@ async function applyCatalog(fileData) {
   }
 
   // 3) Catálogo por carpeta como fallback general.
+  // Soporta tanto `clips` (vídeo) como `photos` (foto) como `audios`. El primero
+  // que exista gana; no se mergean. Permite que el mismo formato `_marina.json`
+  // sirva para distintos tipos de media sin duplicar el contrato.
   const catalog = await getCatalogForDir(dir);
-  if (catalog && catalog.clips && typeof catalog.clips === 'object') {
-    const clip = catalog.clips[basename];
-    if (clip) {
-      return mergeClipIntoFile(fileData, clip, catalog);
+  if (catalog) {
+    const entries = (catalog.clips && typeof catalog.clips === 'object') ? catalog.clips
+                  : (catalog.photos && typeof catalog.photos === 'object') ? catalog.photos
+                  : (catalog.audios && typeof catalog.audios === 'object') ? catalog.audios
+                  : null;
+    if (entries) {
+      const clip = entries[basename];
+      if (clip) {
+        return mergeClipIntoFile(fileData, clip, catalog);
+      }
     }
   }
 

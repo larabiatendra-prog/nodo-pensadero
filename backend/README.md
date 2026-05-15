@@ -57,8 +57,10 @@ El backend lee opcionalmente metadatos enriquecidos de la herramienta
 externa **Marina Video Batch personal**. Soporta dos formatos:
 
 1. **Catálogo por carpeta**: `_marina.json` o `_pensadero.json` con
-   estructura `{ clips: { <basename>: {...} } }`. Si están los dos en la
-   misma carpeta, gana `_marina.json`.
+   estructura `{ clips | photos | audios: { <basename>: {...} } }`. La
+   clave de envoltorio depende del tipo de media; el primer match gana
+   sin merge. Si están los dos archivos en la misma carpeta, prevalece
+   `_marina.json`.
 2. **Sidecar individual** junto al archivo: `<archivo.ext>.json` o
    `<archivo>.json`. Mismo schema (puede ser un clip directo sin envoltorio
    `{ clips: {...} }`, en cuyo caso se trata como tal).
@@ -125,6 +127,8 @@ clip físico se busca en `catalog.clips` por su **basename** exacto.
 | `semantics.objects + actions + expressions`            | concatenado a `tags[]`      |
 | `composition.shot_type`                                | `tags[]` y `composition`    |
 | `composition.people_framing`                           | `tags[]` y `composition`    |
+| `demographics.age_ranges[]`                            | `tags[]` y `demographics`   |
+| `demographics.genders[]`                               | `tags[]` y `demographics`   |
 | `demographics.attire`                                  | `tags[]` y `demographics`   |
 | `semantics.text[]`                                     | `ocr_text` (string)         |
 | `semantics.dominant_colors[]`                          | `dominant_colors[]` (+ `dominant_color` legacy con el primero) |

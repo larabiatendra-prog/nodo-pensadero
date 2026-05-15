@@ -28,6 +28,12 @@ interface MediaGridProps {
   selectedFiles?: Set<string>; // IDs of selected files
   isAdmin?: boolean; // Whether the current user is admin
   updatingFavs?: boolean
+  // Búsqueda natural: índice (dentro del array `files`) a partir del cual los
+  // resultados son "menos probables". Si está definido y > 0 y < files.length,
+  // se inserta un separador visual entre los dos tramos y los items del segundo
+  // tramo se renderizan con menor opacidad. Si no se pasa o es 0, se comporta
+  // como una grid normal.
+  secondaryStartIndex?: number;
 }
 
 export default function MediaGrid({
@@ -48,8 +54,15 @@ export default function MediaGrid({
   onShowMoreGroup,
   onSelectSessionFiles,
   isAdmin = false,
-  updatingFavs = false
+  updatingFavs = false,
+  secondaryStartIndex
 }: MediaGridProps) {
+  // Determina si hay split en dos tramos (primary / secondary).
+  const hasTwoTiers = typeof secondaryStartIndex === 'number'
+    && secondaryStartIndex > 0
+    && secondaryStartIndex < files.length;
+  const primaryFiles = hasTwoTiers ? files.slice(0, secondaryStartIndex) : files;
+  const secondaryFiles = hasTwoTiers ? files.slice(secondaryStartIndex) : [];
   const formatFileSize = (bytes: number) => {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     if (bytes === 0) return '0 Bytes';
@@ -95,13 +108,15 @@ export default function MediaGrid({
   };
 
   // Renderiza una tarjeta de archivo individual (reutilizada en modo normal y modo sesiones)
-  const renderFileCard = (file: MediaFile) => (
+  // isSecondary: si es un resultado del tramo "menos probables", se atenúa con
+  // opacity-60 y vuelve a opacity-100 al pasar el ratón.
+  const renderFileCard = (file: MediaFile, isSecondary: boolean = false) => (
     <div
       key={file.id}
       data-file-id={file.id}
       className={`bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group cursor-pointer relative mb-3 md:mb-6 ${
-        selectedFiles.has(file.id) ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : ''
-      }`}
+        isSecondary ? 'opacity-60 hover:opacity-100' : ''
+      } ${selectedFiles.has(file.id) ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : ''}`}
       onClick={(e) => onFileClick(file, e)}
     >
       <div className="relative bg-slate-900 overflow-hidden"
@@ -239,10 +254,21 @@ export default function MediaGrid({
               </tr>
             </thead>
             <tbody>
-              {files.map((file) => (
+              {files.map((file, idx) => {
+                const isSecondary = hasTwoTiers && idx >= (secondaryStartIndex as number);
+                const isFirstSecondary = hasTwoTiers && idx === secondaryStartIndex;
+                const totalCols = isSelectionMode ? 7 : 6;
+                return (
+                  <React.Fragment key={file.id}>
+                    {isFirstSecondary && (
+                      <tr className="bg-grafito">
+                        <td colSpan={totalCols} className="py-3 px-4 text-center text-niebla text-xs uppercase tracking-widest font-medium border-t border-b border-pizarra">
+                          Resultados menos probables · {files.length - (secondaryStartIndex as number)}
+                        </td>
+                      </tr>
+                    )}
                 <tr
-                  key={file.id}
-                  className={`border-b hover:bg-pizarra transition-colors cursor-pointer ${selectedFiles.has(file.id) ? 'bg-grafito border-lavanda' : ''
+                  className={`border-b hover:bg-pizarra transition-colors cursor-pointer ${isSecondary ? 'opacity-60 hover:opacity-100' : ''} ${selectedFiles.has(file.id) ? 'bg-grafito border-lavanda' : ''
                     }`}
                   onClick={(e) => onFileClick(file, e)}
                 >
@@ -378,7 +404,9 @@ export default function MediaGrid({
                     </div>
                   </td>
                 </tr>
-              ))}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -394,196 +422,47 @@ export default function MediaGrid({
     500: 1
   };
 
+  // Caso normal (sin dos tramos): un solo Masonry con todos los archivos.
+  if (!hasTwoTiers) {
+    return (
+      <Masonry
+        breakpointCols={breakpointColumnsObj}
+        className="flex w-auto"
+        columnClassName="bg-clip-padding px-1.5 md:px-3"
+      >
+        {files.map((file) => renderFileCard(file))}
+      </Masonry>
+    );
+  }
+
+  // Caso dos tramos (búsqueda natural): primer Masonry con los resultados
+  // claros, separador visual, segundo Masonry con los menos probables
+  // (atenuados). Cada Masonry recalcula sus columnas de forma independiente.
   return (
-    <Masonry
-      breakpointCols={breakpointColumnsObj}
-      className="flex w-auto"
-      columnClassName="bg-clip-padding px-1.5 md:px-3"
-    >
-      {files.map((file) => (
-        <div
-          key={file.id}
-          data-file-id={file.id}
-          className={`bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group cursor-pointer relative mb-3 md:mb-6 ${selectedFiles.has(file.id) ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : ''
-            }`}
-          onClick={(e) => onFileClick(file, e)}
-        >
-          {/* Miniatura con altura automática basada en relación de aspecto */}
-          <div className="relative bg-slate-900 overflow-hidden"
-            style={{
-              aspectRatio: file.dimensions
-                ? `${file.dimensions.width}/${file.dimensions.height}`
-                : '16/9'
-            }}>
-            {file.type === 'video' ? (
-              <VideoThumbnail
-                video={convertToVideoItem(file)}
-                className="w-full h-full"
-              />
-            ) : (
-              <img
-                src={file.thumbnail}
-                alt={file.name}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                onLoad={() => {
-                  console.log('Thumbnail cargada exitosamente para:', file.name);
-                }}
-                onError={(e) => {
-                  console.error('Error cargando thumbnail para:', file.name, file.thumbnail);
-                  e.currentTarget.src = `data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" fill="%23ef4444"/><circle cx="150" cy="80" r="25" fill="white"/><polygon points="140,70 140,90 170,80" fill="%23ef4444"/><text x="150" y="130" font-family="Arial" font-size="12" fill="white" text-anchor="middle" font-weight="bold">IMAGE</text><text x="150" y="150" font-family="Arial" font-size="10" fill="white" text-anchor="middle">${file.name.substring(0, 20)}...</text></svg>`;
-                }}
-              />
-            )}
+    <>
+      <Masonry
+        breakpointCols={breakpointColumnsObj}
+        className="flex w-auto"
+        columnClassName="bg-clip-padding px-1.5 md:px-3"
+      >
+        {primaryFiles.map((file) => renderFileCard(file))}
+      </Masonry>
 
-            {/* Overlay oscuro para mejorar legibilidad del texto */}
-            <div className="absolute inset-0 bg-noche bg-opacity-0 group-hover:bg-opacity-40 transition-all duration-300"></div>
+      <div className="my-8 px-3 flex items-center gap-4">
+        <div className="flex-1 h-px bg-pizarra" />
+        <span className="text-niebla text-xs uppercase tracking-widest font-medium whitespace-nowrap">
+          Resultados menos probables · {secondaryFiles.length}
+        </span>
+        <div className="flex-1 h-px bg-pizarra" />
+      </div>
 
-            {/* Información visible solo en hover */}
-            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-all duration-300 p-3 md:p-4 flex flex-col justify-end text-white">
-              {/* Tags en el centro-inferior */}
-              {file.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1 mb-3">
-                  {file.tags.slice(0, 3).map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                  {file.tags.length > 3 && (
-                    <span className="text-xs text-lavanda-archivo font-medium">+{file.tags.length - 3}</span>
-                  )}
-                </div>
-              )}
-
-              {/* Título y información en la parte inferior */}
-              <div className="mb-3">
-                <h3 className="font-semibold text-white mb-2 line-clamp-2 text-shadow">{file.name}</h3>
-                <div className="flex items-center justify-between text-xs sm:text-sm text-white/90">
-                  <span>{formatFileSize(file.size)}</span>
-                  <span>{formatDate(file.createdAt)}</span>
-                </div>
-              </div>
-
-              {/* Botones de acción en la parte inferior */}
-              <div className="flex justify-end space-x-2">
-                {/* Botón de añadir a colección */}
-                {onAddToCollection && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAddToCollection(normalizePath(file.fullPath!));
-                    }}
-                    className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-lavanda/20 text-white hover:bg-lavanda/30"
-                    title="Añadir a colección"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                )}
-
-                {/* Botón de eliminar de colección */}
-                {onRemoveFromCollection && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemoveFromCollection(normalizePath(file.fullPath!));
-                    }}
-                    className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-red-500/20 text-white hover:bg-red-500/30"
-                    title="Eliminar de colección"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-
-                {/* Botón de abrir ruta (solo para admins) */}
-                {isAdmin && onOpenPath && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenPath(file.id);
-                    }}
-                    className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-green-500/20 text-white hover:bg-green-500/30"
-                    title="Abrir ruta de archivo"
-                  >
-                    <FolderOpen className="w-4 h-4" />
-                  </button>
-                )}
-
-                {/* Botón de descarga */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDownload(file);
-                  }}
-                  disabled={downloadingFiles.has(file.id)}
-                  className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${downloadingFiles.has(file.id)
-                      ? 'bg-bruma/30 text-white cursor-not-allowed'
-                      : 'bg-bruma/20 text-white hover:bg-bruma/30'
-                    }`}
-                  title="Descargar archivo"
-                >
-                  {downloadingFiles.has(file.id) ? (
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <Download className="w-4 h-4" />
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {/* Elementos siempre visibles */}
-            {/* Duration badge */}
-            {file.duration && (
-              <div className="absolute bottom-2 right-2 bg-noche/75 text-white text-xs px-2 py-1 rounded backdrop-blur-sm">
-                {formatDuration(file.duration)}
-              </div>
-            )}
-
-            {/* Favorite button */}
-            
-            <button
-              disabled={updatingFavs}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleFavorite(file.id);
-              }}
-              className={`absolute top-2 right-2 p-2 rounded-full transition-all duration-200 backdrop-blur-sm ${file.isFavorite
-                  ? 'bg-lavanda/90 text-white'
-                  : 'bg-noche/30 text-white opacity-70 hover:opacity-100 hover:bg-noche/50'
-                } ${updatingFavs ? "cursor-not-allowed" : "cursor-pointer"}`}
-            >
-              {!updatingFavs ? <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} /> :
-                <svg width="10" height="10" fill="currentColor" className="mr-2 animate-spin" viewBox="0 0 1792 1792" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M526 1394q0 53-37.5 90.5t-90.5 37.5q-52 0-90-38t-38-90q0-53 37.5-90.5t90.5-37.5 90.5 37.5 37.5 90.5zm498 206q0 53-37.5 90.5t-90.5 37.5-90.5-37.5-37.5-90.5 37.5-90.5 90.5-37.5 90.5 37.5 37.5 90.5zm-704-704q0 53-37.5 90.5t-90.5 37.5-90.5-37.5-37.5-90.5 37.5-90.5 90.5-37.5 90.5 37.5 37.5 90.5zm1202 498q0 52-38 90t-90 38q-53 0-90.5-37.5t-37.5-90.5 37.5-90.5 90.5-37.5 90.5 37.5 37.5 90.5zm-964-996q0 66-47 113t-113 47-113-47-47-113 47-113 113-47 113 47 47 113zm1170 498q0 53-37.5 90.5t-90.5 37.5-90.5-37.5-37.5-90.5 37.5-90.5 90.5-37.5 90.5 37.5 37.5 90.5zm-640-704q0 80-56 136t-136 56-136-56-56-136 56-136 136-56 136 56 56 136zm530 206q0 93-66 158.5t-158 65.5q-93 0-158.5-65.5t-65.5-158.5q0-92 65.5-158t158.5-66q92 0 158 66t66 158z">
-                  </path>
-                </svg>}
-            </button>
-
-            {/* Checkbox de selección (solo visible en modo selección) */}
-            {isSelectionMode && (
-              <div className="absolute top-2 left-2 z-10">
-                <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all ${selectedFiles.has(file.id)
-                    ? 'bg-lavanda border-lavanda'
-                    : 'bg-tinta/90 border-white backdrop-blur-sm'
-                  }`}>
-                  {selectedFiles.has(file.id) && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Type badge */}
-            <div className={`absolute ${isSelectionMode ? 'top-10' : 'top-2'} left-2 px-2 py-1 rounded-full text-xs font-medium ${file.type === 'export' ? 'bg-bruma text-white' : 'bg-lavanda-claro text-marfil'
-              }`}>
-              {file.type === 'export' ? 'EXPORT' : file.type.toUpperCase()}
-            </div>
-          </div>
-        </div>
-      ))}
-    </Masonry>
+      <Masonry
+        breakpointCols={breakpointColumnsObj}
+        className="flex w-auto"
+        columnClassName="bg-clip-padding px-1.5 md:px-3"
+      >
+        {secondaryFiles.map((file) => renderFileCard(file, true))}
+      </Masonry>
+    </>
   );
 }

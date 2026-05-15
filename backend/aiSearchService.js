@@ -417,34 +417,63 @@ Output:`;
 
     results.sort((a, b) => b.score - a.score);
 
-    // === CORTE DE RELEVANCIA ===
+    // === CORTE DE RELEVANCIA EN DOS TRAMOS ===
     //
-    // Para búsqueda en lenguaje natural el filtro no es binario: se ordena
-    // por score y se devuelven los que superen un umbral relativo al mejor
-    // resultado, con un suelo absoluto para que no se cuelen archivos sin
-    // match real cuando todo el corpus puntúa bajo.
+    // Para búsqueda en lenguaje natural el resultado no es binario. Se
+    // separan los archivos en dos tramos según su score:
     //
-    // - RELEVANCE_RATIO: fracción del top score que un archivo debe alcanzar.
-    //   0.5 = "al menos la mitad de relevante que el mejor".
-    // - SCORE_FLOOR: puntuación mínima absoluta. 5 equivale aprox. a "al
-    //   menos un match real en algún campo" (un tag o un free_term en visual).
-    //   Sin esto, una query sin matches devolvería todo el corpus porque
-    //   el top sería también ~0.
+    //   PRIMARY:   score >= max(topScore * 0.5, 5)
+    //              → "resultados claros" — se muestran en primer plano.
     //
-    // Ajustar a 0.4 / 3 si parece conservador, o 0.6 / 8 si parece ruidoso.
-    const RELEVANCE_RATIO = 0.5;
-    const SCORE_FLOOR = 5;
+    //   SECONDARY: primaryCutoff > score >= max(topScore * 0.2, 2)
+    //              → "menos probables" — se muestran bajo un separador, en
+    //              segundo plano, para que el usuario pueda escanearlos
+    //              cuando los del primer tramo no le convencen.
+    //
+    //   DESCARTE:  score por debajo del secondaryCutoff. Pura ruido.
+    //
+    // Esto evita el "todo o nada": cuando una query es ambigua y nada
+    // matchea perfectamente, el sistema ya no se queda mudo — devuelve los
+    // candidatos razonables como sugerencias visiblemente separadas.
+    //
+    // Ratios y suelos están aislados como constantes. Bajar a 0.4/3 si la
+    // calibración real pide más laxo, subir a 0.6/8 si pide más estricto.
+    const PRIMARY_RATIO = 0.5;
+    const PRIMARY_FLOOR = 5;
+    const SECONDARY_RATIO = 0.2;
+    const SECONDARY_FLOOR = 2;
+    const SECONDARY_CAP = 50;
 
     const topScore = results[0]?.score ?? 0;
-    const cutoff = Math.max(topScore * RELEVANCE_RATIO, SCORE_FLOOR);
-    const filtered = results.filter(r => r.score >= cutoff);
+    const primaryCutoff = Math.max(topScore * PRIMARY_RATIO, PRIMARY_FLOOR);
+    const secondaryCutoff = Math.max(topScore * SECONDARY_RATIO, SECONDARY_FLOOR);
 
-    const out = filtered.slice(0, limit);
-    // Adjuntar diagnóstico en una propiedad oculta del array para que la
-    // capa de parseNaturalQuery pueda volcarlo al metadata sin alterar la
-    // forma del resultado iterable.
+    const primary = [];
+    const secondary = [];
+    for (const r of results) {
+      if (r.score >= primaryCutoff) {
+        primary.push({ ...r, tier: 'primary' });
+      } else if (r.score >= secondaryCutoff) {
+        secondary.push({ ...r, tier: 'secondary' });
+      }
+    }
+
+    const primaryOut = primary.slice(0, limit);
+    const remainingSlots = Math.max(0, limit - primaryOut.length);
+    const secondaryOut = secondary.slice(0, Math.min(SECONDARY_CAP, remainingSlots));
+
+    const out = [...primaryOut, ...secondaryOut];
+    // Diagnóstico en propiedad no enumerable para que parseNaturalQuery
+    // pueda volcarlo al metadata sin alterar la forma del array iterable.
     Object.defineProperty(out, '__relevance', {
-      value: { topScore, cutoff, totalCandidates: results.length, totalPassed: filtered.length },
+      value: {
+        topScore,
+        primaryCutoff,
+        secondaryCutoff,
+        primaryCount: primaryOut.length,
+        secondaryCount: secondaryOut.length,
+        totalCandidates: results.length,
+      },
       enumerable: false,
     });
     return out;
@@ -474,11 +503,13 @@ Output:`;
         totalScanned: mediaFiles.length,
         peopleHintsCount: Array.isArray(peopleHints) ? peopleHints.length : 0,
         // Diagnóstico de relevancia: útil para calibrar umbrales y para que
-        // el frontend pueda mostrar score % por resultado si quiere.
+        // el frontend sepa dónde poner el separador entre primary y secondary.
         topScore: relevance?.topScore ?? 0,
-        cutoff: relevance?.cutoff ?? 0,
+        primaryCutoff: relevance?.primaryCutoff ?? 0,
+        secondaryCutoff: relevance?.secondaryCutoff ?? 0,
+        primaryCount: relevance?.primaryCount ?? 0,
+        secondaryCount: relevance?.secondaryCount ?? 0,
         totalCandidates: relevance?.totalCandidates ?? 0,
-        totalPassed: relevance?.totalPassed ?? 0,
       }
     };
   }

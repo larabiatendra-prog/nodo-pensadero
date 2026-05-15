@@ -39,9 +39,12 @@ interface SearchBarProps {
   includedTags?: string[]; // Etiquetas incluidas desde el componente padre
   excludedTags?: string[]; // Etiquetas excluidas desde el componente padre
   onTagsChange?: (tags: { included: string[]; excluded: string[] }) => void; // Callback cuando cambian las etiquetas
-  // Modo Natural: el padre recibe los fileIds ordenados por score y el intent extraído.
+  // Modo Natural: el padre recibe los fileIds ordenados por score, el intent
+  // extraído y cuántos de esos IDs pertenecen al tramo "resultados claros"
+  // (los primeros N del array). El resto del array son resultados "menos
+  // probables" que se mostrarán bajo un separador en la UI.
   // Si fileIds === null, se borra el filtro natural y se vuelve al flujo normal.
-  onNaturalSearch?: (fileIds: string[] | null, intent: NaturalIntent | null) => void;
+  onNaturalSearch?: (fileIds: string[] | null, intent: NaturalIntent | null, primaryCount?: number) => void;
 }
 
 type SearchMode = 'tags' | 'natural';
@@ -184,8 +187,14 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       }
 
       const fileIds = Array.isArray(json.results) ? json.results.map((r: any) => r.fileId) : [];
+      // Cuántos de los fileIds son del tramo "primary". El backend nos lo dice
+      // explícitamente en metadata.primaryCount; si por lo que sea falta, lo
+      // recontamos a partir del campo `tier` de cada resultado.
+      const primaryCount: number = typeof json?.metadata?.primaryCount === 'number'
+        ? json.metadata.primaryCount
+        : (Array.isArray(json.results) ? json.results.filter((r: any) => r.tier !== 'secondary').length : 0);
       setNaturalIntent(json.intent || null);
-      onNaturalSearch?.(fileIds, json.intent || null);
+      onNaturalSearch?.(fileIds, json.intent || null, primaryCount);
     } catch (err: any) {
       console.warn('[SearchBar] Búsqueda natural falló:', err);
       setNaturalNotice('No he podido procesar la consulta. Buscando como texto.');

@@ -94,6 +94,11 @@ function App() {
   // Cuando es null no hay búsqueda natural activa. Cuando es array, restringe la grid a esos IDs.
   const [naturalSearchIds, setNaturalSearchIds] = useState<string[] | null>(null);
 
+  // Cuántos de los `naturalSearchIds` pertenecen al tramo "resultados claros"
+  // (primary). Los siguientes son "menos probables" (secondary) y se muestran
+  // bajo un separador. Se ignora si no hay búsqueda natural activa.
+  const [naturalSearchPrimaryCount, setNaturalSearchPrimaryCount] = useState<number>(0);
+
   // Favorites filter state
   const [showFavoritesOnly, setShowFavoritesOnly] = useState<boolean>(false);
 
@@ -2379,7 +2384,10 @@ function App() {
                         includedTags={includedTags}
                         excludedTags={excludedTags}
                         onTagsChange={handleTagsChange}
-                        onNaturalSearch={(fileIds) => setNaturalSearchIds(fileIds)}
+                        onNaturalSearch={(fileIds, _intent, primaryCount) => {
+                          setNaturalSearchIds(fileIds);
+                          setNaturalSearchPrimaryCount(typeof primaryCount === 'number' ? primaryCount : (fileIds?.length ?? 0));
+                        }}
                       />
                     </div>
                   )}
@@ -2677,6 +2685,11 @@ function App() {
                     onCollapseGroup={handleCollapseGroup}
                     onShowMoreGroup={handleShowMoreGroup}
                     onSelectSessionFiles={handleSelectSessionFiles}
+                    secondaryStartIndex={
+                      naturalSearchIds !== null && naturalSearchPrimaryCount > 0 && naturalSearchPrimaryCount < displayFiles.length
+                        ? naturalSearchPrimaryCount
+                        : undefined
+                    }
                   />
 
                   {/* Infinite Scroll Indicators */}

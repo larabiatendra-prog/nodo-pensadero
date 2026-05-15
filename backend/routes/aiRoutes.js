@@ -172,7 +172,8 @@ module.exports = function createAiRoutes(deps) {
       const compactResults = (result.results || []).map(r => ({
         fileId: r.fileId,
         score: r.score,
-        matchedIn: r.matchedIn
+        matchedIn: r.matchedIn,
+        tier: r.tier || 'primary'  // 'primary' (resultados claros) o 'secondary' (menos probables)
       }));
 
       res.json({

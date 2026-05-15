@@ -329,16 +329,22 @@ Los filtros visuales (shot/framing/movement/exposure/colors) son **bonus
 no estrictos**: una query como "primer plano azul" no descarta resultados
 que matcheen sólo uno de los dos.
 
-**Corte de relevancia.** En lugar de devolver los top N siempre, se aplica
-un umbral: `cutoff = max(topScore * 0.5, 5)`. Es decir, solo aparecen los
-archivos cuya puntuación sea al menos la mitad del mejor resultado, y nunca
-por debajo de 5 puntos absolutos. Esto evita devolver basura ordenada por
-basura cuando ninguna foto matchea bien. Ratios y suelo se ajustan en las
-constantes `RELEVANCE_RATIO` y `SCORE_FLOOR` de `aiSearchService.js`.
+**Corte de relevancia en dos tramos.** Cada resultado se etiqueta con un
+campo `tier`:
 
-El `metadata` de la respuesta incluye `topScore`, `cutoff`, `totalCandidates`
-(archivos puntuados) y `totalPassed` (los que superaron el cutoff) para
-diagnóstico y para que el frontend pueda mostrar score relativo si quiere.
+- `primary`   → score >= `max(topScore * 0.5, 5)` — resultados claros.
+- `secondary` → score < primaryCutoff pero score >= `max(topScore * 0.2, 2)`
+                — resultados menos probables, mostrados bajo separador.
+- descartado  → score por debajo del secondaryCutoff (no se devuelven).
+
+El array `results` viene ordenado: primero todos los `primary` (rank desc),
+después todos los `secondary` (rank desc). El frontend usa `metadata.primaryCount`
+para saber dónde insertar el separador visual.
+
+El `metadata` incluye `topScore`, `primaryCutoff`, `secondaryCutoff`,
+`primaryCount`, `secondaryCount` y `totalCandidates` para diagnóstico y
+calibración. Constantes `PRIMARY_RATIO`, `PRIMARY_FLOOR`, `SECONDARY_RATIO`,
+`SECONDARY_FLOOR` y `SECONDARY_CAP` aisladas al principio del método.
 
 Respuesta:
 

@@ -12,15 +12,20 @@ echo.
 set "ROOT=%~dp0"
 set "NODE_DIR=%ROOT%tools\node"
 
-if not exist "%NODE_DIR%\node.exe" (
-    echo [ERROR] Falta el Node portable en tools\node\
-    echo         Reinstala el paquete de Pensadero o ejecuta primero
-    echo         Pensadero_Install.bat para preparar el entorno.
-    pause
-    exit /b 1
+if exist "%NODE_DIR%\node.exe" (
+    set "PATH=%NODE_DIR%;%PATH%"
+    goto :node_ready
 )
 
-set "PATH=%NODE_DIR%;%PATH%"
+where node >nul 2>&1
+if %ERRORLEVEL% EQU 0 goto :node_ready
+
+echo [ERROR] No se encontro Node.js.
+echo         Ejecuta Pensadero_Install.bat o instala Node.js desde https://nodejs.org/
+pause
+exit /b 1
+
+:node_ready
 
 if not exist "%ROOT%node_modules" (
     echo [AVISO] Faltan dependencias del frontend.
@@ -39,17 +44,17 @@ if not exist "%ROOT%backend\node_modules" (
 if not exist "%ROOT%dist" (
     echo [AVISO] Falta el build de produccion. Construyendo...
     cd /d "%ROOT%"
-    call "%NODE_DIR%\npm.cmd" run build
+    call npm run build
     if %ERRORLEVEL% NEQ 0 ( pause & exit /b 1 )
 )
 
 echo Arrancando backend en puerto 5000...
-start "Pensadero Backend" /min cmd /c "cd /d %ROOT%backend && %NODE_DIR%\node.exe server.js"
+start "Pensadero Backend" /min cmd /c "cd /d %ROOT%backend && node server.js"
 
 timeout /t 3 /nobreak >nul
 
 echo Arrancando frontend (preview)...
-start "Pensadero Frontend" /min cmd /c "cd /d %ROOT% && %NODE_DIR%\npm.cmd run start"
+start "Pensadero Frontend" /min cmd /c "cd /d %ROOT% && npm run start"
 
 timeout /t 4 /nobreak >nul
 

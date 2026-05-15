@@ -12,27 +12,37 @@ echo.
 set "ROOT=%~dp0"
 set "NODE_DIR=%ROOT%tools\node"
 
-if not exist "%NODE_DIR%\node.exe" (
-    echo [ERROR] Falta el Node portable en tools\node\
-    echo         Asegurate de que la carpeta tools\node\ esta dentro
-    echo         del proyecto antes de ejecutar este instalador.
-    pause
-    exit /b 1
+if exist "%NODE_DIR%\node.exe" (
+    set "PATH=%NODE_DIR%;%PATH%"
+    echo [OK] Node portable detectado en tools\node\
+    goto :node_ready
 )
 
-set "PATH=%NODE_DIR%;%PATH%"
-echo [OK] Usando Node portable embebido:
-"%NODE_DIR%\node.exe" --version
-"%NODE_DIR%\npm.cmd" --version
+where node >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo [OK] Usando Node del sistema
+    goto :node_ready
+)
+
+echo [ERROR] No se encontro Node.js.
+echo         Opciones:
+echo         A) Instala Node.js desde https://nodejs.org/
+echo         B) Copia el Node portable en tools\node\
+pause
+exit /b 1
+
+:node_ready
+node --version
+npm --version
 echo.
 
 echo ==============================================================
 echo  [1/3] Instalando dependencias del frontend...
 echo ==============================================================
 cd /d "%ROOT%"
-call "%NODE_DIR%\npm.cmd" install
+call npm install
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] npm install (frontend) ha fallado.
+    echo [ERROR] npm install frontend ha fallado.
     pause
     exit /b 1
 )
@@ -42,9 +52,9 @@ echo ==============================================================
 echo  [2/3] Instalando dependencias del backend...
 echo ==============================================================
 cd /d "%ROOT%backend"
-call "%NODE_DIR%\npm.cmd" install
+call npm install
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] npm install (backend) ha fallado.
+    echo [ERROR] npm install backend ha fallado.
     pause
     exit /b 1
 )
@@ -54,7 +64,7 @@ echo ==============================================================
 echo  [3/3] Construyendo build de produccion del frontend...
 echo ==============================================================
 cd /d "%ROOT%"
-call "%NODE_DIR%\npm.cmd" run build
+call npm run build
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Build del frontend ha fallado.
     pause

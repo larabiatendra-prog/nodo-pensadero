@@ -136,6 +136,7 @@ Campos esperados:
 - space_ids: array de identificadores de espacios mencionados (auditorio, cocina, ...) — vacío si no aplica
 - tags: array de etiquetas que el usuario pide que aparezcan (suman puntos al ranking, no filtran)
 - free_terms: array de términos de texto libre que NO encajan en los demás campos
+- expanded_terms: array de SINÓNIMOS y TRADUCCIONES (especialmente al INGLÉS) de los conceptos clave de la consulta, incluyendo pistas visuales que un VLM describiría. Las descripciones del corpus pueden estar en inglés, así que estos términos son cruciales para encontrar coincidencias semánticas. Máx 12 términos. NO repitas las palabras originales (esas ya están en tags/free_terms). Si la consulta no tiene conceptos visuales/temáticos que ampliar (solo personas o fechas), devuelve [].
 - shot_type: "plano_general" | "plano_americano" | "plano_medio" | "plano_medio_corto" | "primer_plano" | "plano_detalle" | null
 - people_framing: "ninguno" | "individual" | "pareja" | "grupo" | "multitud" | null
 - movement_type: "estatico" | "moving" | null
@@ -144,13 +145,19 @@ Campos esperados:
 ${peopleBlock}
 EJEMPLOS:
 Input: "videos de Alumni con seriedad de 2023"
-Output: {"type":"video","year":2023,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["alumni","seriedad"],"free_terms":[],"shot_type":null,"people_framing":null,"movement_type":null,"exposure":null,"color_terms":[]}
+Output: {"type":"video","year":2023,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["alumni","seriedad"],"free_terms":[],"expanded_terms":["graduates","alumni network","serious","formal","reunion"],"shot_type":null,"people_framing":null,"movement_type":null,"exposure":null,"color_terms":[]}
 
 Input: "primer plano de Ester en agosto"
-Output: {"type":null,"year":null,"month":"08","month_name":"agosto","person_ids":["ester"],"space_ids":[],"tags":[],"free_terms":[],"shot_type":"primer_plano","people_framing":"individual","movement_type":null,"exposure":null,"color_terms":[]}
+Output: {"type":null,"year":null,"month":"08","month_name":"agosto","person_ids":["ester"],"space_ids":[],"tags":[],"free_terms":[],"expanded_terms":[],"shot_type":"primer_plano","people_framing":"individual","movement_type":null,"exposure":null,"color_terms":[]}
 
 Input: "fotos del auditorio con gente"
-Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":["auditorio"],"tags":["gente"],"free_terms":[],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
+Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":["auditorio"],"tags":["gente"],"free_terms":[],"expanded_terms":["auditorium","audience","crowd","seats","stage","people sitting"],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
+
+Input: "clase formativa en aula"
+Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":["aula"],"tags":["clase","formativa"],"free_terms":[],"expanded_terms":["classroom","lecture","training","students","desks","whiteboard","teacher","seminar","educational"],"shot_type":null,"people_framing":"grupo","movement_type":null,"exposure":null,"color_terms":[]}
+
+Input: "edificios al atardecer"
+Output: {"type":"image","year":null,"month":null,"month_name":null,"person_ids":[],"space_ids":[],"tags":["edificios","atardecer"],"free_terms":[],"expanded_terms":["building","buildings","facade","tower","sunset","dusk","golden hour","skyline"],"shot_type":null,"people_framing":null,"movement_type":null,"exposure":null,"color_terms":[]}
 
 Input: "${query}"
 Output:`;
@@ -235,6 +242,11 @@ Output:`;
       space_ids: arrStr(r.space_ids),
       tags: arrStr(r.tags),
       free_terms: arrStr(r.free_terms).length > 0 ? arrStr(r.free_terms) : arrStr(r.searchTerms),
+      // expanded_terms: sinónimos y traducciones que el LLM genera para cubrir
+      // el desajuste de idioma entre query (español) y visual_descriptions
+      // (inglés en el corpus actual). Limitamos a 15 por si el modelo se va
+      // de la mano. Si el LLM viejo no emite el campo, queda vacío.
+      expanded_terms: arrStr(r.expanded_terms).slice(0, 15),
       shot_type: str(r.shot_type) ?? str(r.shotFilter),
       people_framing: str(r.people_framing) ?? str(r.peopleFraming),
       movement_type: str(r.movement_type) ?? str(r.movementType),
@@ -257,6 +269,7 @@ Output:`;
       space_ids: [],
       tags: [],
       free_terms: (query || '').split(/\s+/).filter(t => t.length > 2),
+      expanded_terms: [],
       shot_type: null,
       people_framing: null,
       movement_type: null,
@@ -283,7 +296,7 @@ Output:`;
   scoreMediaFiles(intent, mediaFiles, limit = 200) {
     const {
       type, year, month, month_name,
-      person_ids, space_ids, tags, free_terms,
+      person_ids, space_ids, tags, free_terms, expanded_terms,
       shot_type, people_framing, movement_type, exposure, color_terms,
     } = intent;
 
@@ -296,6 +309,9 @@ Output:`;
     const colorTermsN = (color_terms || []).map(N).filter(Boolean);
     const tagsN = (tags || []).map(N).filter(Boolean);
     const freeN = (free_terms || []).map(N).filter(Boolean);
+    // expanded_terms: sinónimos/traducciones generados por el LLM. Tienen
+    // peso menor que free_terms porque son inferidos, no pedidos explícitamente.
+    const expandedN = (expanded_terms || []).map(N).filter(Boolean);
     const personIdSet = new Set(person_ids || []);
     const spaceIdSet = new Set(space_ids || []);
 
@@ -403,18 +419,33 @@ Output:`;
         }
       }
 
-      // Free terms: búsqueda libre OR sobre name/tags/visual/ocr/composition
-      if (freeN.length > 0) {
+      // Free terms: búsqueda libre OR sobre name/tags/visual/ocr/composition.
+      // Y expanded_terms: sinónimos/traducciones del LLM con pesos menores
+      // (son inferidos, no pedidos). Las dos pasadas comparten la misma
+      // lógica de búsqueda; cambia solo el peso.
+      if (freeN.length > 0 || expandedN.length > 0) {
         const fileName = N(file.name);
         const visual = N(file.visual_description);
         const ocr = N(file.ocr_text);
         const fileTagsN = (file.tags || []).map(N);
+
+        // Pasada 1: free_terms (pedidos por el usuario) — pesos altos
         for (const t of freeN) {
           if (fileTagsN.some(ft => ft.includes(t))) { score += 5; addMatch('tags'); }
           if (visual && visual.includes(t)) { score += 4; addMatch('visual_description'); }
           if (ocr && ocr.includes(t)) { score += 3; addMatch('ocr_text'); }
           if (fileName.includes(t)) { score += 3; addMatch('name'); }
           if (compShot && compShot.includes(t)) { score += 2; addMatch('shot_type'); }
+        }
+
+        // Pasada 2: expanded_terms (sinónimos/traducciones del LLM) — pesos
+        // reducidos (~60% del free_terms). Match clave: visual_description
+        // que suele estar en inglés. Un buen match aquí salva la query.
+        for (const t of expandedN) {
+          if (fileTagsN.some(ft => ft.includes(t))) { score += 3; addMatch('expanded_tags'); }
+          if (visual && visual.includes(t)) { score += 3; addMatch('expanded_visual'); }
+          if (ocr && ocr.includes(t)) { score += 2; addMatch('expanded_ocr'); }
+          if (fileName.includes(t)) { score += 2; addMatch('expanded_name'); }
         }
       }
 
@@ -530,6 +561,10 @@ Output:`;
       ...(intent && Array.isArray(intent.tags) ? intent.tags : []),
       ...(intent && Array.isArray(intent.free_terms) ? intent.free_terms : []),
       ...(intent && Array.isArray(intent.space_ids) ? intent.space_ids : []),
+      // expanded_terms (sinónimos/traducciones) son cruciales aquí: cubren
+      // el desajuste de idioma cuando las descripciones del corpus están
+      // en inglés y la query en español.
+      ...(intent && Array.isArray(intent.expanded_terms) ? intent.expanded_terms : []),
     ].map(t => this.normalizeText(t)).filter(Boolean);
     const allTokens = [...new Set([...queryTokens, ...intentTokens])];
 

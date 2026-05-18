@@ -8,12 +8,17 @@
 #   .venv\Scripts\activate    # Windows
 #   pip install -r requirements.txt
 #
-# Para GPU NVIDIA (NODO RTX 5070 Ti), sustituye `onnxruntime` por
-# `onnxruntime-gpu` y asegúrate de tener CUDA 12.x instalado. Da una
-# aceleración de ~10x (1s/imagen vs 8s en CPU).
+# Usamos `onnxruntime-gpu`: en máquinas con NVIDIA CUDA aprovecha la GPU
+# (~10x más rápido, 1s/imagen vs 8s en CPU). En máquinas sin GPU compatible
+# cae a CPU automáticamente; el código de face_detector.py detecta los
+# providers disponibles y los elige en orden CUDA → CPU.
+#
+# Si la instalación de onnxruntime-gpu falla en algún equipo (incompatibilidad
+# de CUDA, drivers viejos, etc.), sustituir por `onnxruntime` a secas y todo
+# seguirá funcionando, solo más lento.
 
 insightface==0.7.3
-onnxruntime>=1.18      # CPU. Para CUDA usa: onnxruntime-gpu
+onnxruntime-gpu>=1.18
 numpy>=1.24
 opencv-python>=4.8
 pillow>=10.0

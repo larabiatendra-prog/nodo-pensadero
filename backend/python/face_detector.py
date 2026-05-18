@@ -31,6 +31,88 @@ from pathlib import Path
 
 import numpy as np
 
+
+def _register_nvidia_dll_directories():
+    """
+    En Windows sin CUDA Toolkit instalado de sistema (caso típico cuando el
+    usuario no tiene admin), las DLLs de CUDA se instalan vía pip en paquetes
+    `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc.
+
+    onnxruntime carga `onnxruntime_providers_cuda.dll` que a su vez depende
+    transitivamente de `cublasLt64_12.dll`, `cudart64_12.dll`, `cudnn64_9.dll`.
+    Windows resuelve esas dependencias buscando en PATH (no en
+    `os.add_dll_directory`, que solo afecta cargas directas).
+
+    Por eso necesitamos:
+    1) `os.add_dll_directory(d)` — para cargas directas desde Python.
+    2) `os.environ["PATH"] = d + ";" + os.environ["PATH"]` — para dependencias
+       transitivas que Windows resuelve internamente.
+
+    Si los paquetes nvidia-* no están instalados, se ignora silenciosamente
+    y onnxruntime cae a CPU.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        # Localizar carpetas bin de los paquetes nvidia/* en el venv actual.
+        nvidia_bin_dirs = []
+        candidates_roots = []
+        try:
+            import site
+            candidates_roots.extend(site.getsitepackages())
+        except Exception:
+            pass
+        # En venvs, getsitepackages a veces no devuelve el correcto. Usar también sys.prefix.
+        candidates_roots.append(str(Path(sys.prefix) / "Lib" / "site-packages"))
+        # Y la ubicación canónica del módulo nvidia (si está instalado)
+        try:
+            import nvidia  # noqa
+            mod_path = getattr(nvidia, "__path__", None)
+            if mod_path:
+                for p in mod_path:
+                    candidates_roots.append(str(Path(p).parent))
+        except ImportError:
+            pass
+
+        seen_roots = set()
+        for root in candidates_roots:
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            nvidia_root = Path(root) / "nvidia"
+            if not nvidia_root.is_dir():
+                continue
+            for sub in nvidia_root.iterdir():
+                bin_dir = sub / "bin"
+                if bin_dir.is_dir() and str(bin_dir) not in nvidia_bin_dirs:
+                    nvidia_bin_dirs.append(str(bin_dir))
+
+        if not nvidia_bin_dirs:
+            return
+
+        # 1) DLL directory para cargas directas (Python 3.8+).
+        if hasattr(os, "add_dll_directory"):
+            for d in nvidia_bin_dirs:
+                try:
+                    os.add_dll_directory(d)
+                except (OSError, FileNotFoundError):
+                    pass
+
+        # 2) PATH prepend para dependencias transitivas (cuando Windows
+        # resuelve una dependencia desde otra DLL ya cargada).
+        cur_path = os.environ.get("PATH", "")
+        new_path = ";".join(nvidia_bin_dirs) + (";" + cur_path if cur_path else "")
+        os.environ["PATH"] = new_path
+
+        sys.stderr.write(f"[face_detector] {len(nvidia_bin_dirs)} carpetas DLL NVIDIA en PATH\n")
+    except Exception as e:
+        sys.stderr.write(f"[face_detector] aviso: no se pudieron registrar DLLs NVIDIA: {e}\n")
+
+
+# Registrar las DLLs de CUDA ANTES de importar onnxruntime/insightface
+_register_nvidia_dll_directories()
+
+
 # Importar InsightFace con manejo de error claro
 try:
     from insightface.app import FaceAnalysis

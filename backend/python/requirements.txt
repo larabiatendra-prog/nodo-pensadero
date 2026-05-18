@@ -22,3 +22,17 @@ onnxruntime-gpu>=1.18
 numpy>=1.24
 opencv-python>=4.8
 pillow>=10.0
+
+# CUDA runtime libraries vía pip (no requiere instalar CUDA Toolkit de
+# sistema, no requiere admin). face_detector.py registra estas carpetas
+# en el PATH al arrancar para que Windows resuelva las dependencias
+# transitivas de onnxruntime_providers_cuda.dll.
+nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cuda-nvrtc-cu12
+nvidia-cudnn-cu12
+nvidia-cufft-cu12
+nvidia-curand-cu12
+nvidia-cusparse-cu12
+nvidia-cusolver-cu12
+nvidia-cuda-cupti-cu12

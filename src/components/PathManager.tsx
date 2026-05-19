@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
+import ScanContextModal from './ScanContextModal';
 
 interface ScanPath {
   id: string;
@@ -37,13 +38,21 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   // Estado de escaneo visual con IA por ruta. Map: pathId → estado.
   const [aiScansByPath, setAiScansByPath] = useState<Map<string, AiScanState>>(new Map());
-  // Map: jobId → pathId para resolver eventos WebSocket
-  const [jobIdToPathId, setJobIdToPathId] = useState<Map<string, string>>(new Map());
+  // Map: jobId → pathId para resolver eventos WebSocket.
+  // useRef para evitar stale closure cuando el WS evento llega antes de que
+  // React aplique el setState (race condition entre POST /scan/start y el
+  // evento scan_start emitido por el backend con setImmediate).
+  const jobIdToPathIdRef = useRef<Map<string, string>>(new Map());
 
   // Estado de salud del VLM (Ollama + modelo). Se consulta al montar.
   const [vlmHealth, setVlmHealth] = useState<{ ollamaRunning: boolean; modelAvailable: boolean; model: string; error?: string } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
+
+  // Modal de contexto previo al escaneo. Cuando se abre, contiene el id de
+  // la ruta para la que estamos preparando el scan; al confirmar, lanza el
+  // escaneo real.
+  const [contextModalPathId, setContextModalPathId] = useState<string | null>(null);
 
   // WebSocket para progreso en tiempo real
   const { isConnected, progressData } = useWebSocket(config.wsUrl);
@@ -79,9 +88,31 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
     }
 
-    // Eventos del escaneo visual IA (visualScanService)
+    // Eventos del escaneo visual IA (visualScanService).
+    // Resolver pathId desde el ref (sin closure stale) o, como fallback, desde
+    // el unico path en estado running — util cuando el WS llega antes de que
+    // jobIdToPathIdRef se actualice en el handler de startScan.
+    const resolvePid = (jobId: string | undefined): string | undefined => {
+      if (jobId) {
+        const fromRef = jobIdToPathIdRef.current.get(jobId);
+        if (fromRef) return fromRef;
+      }
+      // Fallback: si solo hay un path actualmente en running, asociar el evento a el
+      let candidate: string | undefined;
+      let count = 0;
+      for (const [pid, st] of aiScansByPath.entries()) {
+        if (st.status === 'running') { candidate = pid; count++; }
+      }
+      if (count === 1 && candidate && jobId) {
+        // Aprovechar para repoblar el mapping para futuros eventos
+        jobIdToPathIdRef.current.set(jobId, candidate);
+        return candidate;
+      }
+      return undefined;
+    };
+
     if (progressData.type === 'scan_start' && progressData.jobId) {
-      const pid = jobIdToPathId.get(progressData.jobId);
+      const pid = resolvePid(progressData.jobId);
       if (pid) {
         setAiScansByPath(prev => {
           const next = new Map(prev);
@@ -98,7 +129,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
 
     if (progressData.type === 'scan_progress' && progressData.jobId) {
-      const pid = jobIdToPathId.get(progressData.jobId);
+      const pid = resolvePid(progressData.jobId);
       if (pid) {
         setAiScansByPath(prev => {
           const next = new Map(prev);
@@ -118,7 +149,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
 
     if (progressData.type === 'scan_done' && progressData.jobId) {
-      const pid = jobIdToPathId.get(progressData.jobId);
+      const pid = resolvePid(progressData.jobId);
       if (pid) {
         setAiScansByPath(prev => {
           const next = new Map(prev);
@@ -139,7 +170,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
 
     if (progressData.type === 'scan_error' && progressData.jobId) {
-      const pid = jobIdToPathId.get(progressData.jobId);
+      const pid = resolvePid(progressData.jobId);
       if (pid) {
         setAiScansByPath(prev => {
           const next = new Map(prev);
@@ -155,7 +186,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         });
       }
     }
-  }, [progressData, onSyncComplete, jobIdToPathId]);
+  }, [progressData, onSyncComplete, aiScansByPath]);
 
   const loadPaths = async () => {
     try {
@@ -291,11 +322,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
       const jobId = response.jobId;
       if (jobId) {
-        setJobIdToPathId(prev => {
-          const next = new Map(prev);
-          next.set(jobId, pathId);
-          return next;
-        });
+        // Registrar el mapeo en el ref (sincronicamente, sin esperar al
+        // proximo render). Asi los eventos WS que ya hayan llegado al
+        // listener tras el ultimo render encuentran el path correcto.
+        jobIdToPathIdRef.current.set(jobId, pathId);
         setAiScansByPath(prev => {
           const next = new Map(prev);
           const cur = next.get(pathId);
@@ -533,9 +563,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                     <RefreshCw className={`w-4 h-4 ${scanningPaths.has(path.id) ? 'animate-spin' : ''}`} />
                   </button>
 
-                  {/* Escanear con IA — genera _pensadero.json con descripciones */}
+                  {/* Escanear con IA — abre el modal de contexto previo al scan */}
                   <button
-                    onClick={() => handleAiScan(path.id, false)}
+                    onClick={() => setContextModalPathId(path.id)}
                     disabled={
                       !path.isActive ||
                       aiScansByPath.get(path.id)?.status === 'running' ||
@@ -638,6 +668,20 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           <li>• Solo se escanean archivos de imagen y video soportados</li>
         </ul>
       </div>
+
+      {/* Modal de contexto previo al escaneo con IA */}
+      {contextModalPathId && (() => {
+        const target = paths.find(p => p.id === contextModalPathId);
+        if (!target) return null;
+        return (
+          <ScanContextModal
+            isOpen={true}
+            rootPath={target.path}
+            onClose={() => setContextModalPathId(null)}
+            onConfirm={() => handleAiScan(contextModalPathId, false)}
+          />
+        );
+      })()}
     </div>
   );
 }

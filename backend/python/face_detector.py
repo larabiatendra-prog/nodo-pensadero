@@ -133,14 +133,16 @@ def get_app():
         return _app
 
     providers = []
-    # Intentar GPU primero (NODO RTX 5070 Ti); fallback CPU si no
-    try:
-        import onnxruntime as ort
-        available = ort.get_available_providers()
-        if "CUDAExecutionProvider" in available:
-            providers.append("CUDAExecutionProvider")
-    except Exception:
-        pass
+    # FACE_PROVIDER=cpu fuerza CPU (útil en Dell cuando el VLM necesita toda la VRAM).
+    # Cualquier otro valor o ausencia → GPU con fallback automático a CPU.
+    if os.environ.get("FACE_PROVIDER", "gpu").lower() != "cpu":
+        try:
+            import onnxruntime as ort
+            available = ort.get_available_providers()
+            if "CUDAExecutionProvider" in available:
+                providers.append("CUDAExecutionProvider")
+        except Exception:
+            pass
     providers.append("CPUExecutionProvider")
 
     # InsightFace y onnxruntime imprimen mucho en stdout durante el load

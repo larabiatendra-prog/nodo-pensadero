@@ -19,6 +19,11 @@ interface PersonPhoto {
 
 interface PersonsManagerProps {
   onBack?: () => void;
+  // Galeria por persona: lista completa de mediaFiles cargados en la app y
+  // callbacks para abrir el modal de archivo / filtrar la home por persona.
+  mediaFiles?: import('../types').MediaFile[];
+  onSelectFile?: (file: import('../types').MediaFile) => void;
+  onFilterByPerson?: (personId: string) => void;
 }
 
 /**
@@ -32,7 +37,7 @@ interface PersonsManagerProps {
  * NO hace reconocimiento facial automático — eso entra en una segunda
  * iteración con InsightFace u otro modelo de embeddings faciales.
  */
-export default function PersonsManager({ onBack }: PersonsManagerProps) {
+export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFilterByPerson }: PersonsManagerProps) {
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
@@ -976,6 +981,75 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
                   </div>
                 )}
               </div>
+
+              {/* Apariciones en la biblioteca real */}
+              {(() => {
+                if (!mediaFiles || mediaFiles.length === 0) return null;
+                const appearances = mediaFiles.filter(f =>
+                  f.faces?.some(face => face.person_id === selectedPerson.person_id)
+                );
+                if (appearances.length === 0) {
+                  return (
+                    <div className="mt-6 p-4 bg-pizarra/40 border border-pizarra rounded-2xl text-center">
+                      <p className="text-sm text-lavanda-archivo">
+                        Aun no hay apariciones de {selectedPerson.display_name} en la biblioteca.
+                      </p>
+                      <p className="text-xs text-bruma mt-1">
+                        Tras escanear con IA o re-identificar la biblioteca, las fotos donde aparezca apareceran aqui.
+                      </p>
+                    </div>
+                  );
+                }
+                const previewLimit = 24;
+                const preview = appearances.slice(0, previewLimit);
+                const remaining = appearances.length - preview.length;
+                return (
+                  <div className="mt-6">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-marfil">
+                        Apariciones en la biblioteca <span className="text-lavanda-archivo font-normal">· {appearances.length}</span>
+                      </h3>
+                      {onFilterByPerson && (
+                        <button
+                          onClick={() => onFilterByPerson(selectedPerson.person_id)}
+                          className="text-xs text-lavanda hover:text-lavanda-claro font-medium"
+                        >
+                          Ver todas en la galeria →
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+                      {preview.map(file => (
+                        <button
+                          key={file.id}
+                          onClick={() => onSelectFile && onSelectFile(file)}
+                          className="relative aspect-square bg-pizarra rounded-xl overflow-hidden group/thumb hover:ring-2 hover:ring-lavanda transition-all"
+                          title={file.name}
+                        >
+                          <img
+                            src={file.thumbnail || file.url}
+                            alt={file.name}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                          />
+                          {file.type === 'video' && (
+                            <span className="absolute bottom-1 right-1 text-[10px] bg-noche/80 text-marfil px-1.5 py-0.5 rounded">VIDEO</span>
+                          )}
+                        </button>
+                      ))}
+                      {remaining > 0 && onFilterByPerson && (
+                        <button
+                          onClick={() => onFilterByPerson(selectedPerson.person_id)}
+                          className="aspect-square bg-pizarra/60 border-2 border-dashed border-pizarra rounded-xl flex items-center justify-center hover:border-lavanda hover:text-lavanda transition-colors text-lavanda-archivo"
+                        >
+                          <span className="text-sm font-medium">+{remaining}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           ) : (
             <div className="bg-tinta rounded-3xl border border-pizarra p-12 text-center">

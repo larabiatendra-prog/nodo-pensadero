@@ -2310,7 +2310,17 @@ function App() {
           }
 
         case 'persons':
-          return <PersonsManager onBack={() => setActiveView('home')} />;
+          return (
+            <PersonsManager
+              onBack={() => setActiveView('home')}
+              mediaFiles={mediaFiles}
+              onSelectFile={(file) => setSelectedFile(file)}
+              onFilterByPerson={(personId) => {
+                setSelectedPersonIds([personId]);
+                setActiveView('home');
+              }}
+            />
+          );
 
         case 'paths':
           // Single-user: PathManager siempre disponible

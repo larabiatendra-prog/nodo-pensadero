@@ -42,6 +42,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   // Estado de salud del VLM (Ollama + modelo). Se consulta al montar.
   const [vlmHealth, setVlmHealth] = useState<{ ollamaRunning: boolean; modelAvailable: boolean; model: string; error?: string } | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
 
   // WebSocket para progreso en tiempo real
   const { isConnected, progressData } = useWebSocket(config.wsUrl);
@@ -53,6 +55,12 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     api.scanHealth().then(r => {
       if (r.success && r.data) setVlmHealth(r.data);
     }).catch(() => setVlmHealth({ ollamaRunning: false, modelAvailable: false, model: 'qwen2.5vl:7b' }));
+    api.scanModels().then(r => {
+      if (r.success && r.data) {
+        setAvailableModels(r.data.models);
+        setSelectedModel(r.data.current);
+      }
+    }).catch(() => {});
   }, []);
 
   // Escuchar progreso de sincronización Y de escaneo visual IA
@@ -397,6 +405,26 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         </div>
       )}
 
+      {/* Selector de modelo VLM — visible solo cuando Ollama está disponible */}
+      {vlmHealth?.ollamaRunning && availableModels.length > 0 && (
+        <div className="mb-6 flex items-center gap-3">
+          <span className="text-sm text-lavanda-archivo">Modelo VLM:</span>
+          <select
+            value={selectedModel}
+            onChange={async (e) => {
+              const model = e.target.value;
+              setSelectedModel(model);
+              await api.setScanModel(model).catch(() => {});
+            }}
+            className="bg-grafito border border-pizarra rounded-lg px-3 py-1.5 text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+          >
+            {availableModels.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {/* Botón para añadir nueva ruta */}
       <div className="mb-6">
         {!showAddPath ? (
@@ -524,7 +552,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                     title={
                       !vlmHealth?.ollamaRunning ? 'Ollama no disponible' :
                       !vlmHealth?.modelAvailable ? `Falta modelo: ollama pull ${vlmHealth.model}` :
-                      'Escanear con IA (describir cada imagen con qwen2.5vl)'
+                      `Escanear con IA (describir cada imagen con ${selectedModel || vlmHealth?.model || 'VLM'})`
                     }
                   >
                     <Sparkles className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />

@@ -172,6 +172,15 @@ class VisualScanService {
     }
   }
 
+  setModel(model) {
+    this.model = model;
+  }
+
+  async listModels() {
+    const list = await this.ollama.list();
+    return (list.models || []).map(m => m.name).filter(Boolean);
+  }
+
   _buildPrompt() {
     return `Eres un asistente experto en describir fotografías para un archivo personal indexable. Devuelve SOLO un JSON sin explicaciones ni markdown.
 

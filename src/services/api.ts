@@ -513,6 +513,17 @@ class ApiService {
     });
   }
 
+  async scanModels() {
+    return this.fetchWithErrorHandling<ApiResponse<{ models: string[]; current: string }>>(`${API_BASE_URL}/scan/models`);
+  }
+
+  async setScanModel(model: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ model: string }>>(`${API_BASE_URL}/scan/model`, {
+      method: 'PATCH',
+      body: JSON.stringify({ model }),
+    });
+  }
+
   // ============================================
   // GESTIÓN DE PERSONAS (registry CRUD + fotos)
   // ============================================

@@ -5,11 +5,13 @@
  * de `_pensadero.json` usando VLM via Ollama).
  *
  * Rutas:
- *  - GET  /api/scan/health   — VLM disponible?
- *  - POST /api/scan/start    — body: { path, force? } → arranca un job en background
- *  - GET  /api/scan/jobs     — lista de jobs recientes
- *  - GET  /api/scan/status/:jobId  — estado de un job concreto
- *  - POST /api/scan/cancel/:jobId  — cancela un job en curso
+ *  - GET   /api/scan/health        — VLM disponible?
+ *  - GET   /api/scan/models        — modelos Ollama disponibles + modelo activo
+ *  - PATCH /api/scan/model         — body: { model } → cambia el modelo activo en runtime
+ *  - POST  /api/scan/start         — body: { path, force? } → arranca un job en background
+ *  - GET   /api/scan/jobs          — lista de jobs recientes
+ *  - GET   /api/scan/status/:jobId — estado de un job concreto
+ *  - POST  /api/scan/cancel/:jobId — cancela un job en curso
  */
 
 const express = require('express');
@@ -29,6 +31,27 @@ module.exports = function createScanRoutes(deps) {
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }
+  });
+
+  // === MODELS — lista modelos disponibles en Ollama + modelo activo ===
+  router.get('/scan/models', async (req, res) => {
+    try {
+      const scanner = getScanner();
+      const models = await scanner.listModels();
+      res.json({ success: true, data: { models, current: scanner.model } });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // === SET MODEL — cambia el modelo VLM activo en runtime ===
+  router.patch('/scan/model', (req, res) => {
+    const { model } = req.body || {};
+    if (!model || typeof model !== 'string') {
+      return res.status(400).json({ success: false, error: 'model requerido' });
+    }
+    getScanner().setModel(model);
+    res.json({ success: true, data: { model } });
   });
 
   // === START SCAN ===

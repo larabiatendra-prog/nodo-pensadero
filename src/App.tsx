@@ -2952,6 +2952,10 @@ function App() {
           setSelectedFile(newFile);
         }}
         onTagClick={handleTagClick}
+        onPersonFilter={(personId) => {
+          setSelectedPersonIds([personId]);
+          setActiveView('home');
+        }}
         onBackgroundRemoved={async (newFileId, newFileName) => {
           // Mostrar toast de éxito
           toast.success(`Imagen sin fondo creada: ${newFileName}`, {

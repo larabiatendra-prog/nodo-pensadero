@@ -30,6 +30,7 @@ interface MediaModalProps {
   onFileSelect?: (file: MediaFile) => void; // Callback para seleccionar archivo relacionado
   onTagClick?: (tag: string) => void; // Callback para filtrar por etiqueta
   onBackgroundRemoved?: (newFileId: string, newFileName: string) => void; // Callback cuando se quita el fondo
+  onPersonFilter?: (personId: string) => void; // Click en un bbox identificado para filtrar por persona
 }
 
 export default function MediaModal({
@@ -42,7 +43,8 @@ export default function MediaModal({
   allFiles = [],
   onFileSelect,
   onTagClick,
-  onBackgroundRemoved
+  onBackgroundRemoved,
+  onPersonFilter
 }: MediaModalProps) {
   const [relatedFilesStartIndex, setRelatedFilesStartIndex] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -314,7 +316,13 @@ export default function MediaModal({
                 }}
               />
               {showFaceBoxes && imgNatural && boxes.length > 0 && (
-                <FaceBoxesOverlay boxes={boxes} naturalWidth={imgNatural.w} naturalHeight={imgNatural.h} />
+                <FaceBoxesOverlay
+                  boxes={boxes}
+                  naturalWidth={imgNatural.w}
+                  naturalHeight={imgNatural.h}
+                  onPersonFilter={onPersonFilter}
+                  onClosePreview={onClose}
+                />
               )}
               {/* Hint hover de fullscreen — se oculta cuando hay bboxes visibles
                   para no tapar las caras. */}
@@ -652,7 +660,19 @@ export default function MediaModal({
  * wrapper inline-block que envuelve la <img>, asi los porcentajes son
  * relativos al tamaño renderizado de la imagen sin bandas vacias.
  */
-function FaceBoxesOverlay({ boxes, naturalWidth, naturalHeight }: { boxes: FaceBox[]; naturalWidth: number; naturalHeight: number }) {
+function FaceBoxesOverlay({
+  boxes,
+  naturalWidth,
+  naturalHeight,
+  onPersonFilter,
+  onClosePreview,
+}: {
+  boxes: FaceBox[];
+  naturalWidth: number;
+  naturalHeight: number;
+  onPersonFilter?: (personId: string) => void;
+  onClosePreview?: () => void;
+}) {
   if (!naturalWidth || !naturalHeight) return null;
   return (
     <div className="absolute inset-0 pointer-events-none">
@@ -666,23 +686,34 @@ function FaceBoxesOverlay({ boxes, naturalWidth, naturalHeight }: { boxes: FaceB
         // Si la cara esta cerca del borde superior (<15%), colocar label DEBAJO
         const labelBelow = top < 15;
         const label = b.display_name || 'desconocido';
+        const clickable = isKnown && !!onPersonFilter;
+        const handleClick = (e: React.MouseEvent) => {
+          // Evitar que el click llegue a la <img> (que abre fullscreen)
+          e.stopPropagation();
+          if (clickable && b.person_id && onPersonFilter) {
+            onPersonFilter(b.person_id);
+            onClosePreview?.();
+          }
+        };
         return (
           <div
             key={i}
-            className="absolute pointer-events-auto group/face"
+            className={`absolute pointer-events-auto group/face ${clickable ? 'cursor-pointer' : ''}`}
             style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+            onClick={handleClick}
+            title={clickable ? `Filtrar galeria por ${label}` : undefined}
           >
             <div
               className={`absolute inset-0 rounded-md border-2 transition-colors ${
                 isKnown
-                  ? 'border-lavanda shadow-[0_0_0_1px_rgba(15,17,26,0.6)]'
+                  ? 'border-lavanda shadow-[0_0_0_1px_rgba(15,17,26,0.6)] group-hover/face:border-lavanda-claro group-hover/face:shadow-[0_0_0_2px_rgba(200,182,255,0.5)]'
                   : 'border-bruma/70 border-dashed'
               }`}
             />
             <div
               className={`absolute whitespace-nowrap text-xs px-1.5 py-0.5 rounded-md backdrop-blur-sm transition-opacity ${
                 isKnown
-                  ? 'bg-lavanda/90 text-white'
+                  ? 'bg-lavanda/90 text-white group-hover/face:bg-lavanda'
                   : 'bg-noche/70 text-lavanda-archivo'
               } ${labelBelow ? 'top-full mt-1' : 'bottom-full mb-1'} left-0`}
               style={{ fontSize: '11px' }}

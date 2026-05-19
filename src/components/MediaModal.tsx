@@ -527,40 +527,19 @@ export default function MediaModal({
                 <p className="text-xs text-red-500">{backgroundRemovalError}</p>
               )}
 
-              {/* File info */}
+              {/* File info — sin encabezados redundantes, solo los valores */}
               <div className="space-y-4">
-                <div>
-                  <div className="space-y-3">
-                    <div className="flex items-center space-x-3">
-                      <FileText className="w-4 h-4 text-slate-400" />
-                      <div>
-                        <p className="text-sm text-slate-500">Tamaño</p>
-                        <p className="text-sm font-medium text-slate-900">{formatFileSize(file.size)}</p>
-                      </div>
-                    </div>
-                    {file.dimensions && (
-                      <div className="flex items-center space-x-3">
-                        <Share2 className="w-4 h-4 text-slate-400" />
-                        <div>
-                          <p className="text-sm text-slate-500">Dimensiones</p>
-                          <p className="text-sm font-medium text-slate-900">
-                            {file.dimensions.width} x {file.dimensions.height}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+                  <span>{formatFileSize(file.size)}</span>
+                  {file.dimensions && (
+                    <span>{file.dimensions.width} × {file.dimensions.height}</span>
+                  )}
                 </div>
 
-                {/* Description */}
                 {file.description && (
-                  <div>
-                    <h3 className="font-medium text-slate-900 mb-2">Descripción</h3>
-                    <p className="text-sm text-slate-600 leading-relaxed">{file.description}</p>
-                  </div>
+                  <p className="text-sm text-slate-600 leading-relaxed">{file.description}</p>
                 )}
 
-                {/* Personas detectadas en este archivo */}
                 <FilePersonsBubbles
                   file={file}
                   onPersonFilter={onPersonFilter}
@@ -569,15 +548,7 @@ export default function MediaModal({
                   setHoveredFaceKey={setHoveredFaceKey}
                 />
 
-                {/* Tags */}
-                <div>
-                  <div className="flex items-center space-x-2 mb-3">
-                    <Tag className="w-4 h-4 text-slate-400" />
-                    <h3 className="font-medium text-slate-900">Etiquetas</h3>
-                  </div>
-                  <TagsList tags={file.tags} onTagClick={handleTagClick} />
-                </div>
-
+                <TagsList tags={file.tags} onTagClick={handleTagClick} />
               </div>
             </div>
           </div>
@@ -913,13 +884,8 @@ function FilePersonsBubbles({
   const hiddenPeopleCount = enriched.length - PEOPLE_COLLAPSED_LIMIT;
 
   return (
-    <div>
-      <div className="flex items-center space-x-2 mb-3">
-        <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-        <h3 className="font-medium text-slate-900">Personas</h3>
-      </div>
-      <div className="flex flex-wrap gap-3">
-        {visiblePeople.map(p => {
+    <div className="flex flex-wrap gap-3">
+      {visiblePeople.map(p => {
           const showFallback = !p.avatar_url || brokenAvatars.has(p.person_id);
           const initials = (p.display_name || p.person_id).trim().slice(0, 2).toUpperCase();
           const clickable = !!onPersonFilter;
@@ -985,7 +951,6 @@ function FilePersonsBubbles({
             mostrar menos
           </button>
         )}
-      </div>
     </div>
   );
 }

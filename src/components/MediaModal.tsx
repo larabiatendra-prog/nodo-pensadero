@@ -61,9 +61,21 @@ export default function MediaModal({
     try { localStorage.setItem('pensadero_show_face_boxes', showFaceBoxes ? '1' : '0'); } catch {}
   }, [showFaceBoxes]);
   const imgRef = useRef<HTMLImageElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
+  // Para video: dimensiones naturales del video y currentTime para mostrar
+  // bboxes solo cuando estamos cerca del frame donde se detectaron caras
+  const [videoNatural, setVideoNatural] = useState<{ w: number; h: number } | null>(null);
+  const [videoCurrentTime, setVideoCurrentTime] = useState<number>(0);
   // Resetear dimensiones cuando cambia el archivo
-  useEffect(() => { setImgNatural(null); }, [file?.id]);
+  useEffect(() => {
+    setImgNatural(null);
+    setVideoNatural(null);
+    setVideoCurrentTime(0);
+  }, [file?.id]);
+  // Tolerancia (segundos) alrededor de detection_frame_time donde se muestran
+  // los bboxes en video. Si te pasas, los bboxes desaparecen.
+  const VIDEO_BBOX_TOLERANCE_S = 1.5;
 
 
   // Calcular índice actual del archivo en allFiles - ANTES de los useEffect
@@ -255,21 +267,70 @@ export default function MediaModal({
   const renderMediaPreview = () => {
     switch (file.type) {
       case 'video':
-      case 'export':
+      case 'export': {
+        const boxes = file.face_boxes || [];
+        const detTime = typeof file.detection_frame_time === 'number' ? file.detection_frame_time : null;
+        const inWindow = detTime != null && Math.abs(videoCurrentTime - detTime) < VIDEO_BBOX_TOLERANCE_S;
+        const showOverlay = showFaceBoxes && videoNatural && boxes.length > 0 && detTime != null && inWindow;
         return (
           <div className="relative bg-noche rounded-lg overflow-hidden">
-            <video
-              key={file.id}
-              controls
-              className="w-full h-full object-contain max-h-96"
-              poster={file.thumbnail.startsWith('data:') ? undefined : file.thumbnail}
-              preload="metadata"
-            >
-              <source src={file.url} type="video/mp4" />
-              Tu navegador no soporta la reproducción de video.
-            </video>
+            <div className="relative inline-block max-w-full">
+              <video
+                ref={videoRef}
+                key={file.id}
+                controls
+                className="block max-h-96 w-auto max-w-full object-contain"
+                poster={file.thumbnail.startsWith('data:') ? undefined : file.thumbnail}
+                preload="metadata"
+                onLoadedMetadata={(e) => {
+                  const v = e.currentTarget;
+                  if (v.videoWidth && v.videoHeight) {
+                    setVideoNatural({ w: v.videoWidth, h: v.videoHeight });
+                  }
+                }}
+                onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
+                onSeeked={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
+              >
+                <source src={file.url} type="video/mp4" />
+                Tu navegador no soporta la reproducción de video.
+              </video>
+              {showOverlay && (
+                <FaceBoxesOverlay
+                  boxes={boxes}
+                  naturalWidth={videoNatural!.w}
+                  naturalHeight={videoNatural!.h}
+                  onPersonFilter={onPersonFilter}
+                  onClosePreview={onClose}
+                />
+              )}
+            </div>
+            {boxes.length > 0 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowFaceBoxes(v => !v); }}
+                className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors"
+                title={showFaceBoxes ? `Caras detectadas a los ${detTime?.toFixed(1)}s — salta ahi para verlas` : 'Mostrar caras detectadas'}
+              >
+                {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              </button>
+            )}
+            {/* Indicador sutil sobre cuando aparecen los bboxes */}
+            {showFaceBoxes && boxes.length > 0 && detTime != null && !inWindow && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = detTime;
+                  }
+                }}
+                className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-lavanda/90 hover:bg-lavanda text-white text-xs rounded-full backdrop-blur-sm transition-colors"
+                title={`Saltar al frame con caras detectadas (${detTime.toFixed(1)}s)`}
+              >
+                Caras a {detTime.toFixed(1)}s — ir
+              </button>
+            )}
           </div>
         );
+      }
       case 'audio':
         return (
           <div className="bg-gradient-to-br from-green-400 to-green-600 rounded-lg p-8 flex flex-col items-center justify-center text-white">

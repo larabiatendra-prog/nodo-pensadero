@@ -59,6 +59,9 @@ export interface MediaFile {
   };
   faces?: MediaFace[];
   face_boxes?: FaceBox[];
+  // Solo en videos: segundo del video donde se hizo la deteccion facial.
+  // El visor muestra los bboxes solo cuando currentTime esta cerca de este valor.
+  detection_frame_time?: number;
 }
 
 export interface Collection {

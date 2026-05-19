@@ -383,6 +383,12 @@ function mergeClipIntoFile(fileData, clip, catalog) {
           };
         });
     }
+    // Segundo del video donde se hizo la deteccion facial. Solo presente en
+    // videos. El visor lo usa para mostrar los bboxes solo cuando el
+    // currentTime esta cerca de ese momento.
+    if (typeof clip.identity.detection_frame_time === 'number') {
+      result.detection_frame_time = clip.identity.detection_frame_time;
+    }
   }
 
   // Demographics / composition / technical (objetos completos)

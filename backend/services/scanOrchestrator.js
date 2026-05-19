@@ -24,6 +24,7 @@ const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
 const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
+const folderContext = require('./folderContext');
 
 // Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
 const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
@@ -79,6 +80,50 @@ async function collectImages(folderPath) {
 }
 
 /**
+ * Recorre `folderPath` y devuelve, por cada subcarpeta que contenga medios
+ * escaneables, `{ dir, relPath, mediaCount, imageCount, videoCount }`.
+ * Pensado para el endpoint de inventario que alimenta el modal de
+ * contexto en el frontend.
+ */
+async function listFoldersWithMedia(folderPath) {
+  const counts = new Map(); // dir → { images, videos }
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    let images = 0;
+    let videos = 0;
+    for (const ent of entries) {
+      if (ent.name.startsWith('.') || ent.name.startsWith('$')) continue;
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        await walk(full);
+      } else if (ent.isFile()) {
+        const ext = path.extname(ent.name).toLowerCase();
+        if (IMAGE_EXTS.has(ext)) images++;
+        else if (VIDEO_EXTS.has(ext)) videos++;
+      }
+    }
+    if (images + videos > 0) counts.set(dir, { images, videos });
+  }
+  await walk(folderPath);
+
+  const root = path.resolve(folderPath);
+  return Array.from(counts.entries())
+    .map(([dir, { images, videos }]) => ({
+      dir,
+      relPath: path.relative(root, dir) || '.',
+      mediaCount: images + videos,
+      imageCount: images,
+      videoCount: videos,
+    }))
+    .sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
  * Lee el _pensadero.json (o _marina.json) de una carpeta si existe.
  * Devuelve { catalog, source } o { catalog: null, source: null }.
  */
@@ -122,7 +167,10 @@ async function extractRepresentativeFrame(videoPath, durationSec) {
     }, 30_000);
     p.on('close', (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve(outPath);
+      // Devolvemos un objeto con la ruta y el seek timestamp en segundos
+      // (lo necesita el visor para mostrar los bboxes solo cuando el video
+      // este reproduciendo cerca del momento donde se hizo la deteccion).
+      if (code === 0) resolve({ outPath, seekSec: seek });
       else resolve(null);
     });
     p.on('error', () => {
@@ -262,6 +310,12 @@ async function scanFolder(folderPath, opts = {}) {
     toScan.push(img);
   }
 
+  // Cache de `_contexto.md` por directorio (raíz + cada subcarpeta).
+  // Se rellena perezosamente la primera vez que un archivo de ese dir se
+  // escanea — así, si hay 200 fotos en una misma carpeta, sólo leemos el
+  // archivo una vez.
+  const contextCache = new Map();
+
   job.total = toScan.length;
   broadcastProgress({
     type: 'scan_progress',
@@ -302,12 +356,22 @@ async function scanFolder(folderPath, opts = {}) {
       let entry;
       let technical = {};
       let faceDetections = [];
+      let videoFrameTime = null; // segundo del video donde se detectaron caras (solo videos)
+
+      // Componer el contexto de la carpeta (con herencia desde la raíz del
+      // scan). Si no hay `_contexto.md` en ningún nivel, devolverá string
+      // vacío y el VLM usará el prompt genérico.
+      const folderContextStr = await folderContext.buildContextStringForFile(
+        dir,
+        folderPath,
+        contextCache,
+      );
 
       if (isVideo) {
         // Para vídeo: scanVideo orquesta ffprobe + extracción de frames + VLM.
         // La detección de caras no es por archivo sino por uno de los frames
         // intermedios (compromiso: una pasada de InsightFace en ese frame).
-        entry = await scanner.scanVideo(filePath);
+        entry = await scanner.scanVideo(filePath, { folderContext: folderContextStr });
         // technical lo rellena scanVideo desde ffprobe; no llamamos a sharp
         // que daría error en vídeos.
         // Caras: extraemos un solo frame representativo (centro del vídeo) y
@@ -315,9 +379,10 @@ async function scanFolder(folderPath, opts = {}) {
         if (facesEnabled) {
           try {
             const repFrame = await extractRepresentativeFrame(filePath, entry.technical?.duration);
-            if (repFrame) {
-              faceDetections = await faceSvc.detectFaces(repFrame).catch(() => []);
-              try { await fs.unlink(repFrame); } catch {}
+            if (repFrame && repFrame.outPath) {
+              videoFrameTime = repFrame.seekSec;
+              faceDetections = await faceSvc.detectFaces(repFrame.outPath).catch(() => []);
+              try { await fs.unlink(repFrame.outPath); } catch {}
             }
           } catch (err) {
             console.warn(`[scan-video] face detection skip ${basename}: ${err.message}`);
@@ -325,7 +390,7 @@ async function scanFolder(folderPath, opts = {}) {
         }
       } else {
         [entry, technical, faceDetections] = await Promise.all([
-          scanner.scanImage(filePath),
+          scanner.scanImage(filePath, { folderContext: folderContextStr }),
           extractTechnical(filePath),
           facesEnabled ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
         ]);
@@ -382,6 +447,13 @@ async function scanFolder(folderPath, opts = {}) {
             return out;
           })
           .filter(Boolean);
+
+        // En videos: persistir el segundo donde se hizo la detección. El visor
+        // usa esto para mostrar los bboxes solo cuando el reproductor pasa cerca
+        // de ese momento (los bboxes no son validos en otros frames).
+        if (isVideo && typeof videoFrameTime === 'number') {
+          entry.identity.detection_frame_time = videoFrameTime;
+        }
 
         // Inferir demographics globales: tomar moda de gender/age de TODAS
         // las caras detectadas (no sólo las identificadas) para enriquecer
@@ -505,4 +577,5 @@ module.exports = {
   getJobStatus,
   listJobs,
   cancelJob,
+  listFoldersWithMedia,
 };

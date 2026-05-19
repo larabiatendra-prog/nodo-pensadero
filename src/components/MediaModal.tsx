@@ -78,6 +78,15 @@ export default function MediaModal({
   // los bboxes en video. Si te pasas, los bboxes desaparecen.
   const VIDEO_BBOX_TOLERANCE_S = 1.5;
 
+  // Hover compartido: cuando se pasa el raton sobre un bbox dentro de la
+  // imagen O sobre una bubble de persona en el sidebar, los demas se ocultan.
+  // La key identifica a la "entidad": para personas conocidas es p:<person_id>
+  // (agrupa todos los bboxes del mismo person_id); para desconocidas es
+  // i:<idx> (solo ese bbox individual).
+  const [hoveredFaceKey, setHoveredFaceKey] = useState<string | null>(null);
+  // Resetear hover al cambiar de archivo
+  useEffect(() => { setHoveredFaceKey(null); }, [file?.id]);
+
 
   // Calcular índice actual del archivo en allFiles - ANTES de los useEffect
   const currentIndex = file ? allFiles.findIndex(f => f.id === file.id) : -1;
@@ -302,6 +311,8 @@ export default function MediaModal({
                   naturalHeight={videoNatural!.h}
                   onPersonFilter={onPersonFilter}
                   onClosePreview={onClose}
+                  hoveredFaceKey={hoveredFaceKey}
+                  setHoveredFaceKey={setHoveredFaceKey}
                 />
               )}
             </div>
@@ -384,6 +395,8 @@ export default function MediaModal({
                   naturalHeight={imgNatural.h}
                   onPersonFilter={onPersonFilter}
                   onClosePreview={onClose}
+                  hoveredFaceKey={hoveredFaceKey}
+                  setHoveredFaceKey={setHoveredFaceKey}
                 />
               )}
               {/* Hint hover de fullscreen — se oculta cuando hay bboxes visibles
@@ -552,6 +565,8 @@ export default function MediaModal({
                   file={file}
                   onPersonFilter={onPersonFilter}
                   onClosePreview={onClose}
+                  hoveredFaceKey={hoveredFaceKey}
+                  setHoveredFaceKey={setHoveredFaceKey}
                 />
 
                 {/* Tags */}
@@ -716,25 +731,36 @@ export default function MediaModal({
  * wrapper inline-block que envuelve la <img>, asi los porcentajes son
  * relativos al tamaño renderizado de la imagen sin bandas vacias.
  */
+function boxKey(b: FaceBox, idx: number): string {
+  return b.person_id ? `p:${b.person_id}` : `i:${idx}`;
+}
+
 function FaceBoxesOverlay({
   boxes,
   naturalWidth,
   naturalHeight,
   onPersonFilter,
   onClosePreview,
+  hoveredFaceKey,
+  setHoveredFaceKey,
 }: {
   boxes: FaceBox[];
   naturalWidth: number;
   naturalHeight: number;
   onPersonFilter?: (personId: string) => void;
   onClosePreview?: () => void;
+  hoveredFaceKey: string | null;
+  setHoveredFaceKey: (key: string | null) => void;
 }) {
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   if (!naturalWidth || !naturalHeight) return null;
   return (
     <div className="absolute inset-0 pointer-events-none">
       {boxes.map((b, i) => {
-        const dimmed = hoveredIdx !== null && hoveredIdx !== i;
+        const myKey = boxKey(b, i);
+        // dimmed cuando hay otra entidad hovered. Si comparto person_id con
+        // el hovered (e.g. el hover viene de la bubble de Pepe y este bbox
+        // tambien es de Pepe), no se atenua.
+        const dimmed = hoveredFaceKey !== null && hoveredFaceKey !== myKey;
         const [x1, y1, x2, y2] = b.bbox;
         const left = (x1 / naturalWidth) * 100;
         const top = (y1 / naturalHeight) * 100;
@@ -759,8 +785,8 @@ function FaceBoxesOverlay({
             className={`absolute pointer-events-auto group/face transition-opacity duration-150 ${clickable ? 'cursor-pointer' : ''} ${dimmed ? 'opacity-0' : 'opacity-100'}`}
             style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
             onClick={handleClick}
-            onMouseEnter={() => setHoveredIdx(i)}
-            onMouseLeave={() => setHoveredIdx(null)}
+            onMouseEnter={() => setHoveredFaceKey(myKey)}
+            onMouseLeave={() => setHoveredFaceKey(null)}
             title={clickable ? `Filtrar galeria por ${label}` : undefined}
           >
             <div
@@ -840,10 +866,14 @@ function FilePersonsBubbles({
   file,
   onPersonFilter,
   onClosePreview,
+  hoveredFaceKey,
+  setHoveredFaceKey,
 }: {
   file: MediaFile;
   onPersonFilter?: (personId: string) => void;
   onClosePreview?: () => void;
+  hoveredFaceKey: string | null;
+  setHoveredFaceKey: (key: string | null) => void;
 }) {
   const PEOPLE_COLLAPSED_LIMIT = 4;
   const [registry, setRegistry] = useState<Array<{ person_id: string; display_name: string; avatar_url: string | null }> | null>(null);
@@ -893,6 +923,11 @@ function FilePersonsBubbles({
           const showFallback = !p.avatar_url || brokenAvatars.has(p.person_id);
           const initials = (p.display_name || p.person_id).trim().slice(0, 2).toUpperCase();
           const clickable = !!onPersonFilter;
+          const myKey = `p:${p.person_id}`;
+          const isThisHovered = hoveredFaceKey === myKey;
+          // Atenuar las bubbles cuando hay otra entidad hovered (igual que
+          // los bboxes en la imagen) para reforzar visualmente la conexion.
+          const otherHovered = hoveredFaceKey !== null && !isThisHovered;
           return (
             <button
               key={p.person_id}
@@ -902,8 +937,12 @@ function FilePersonsBubbles({
                   onClosePreview?.();
                 }
               }}
+              onMouseEnter={() => setHoveredFaceKey(myKey)}
+              onMouseLeave={() => setHoveredFaceKey(null)}
               title={`${p.display_name} — click para filtrar la galeria`}
-              className={`flex items-center gap-2 pl-1 pr-3 py-1 rounded-full bg-pizarra hover:bg-lavanda hover:text-white transition-colors text-xs ${clickable ? 'cursor-pointer' : 'cursor-default'}`}
+              className={`flex items-center gap-2 pl-1 pr-3 py-1 rounded-full transition-all text-xs ${clickable ? 'cursor-pointer' : 'cursor-default'} ${
+                isThisHovered ? 'bg-lavanda text-white ring-2 ring-lavanda-claro' : 'bg-pizarra hover:bg-lavanda hover:text-white'
+              } ${otherHovered ? 'opacity-30' : 'opacity-100'}`}
             >
               <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0">
                 {showFallback ? (

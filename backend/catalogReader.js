@@ -290,13 +290,19 @@ function mergeClipIntoFile(fileData, clip, catalog) {
 
   const result = { ...fileData };
 
-  // visual_description
-  if (typeof clip.description === 'string' && clip.description.trim()) {
+  // visual_description: schema v2 separa what + mood. Compat con v1 (description plana).
+  if (typeof clip.description_what === 'string' && clip.description_what.trim()) {
+    const what = clip.description_what.trim();
+    const mood = (typeof clip.description_mood === 'string') ? clip.description_mood.trim() : '';
+    result.visual_description = mood ? `${what} ${mood}` : what;
+    result.description_what = what;
+    if (mood) result.description_mood = mood;
+  } else if (typeof clip.description === 'string' && clip.description.trim()) {
     result.visual_description = clip.description.trim();
   }
 
-  // Tags adicionales: objects + actions + expressions + shot_type +
-  // people_framing + attire. Mantener los que ya venían del nombre/ruta.
+  // Tags adicionales para Stage 1 (matching literal): objects + actions +
+  // expressions + composition + atmosphere + nombres de colores.
   // IMPORTANTE: las personas (faces[].name) NO entran en tags.
   const newTags = [];
   if (clip.semantics) {
@@ -305,18 +311,31 @@ function mergeClipIntoFile(fileData, clip, catalog) {
     newTags.push(...toTagStrings(clip.semantics.expressions));
   }
   if (clip.composition) {
-    if (typeof clip.composition.shot_type === 'string' && clip.composition.shot_type.trim()) {
-      newTags.push(clip.composition.shot_type.trim());
-    }
-    if (typeof clip.composition.people_framing === 'string' && clip.composition.people_framing.trim()) {
-      newTags.push(clip.composition.people_framing.trim());
+    for (const key of ['shot_type','camera_angle','camera_movement','people_framing']) {
+      const v = clip.composition[key];
+      if (typeof v === 'string' && v.trim()) newTags.push(v.trim());
     }
   }
+  if (clip.atmosphere) {
+    for (const key of ['mood','lighting','space_type','time_of_day','style']) {
+      const v = clip.atmosphere[key];
+      if (typeof v === 'string' && v.trim()) newTags.push(v.trim());
+    }
+  }
+  // Compat schema v1: demographics venia del VLM. En v2 viene de InsightFace
+  // (se guarda igual) — seguimos volcandolo a tags para Stage 1.
   if (clip.demographics) {
     newTags.push(...toTagStrings(clip.demographics.age_ranges));
     newTags.push(...toTagStrings(clip.demographics.genders));
     if (typeof clip.demographics.attire === 'string' && clip.demographics.attire.trim()) {
       newTags.push(clip.demographics.attire.trim());
+    }
+  }
+  // Nombres de color de la paleta (v2) — permite buscar "azul" / "ocre" sin
+  // necesitar la rueda de colores aun
+  if (clip.colors && Array.isArray(clip.colors.palette)) {
+    for (const p of clip.colors.palette) {
+      if (p && typeof p.name === 'string' && p.name.trim()) newTags.push(p.name.trim());
     }
   }
 
@@ -334,19 +353,33 @@ function mergeClipIntoFile(fileData, clip, catalog) {
     }
   }
 
-  // Dominant colors
-  if (clip.semantics && Array.isArray(clip.semantics.dominant_colors) && clip.semantics.dominant_colors.length > 0) {
+  // Dominant colors — schema v2 (clip.colors.palette) o legacy (clip.semantics.dominant_colors)
+  if (clip.colors && Array.isArray(clip.colors.palette) && clip.colors.palette.length > 0) {
+    result.colors = {
+      palette: clip.colors.palette
+        .filter(p => p && typeof p === 'object' && typeof p.hex === 'string')
+        .map(p => ({ hex: p.hex, name: typeof p.name === 'string' ? p.name : '' })),
+    };
+    // Compat para componentes que esperaban dominant_colors (array de strings)
+    const names = result.colors.palette.map(p => p.name || p.hex).filter(Boolean);
+    if (names.length > 0) {
+      result.dominant_colors = names;
+      if (!result.dominant_color) result.dominant_color = names[0];
+    }
+  } else if (clip.semantics && Array.isArray(clip.semantics.dominant_colors) && clip.semantics.dominant_colors.length > 0) {
     const colors = clip.semantics.dominant_colors
       .filter(c => c !== null && c !== undefined)
       .map(c => (typeof c === 'string' ? c : (c.name || c.hex || String(c))))
       .filter(c => c && c.trim());
     if (colors.length > 0) {
       result.dominant_colors = colors;
-      // Compat: primer color como dominant_color (string)
-      if (!result.dominant_color) {
-        result.dominant_color = colors[0];
-      }
+      if (!result.dominant_color) result.dominant_color = colors[0];
     }
+  }
+
+  // Atmosphere (schema v2): exponer objeto completo al frontend
+  if (clip.atmosphere && typeof clip.atmosphere === 'object') {
+    result.atmosphere = clip.atmosphere;
   }
 
   // Identity — normalizar al schema canónico

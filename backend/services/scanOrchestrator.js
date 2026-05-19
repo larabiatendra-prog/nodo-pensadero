@@ -465,8 +465,13 @@ async function scanFolder(folderPath, opts = {}) {
           if (a) ageRanges.add(a);
           if (f.gender != null && GENDER_MAP[f.gender]) genders.add(GENDER_MAP[f.gender]);
         }
-        if (ageRanges.size > 0) entry.demographics.age_ranges = Array.from(ageRanges);
-        if (genders.size > 0) entry.demographics.genders = Array.from(genders);
+        // entry.demographics ya no lo aporta el VLM (schema v2). Lo construimos
+        // aqui exclusivamente a partir de las detecciones de InsightFace.
+        if (ageRanges.size > 0 || genders.size > 0) {
+          entry.demographics = entry.demographics || {};
+          if (ageRanges.size > 0) entry.demographics.age_ranges = Array.from(ageRanges);
+          if (genders.size > 0) entry.demographics.genders = Array.from(genders);
+        }
       }
 
       const c = catalogsByDir.get(dir);

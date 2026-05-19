@@ -38,8 +38,13 @@ class VisualScanService {
    * Si el LLM falla o devuelve JSON no parseable, devuelve un entry mínimo
    * con sólo description="" (para que el orquestador pueda al menos registrar
    * que el archivo se intentó escanear).
+   *
+   * @param {string} filePath
+   * @param {object} [opts]
+   * @param {string} [opts.folderContext] Texto a inyectar antes del esquema
+   *   para acotar el dominio (qué es la carpeta, quién aparece, etc.).
    */
-  async scanImage(filePath) {
+  async scanImage(filePath, opts = {}) {
     let buffer;
     try {
       buffer = await fs.readFile(filePath);
@@ -48,7 +53,7 @@ class VisualScanService {
     }
 
     const base64 = buffer.toString('base64');
-    const prompt = this._buildPrompt();
+    const prompt = this._buildPrompt(opts.folderContext);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PER_IMAGE_TIMEOUT_MS);
@@ -91,8 +96,13 @@ class VisualScanService {
    * y agregando los resultados en un único entry compatible con el schema
    * de fotos. Los tags se unionan; la descripción se toma del frame con
    * más contenido; technical viene de ffprobe (duración, fps, codec).
+   *
+   * @param {string} filePath
+   * @param {object} [opts]
+   * @param {string} [opts.folderContext] Contexto opcional inyectado en el
+   *   prompt al describir cada frame.
    */
-  async scanVideo(filePath) {
+  async scanVideo(filePath, opts = {}) {
     // 1. ffprobe para duración + fps + codec + resolución
     const probe = await probeVideo(filePath);
     if (!probe) {
@@ -126,11 +136,11 @@ class VisualScanService {
         throw new Error('No se pudo extraer ningún frame del vídeo');
       }
 
-      // 3. Escanear cada frame con el VLM
+      // 3. Escanear cada frame con el VLM (pasando el mismo contexto de carpeta)
       const frameResults = [];
       for (const fp of framePaths) {
         try {
-          const entry = await this.scanImage(fp);
+          const entry = await this.scanImage(fp, { folderContext: opts.folderContext });
           frameResults.push(entry);
         } catch (err) {
           console.warn(`[scanVideo] frame ${path.basename(fp)}: ${err.message}`);
@@ -181,30 +191,45 @@ class VisualScanService {
     return (list.models || []).map(m => m.name).filter(Boolean);
   }
 
-  _buildPrompt() {
-    return `Eres un asistente experto en describir fotografías para un archivo personal indexable. Devuelve SOLO un JSON sin explicaciones ni markdown.
+  _buildPrompt(folderContext) {
+    const ctx = typeof folderContext === 'string' ? folderContext.trim() : '';
+    const contextSection = ctx
+      ? `CONTEXTO DE LA CARPETA (úsalo para acotar y precisar; NO inventes nada que no veas en la imagen):
+${ctx}
 
-ESQUEMA EXACTO:
+`
+      : '';
+
+    return `Eres un asistente experto en describir fotografias y videos para un archivo personal indexable y buscable en lenguaje natural. Devuelve SOLO un JSON sin explicaciones ni markdown.
+
+${contextSection}ESQUEMA EXACTO:
 {
-  "description": "una sola frase en ESPAÑOL describiendo lo que se ve (qué, quién, dónde, ambiente)",
-  "shot_type": "plano_general" | "plano_americano" | "plano_medio" | "plano_medio_corto" | "primer_plano" | "plano_detalle" | null,
+  "description_what": "frase en ESPAÑOL describiendo QUE se ve (sujetos, verbos, objetos, lugar) — concisa pero rica en sustantivos y verbos",
+  "description_mood": "frase en ESPAÑOL describiendo el AMBIENTE (luz, atmosfera, estilo) — concisa",
+  "shot_type": "plano_general" | "plano_conjunto" | "plano_americano" | "plano_medio" | "plano_medio_corto" | "primer_plano" | "plano_detalle" | null,
+  "camera_angle": "normal" | "picado" | "contrapicado" | "cenital" | "nadir" | null,
+  "camera_movement": "fijo" | "panoramica" | "travelling" | "dolly" | "zoom_in" | "zoom_out" | "handheld" | "steady" | null,
   "people_framing": "ninguno" | "individual" | "pareja" | "grupo" | "multitud",
-  "age_ranges": ["niño" | "joven" | "adulto" | "senior"],
-  "genders": ["hombre" | "mujer"],
-  "attire": "casual" | "formal" | "mixto" | "deportivo" | "elegante" | "" (vacío si no aplica),
-  "objects": ["objeto1","objeto2",...] (máx 10, palabras simples en español),
-  "actions": ["acción1",...] (máx 5, infinitivos o sustantivos en español),
-  "expressions": ["sonrisa","serio","neutro","sorpresa",...] (máx 5, vacío si nadie),
-  "ocr_text": ["texto visible","..."] (máx 10 fragmentos legibles, vacío si nada),
-  "dominant_colors": ["#RRGGBB","#RRGGBB","#RRGGBB"] (3 colores dominantes en hex)
+  "mood": "alegre" | "neutro" | "serio" | "intimo" | "festivo" | "melancolico" | "energico" | "formal" | "contemplativo" | null,
+  "lighting": "luz_natural" | "luz_dorada" | "contraluz" | "interior" | "neon" | "nocturna" | "mixta" | null,
+  "space_type": "interior" | "exterior" | "urbano" | "naturaleza" | "oficina" | "escenario" | "hogar" | "transito" | null,
+  "time_of_day": "amanecer" | "manana" | "mediodia" | "tarde" | "atardecer" | "noche" | "indeterminado" | null,
+  "style": "documental" | "retrato" | "paisaje" | "accion" | "producto" | "ambiente" | "abstracto" | null,
+  "objects": ["objeto1","objeto2",...] (max 10, sustantivos simples en español),
+  "actions": ["accion1",...] (max 5, verbos en infinitivo o sustantivos en español),
+  "expressions": ["sonrisa","serio","neutro","sorpresa",...] (max 5, vacio si nadie),
+  "ocr_text": ["texto visible",...] (max 10 fragmentos legibles, vacio si nada),
+  "palette": [{"hex":"#RRGGBB","name":"nombre en español"}, ...] (3 colores dominantes con nombre humano)
 }
 
 REGLAS:
-1. description en español, una sola frase, evita imaginar lo que no ves.
-2. age_ranges, genders, expressions sólo si hay personas claramente visibles. Si dudas, omite (array vacío).
-3. ocr_text sólo si hay texto legible en la imagen. NO inventes.
-4. dominant_colors: 3 colores principales aproximados.
-5. Devuelve SOLO el JSON, sin texto antes ni después.`;
+1. description_what y description_mood: 2 frases concisas en español. NO inventes lo que no veas en la imagen.
+2. NO inferir edad ni genero de las personas — eso lo hace otro modulo con mas precision. Solo people_framing como conteo aproximado.
+3. camera_movement: solo si es un VIDEO (frame de video); en fotos devuelve null.
+4. ocr_text: solo si hay texto legible. NO inventes texto.
+5. palette: 3 colores principales con nombre humano en español (ejemplos validos: azul marino, ocre, dorado, blanco, gris claro, verde oliva, rojo intenso, rosa pastel, negro, marron, lavanda, turquesa, salmon, beige, naranja, amarillo mostaza).
+6. Si hay CONTEXTO DE LA CARPETA, usalo para precisar — incluyendo nombres de personas mencionadas si aparecen claramente en la imagen. NUNCA inventes nombres que el contexto no proporcione.
+7. Devuelve SOLO el JSON, sin texto antes ni despues.`;
   }
 
   /**
@@ -235,6 +260,15 @@ REGLAS:
   /**
    * Normaliza la salida del LLM al schema canónico de `_pensadero.json`.
    * Tolera campos faltantes y valores inesperados.
+   *
+   * Schema v2 (2026-05-19):
+   *  - description_what + description_mood (2 frases)
+   *  - shot_type / camera_angle / camera_movement
+   *  - mood / lighting / space_type / time_of_day / style
+   *  - palette: [{hex, name}] (con nombre humano)
+   *  - YA NO: age_ranges, genders, attire (los aporta InsightFace via identity.detections)
+   *  - YA NO: description (sustituido por description_what + description_mood)
+   *  - YA NO: dominant_colors hex sueltos (ahora palette con nombre)
    */
   _normalizeEntry(raw, filePath) {
     const r = raw || {};
@@ -249,55 +283,87 @@ REGLAS:
       return allowed.includes(s) ? s : fallback;
     };
 
-    const description = str(r.description);
+    // Descripcion: 2 frases. Compat con scans v1 que solo tienen `description`.
+    const descWhat = str(r.description_what) || str(r.description);
+    const descMood = str(r.description_mood);
+
+    // Composicion
     const shotType = enumVal(r.shot_type, [
-      'plano_general','plano_americano','plano_medio','plano_medio_corto','primer_plano','plano_detalle'
+      'plano_general','plano_conjunto','plano_americano','plano_medio','plano_medio_corto','primer_plano','plano_detalle'
     ]);
-    const framing = enumVal(r.people_framing, [
-      'ninguno','individual','pareja','grupo','multitud'
-    ], 'ninguno');
+    const cameraAngle = enumVal(r.camera_angle, ['normal','picado','contrapicado','cenital','nadir']);
+    const cameraMovement = enumVal(r.camera_movement, ['fijo','panoramica','travelling','dolly','zoom_in','zoom_out','handheld','steady']);
+    const framing = enumVal(r.people_framing, ['ninguno','individual','pareja','grupo','multitud'], 'ninguno');
 
-    const ageRanges = arrStr(r.age_ranges, 4).filter(x =>
-      ['niño','joven','adulto','senior'].includes(x.toLowerCase())
-    );
-    const genders = arrStr(r.genders, 2).filter(x =>
-      ['hombre','mujer'].includes(x.toLowerCase())
-    );
-    const attire = enumVal(r.attire, ['casual','formal','mixto','deportivo','elegante']) || '';
+    // Atmosfera (nuevos enums buscables en lenguaje natural)
+    const mood = enumVal(r.mood, ['alegre','neutro','serio','intimo','festivo','melancolico','energico','formal','contemplativo']);
+    const lighting = enumVal(r.lighting, ['luz_natural','luz_dorada','contraluz','interior','neon','nocturna','mixta']);
+    const spaceType = enumVal(r.space_type, ['interior','exterior','urbano','naturaleza','oficina','escenario','hogar','transito']);
+    const timeOfDay = enumVal(r.time_of_day, ['amanecer','manana','mediodia','tarde','atardecer','noche','indeterminado']);
+    const style = enumVal(r.style, ['documental','retrato','paisaje','accion','producto','ambiente','abstracto']);
 
+    // Listas libres
     const objects = arrStr(r.objects, 10);
     const actions = arrStr(r.actions, 5);
     const expressions = arrStr(r.expressions, 5);
     const ocrText = arrStr(r.ocr_text, 10);
-    const dominantColors = arrStr(r.dominant_colors, 5)
-      .map(c => c.replace(/[^#0-9a-fA-F]/g, ''))
-      .filter(c => /^#[0-9a-fA-F]{6}$/.test(c));
+
+    // Paleta: [{hex, name}]. Tolera tambien el legacy dominant_colors (array de hex).
+    let palette = [];
+    if (Array.isArray(r.palette)) {
+      palette = r.palette
+        .filter(p => p && typeof p === 'object')
+        .map(p => {
+          const hex = typeof p.hex === 'string' ? p.hex.replace(/[^#0-9a-fA-F]/g, '') : '';
+          const name = typeof p.name === 'string' ? p.name.trim() : '';
+          return { hex, name };
+        })
+        .filter(p => /^#[0-9a-fA-F]{6}$/.test(p.hex))
+        .slice(0, 5);
+    } else if (Array.isArray(r.dominant_colors)) {
+      palette = r.dominant_colors
+        .filter(c => typeof c === 'string')
+        .map(c => ({ hex: c.replace(/[^#0-9a-fA-F]/g, ''), name: '' }))
+        .filter(p => /^#[0-9a-fA-F]{6}$/.test(p.hex))
+        .slice(0, 5);
+    }
 
     return {
-      description,
+      schema_version: 2,
+      description_what: descWhat,
+      description_mood: descMood,
+      // Compat: `description` se sigue exponiendo como concatenacion para que
+      // catalogReader/aiSearch existentes sigan funcionando hasta migrar.
+      description: [descWhat, descMood].filter(Boolean).join(' '),
       technical: {
         // El orquestador rellena resolution/aspect_ratio leyendo el archivo.
       },
       identity: {
-        faces: [],       // sin detección automática por ahora
+        faces: [],       // se rellenan via InsightFace en scanOrchestrator
         face_count: 0,
         spaces: [],
       },
-      demographics: {
-        age_ranges: ageRanges,
-        genders,
-        attire,
-      },
       composition: {
         shot_type: shotType,
+        camera_angle: cameraAngle,
+        camera_movement: cameraMovement,
         people_framing: framing,
+      },
+      atmosphere: {
+        mood,
+        lighting,
+        space_type: spaceType,
+        time_of_day: timeOfDay,
+        style,
       },
       semantics: {
         objects,
         expressions,
         actions,
-        dominant_colors: dominantColors,
         text: ocrText,
+      },
+      colors: {
+        palette,
       },
     };
   }

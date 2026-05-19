@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles } from 'lucide-react';
+import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap } from 'lucide-react';
 import { api } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
@@ -586,6 +586,35 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                     }
                   >
                     <Sparkles className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />
+                  </button>
+
+                  {/* Re-escanear FORZADO — re-procesa todas las imágenes aunque
+                      ya estén catalogadas. Útil al cambiar el prompt del VLM. */}
+                  <button
+                    onClick={() => {
+                      if (!confirm(`¿Re-escanear con IA TODAS las imágenes de "${path.path}", incluso las ya catalogadas? Puede tardar varios minutos.`)) return;
+                      handleAiScan(path.id, true);
+                    }}
+                    disabled={
+                      !path.isActive ||
+                      aiScansByPath.get(path.id)?.status === 'running' ||
+                      !vlmHealth?.ollamaRunning ||
+                      !vlmHealth?.modelAvailable
+                    }
+                    className={`p-2 rounded-lg transition-colors ${
+                      aiScansByPath.get(path.id)?.status === 'running'
+                        ? 'bg-lavanda text-white cursor-wait'
+                        : !path.isActive || !vlmHealth?.ollamaRunning || !vlmHealth?.modelAvailable
+                          ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
+                          : 'bg-grafito text-bruma hover:bg-bruma hover:text-noche'
+                    }`}
+                    title={
+                      !vlmHealth?.ollamaRunning ? 'Ollama no disponible' :
+                      !vlmHealth?.modelAvailable ? `Falta modelo: ollama pull ${vlmHealth.model}` :
+                      'Re-escanear FORZADO (incluye las ya catalogadas, fuerza re-procesado con el prompt actual)'
+                    }
+                  >
+                    <Zap className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />
                   </button>
 
                   <button

@@ -396,6 +396,9 @@ async function scanFolder(folderPath, opts = {}) {
         ]);
         // Mezclar technical de sharp con lo que diga el VLM (sharp manda)
         entry.technical = { ...(entry.technical || {}), ...technical };
+        // En FOTOS el camera_movement no aplica (el prompt lo pide solo para
+        // video pero modelos pequenos a veces lo rellenan igualmente).
+        if (entry.composition) entry.composition.camera_movement = null;
       }
 
       // Identidad: si tenemos detección de caras, sobrescribir lo que dijo

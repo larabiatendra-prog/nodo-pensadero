@@ -479,12 +479,14 @@ async function extractFrame(filePath, timestampSec, outPath) {
 function aggregateFrameEntries(frames, probe) {
   if (!Array.isArray(frames) || frames.length === 0) return null;
 
-  // description: la más larga (heurística de "más contenido")
-  const description = frames
-    .map(f => f.description || '')
+  // description_what y description_mood: la más larga de cada uno
+  const longest = (arr) => arr
+    .map(v => v || '')
     .sort((a, b) => b.length - a.length)[0] || '';
+  const descWhat = longest(frames.map(f => f.description_what));
+  const descMood = longest(frames.map(f => f.description_mood));
 
-  // Moda de shot_type / people_framing
+  // Moda (entrada mas frecuente, ignora nulls/vacios)
   const mode = (arr) => {
     const counts = new Map();
     for (const v of arr) {
@@ -499,8 +501,19 @@ function aggregateFrameEntries(frames, probe) {
     return best;
   };
 
+  // Composición: moda de cada campo entre los frames
   const shotType = mode(frames.map(f => f.composition?.shot_type)) || null;
+  const cameraAngle = mode(frames.map(f => f.composition?.camera_angle)) || null;
+  // camera_movement SÍ aplica en video (a diferencia de fotos). Moda de lo que diga el VLM
+  const cameraMovement = mode(frames.map(f => f.composition?.camera_movement)) || null;
   const peopleFraming = mode(frames.map(f => f.composition?.people_framing)) || 'ninguno';
+
+  // Atmósfera: moda de cada campo
+  const mood = mode(frames.map(f => f.atmosphere?.mood)) || null;
+  const lighting = mode(frames.map(f => f.atmosphere?.lighting)) || null;
+  const spaceType = mode(frames.map(f => f.atmosphere?.space_type)) || null;
+  const timeOfDay = mode(frames.map(f => f.atmosphere?.time_of_day)) || null;
+  const style = mode(frames.map(f => f.atmosphere?.style)) || null;
 
   // Unión deduplicada respetando primer orden de aparición
   const unionLimit = (arrays, limit) => {
@@ -525,21 +538,18 @@ function aggregateFrameEntries(frames, probe) {
   const expressions = unionLimit(frames.map(f => f.semantics?.expressions), 5);
   const ocrText = unionLimit(frames.map(f => f.semantics?.text), 10);
 
-  // Demographics: unión
-  const ageRanges = unionLimit(frames.map(f => f.demographics?.age_ranges), 4);
-  const genders = unionLimit(frames.map(f => f.demographics?.genders), 2);
-  const attire = mode(frames.map(f => f.demographics?.attire).filter(Boolean)) || '';
+  // Paleta: del primer frame que tenga datos
+  const firstWithPalette = frames.find(f => Array.isArray(f.colors?.palette) && f.colors.palette.length > 0);
+  const palette = firstWithPalette ? firstWithPalette.colors.palette : [];
 
-  // Colores del primer frame con datos
-  const dominantColors = (frames.find(f => f.semantics?.dominant_colors?.length)?.semantics?.dominant_colors) || [];
-
-  // Detectar movimiento: si las descripciones mencionan acciones (correr,
-  // caminar, etc.) o si los frames difieren mucho. Heurística simple:
-  // si actions > 1, asumir movimiento.
+  // movement_type heurístico (legacy field). Mantener por compat.
   const movementType = actions.length > 0 ? 'moving' : 'estatico';
 
   return {
-    description,
+    schema_version: 2,
+    description_what: descWhat,
+    description_mood: descMood,
+    description: [descWhat, descMood].filter(Boolean).join(' '),
     technical: {
       duration: probe?.duration || null,
       resolution: probe ? `${probe.width}x${probe.height}` : null,
@@ -552,21 +562,27 @@ function aggregateFrameEntries(frames, probe) {
       face_count: 0,
       spaces: [],
     },
-    demographics: {
-      age_ranges: ageRanges,
-      genders,
-      attire,
-    },
     composition: {
       shot_type: shotType,
+      camera_angle: cameraAngle,
+      camera_movement: cameraMovement,
       people_framing: peopleFraming,
+    },
+    atmosphere: {
+      mood,
+      lighting,
+      space_type: spaceType,
+      time_of_day: timeOfDay,
+      style,
     },
     semantics: {
       objects,
       expressions,
       actions,
-      dominant_colors: dominantColors,
       text: ocrText,
+    },
+    colors: {
+      palette,
     },
   };
 }

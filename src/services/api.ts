@@ -606,6 +606,34 @@ class ApiService {
       method: 'POST',
     });
   }
+
+  // ============================================
+  // CLUSTERING DE CARAS DESCONOCIDAS
+  // ============================================
+
+  async listFaceClusters() {
+    return this.fetchWithErrorHandling<ApiResponse<{ clusters: any[]; computedAt: number; fromCache: boolean }> & { jobId?: string; status?: string }>(`${API_BASE_URL}/persons/clusters`);
+  }
+
+  async refreshFaceClusters() {
+    return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/persons/clusters/refresh`, {
+      method: 'POST',
+    });
+  }
+
+  faceClusterSampleUrl(clusterId: string, index: number): string {
+    return `${API_BASE_URL}/persons/clusters/${encodeURIComponent(clusterId)}/sample/${index}`;
+  }
+
+  async promoteFaceCluster(clusterId: string, payload: { person_id: string; display_name?: string; aliases?: string[] }) {
+    return this.fetchWithErrorHandling<ApiResponse<{ person_id: string; display_name: string; face_count: number; avatar_path: string | null }>>(
+      `${API_BASE_URL}/persons/clusters/${encodeURIComponent(clusterId)}/promote`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  }
 }
 
 // Tipos para Image Search

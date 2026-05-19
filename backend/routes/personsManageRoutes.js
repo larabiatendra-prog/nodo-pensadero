@@ -16,6 +16,10 @@
  *  - POST   /api/persons/reidentify          — re-identifica retroactivamente todas las fotos
  *  - GET    /api/persons/reidentify/status/:jobId — estado del job de re-identificacion
  *  - POST   /api/persons/reidentify/cancel/:jobId — cancela un job en curso
+ *  - GET    /api/persons/clusters            — clusters de caras desconocidas (cache 5min)
+ *  - POST   /api/persons/clusters/refresh    — fuerza recomputo del clustering
+ *  - GET    /api/persons/clusters/:id/sample/:i — crop de la cara i del cluster id
+ *  - POST   /api/persons/clusters/:id/promote — convierte el cluster en persona del registry
  *
  * Las fotos viven en `<AVATARS_BASE>/people/<person_id>/<n>.<ext>` para
  * que el endpoint estático `/persons-avatars` ya las sirva sin más config.
@@ -27,8 +31,12 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
-const { getInstance: getFaceService } = require('../services/faceService');
+const { getInstance: getFaceService, decodeEmbedding } = require('../services/faceService');
 const faceReidentifier = require('../services/faceReidentifier');
+const faceClusterer = require('../services/faceClusterer');
+const sharp = require('sharp');
+const { spawn } = require('child_process');
+const os = require('os');
 
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
@@ -235,6 +243,273 @@ module.exports = function createPersonsManageRoutes(deps) {
     const ok = faceReidentifier.cancelJob(req.params.jobId);
     if (!ok) return res.status(404).json({ success: false, error: 'job no cancelable' });
     res.json({ success: true, cancelled: true });
+  });
+
+  // ==============================================================
+  // CLUSTERING DE CARAS DESCONOCIDAS
+  // ==============================================================
+
+  async function getActiveRoots() {
+    if (typeof getScanPaths !== 'function') return [];
+    const paths = await getScanPaths();
+    return (Array.isArray(paths) ? paths : [])
+      .filter(p => p && p.isActive !== false && p.path)
+      .map(p => p.path);
+  }
+
+  function publicCluster(c) {
+    // No exponemos el centroide ni los embeddings — son grandes y no los necesita el frontend.
+    return {
+      cluster_id: c.cluster_id,
+      face_count: c.face_count,
+      avg_score: c.avg_score,
+      dominant_age: c.dominant_age,
+      dominant_gender: c.dominant_gender,
+      sample_count: c.samples.length,
+    };
+  }
+
+  // GET — devuelve clusters cacheados; si no hay cache, lanza job y responde { jobId }
+  router.get('/persons/clusters', async (req, res) => {
+    const cached = faceClusterer.getCached();
+    if (cached) {
+      return res.json({
+        success: true,
+        data: {
+          clusters: cached.clusters.map(publicCluster),
+          computedAt: cached.computedAt,
+          fromCache: true,
+        },
+      });
+    }
+    try {
+      const rootDirs = await getActiveRoots();
+      if (rootDirs.length === 0) return res.status(400).json({ success: false, error: 'no hay rutas activas configuradas' });
+      const jobId = `cluster_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setImmediate(() => {
+        faceClusterer.clusterAll({
+          rootDirs,
+          broadcastProgress: broadcastProgress || (() => {}),
+          jobId,
+        }).catch(err => console.error('[cluster] error fatal:', err));
+      });
+      res.json({ success: true, jobId, status: 'started', fromCache: false });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST — fuerza recomputo
+  router.post('/persons/clusters/refresh', async (req, res) => {
+    faceClusterer.invalidateCache();
+    try {
+      const rootDirs = await getActiveRoots();
+      if (rootDirs.length === 0) return res.status(400).json({ success: false, error: 'no hay rutas activas configuradas' });
+      const jobId = `cluster_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setImmediate(() => {
+        faceClusterer.clusterAll({
+          rootDirs,
+          broadcastProgress: broadcastProgress || (() => {}),
+          jobId,
+        }).catch(err => console.error('[cluster] error fatal:', err));
+      });
+      res.json({ success: true, jobId, status: 'started' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg']);
+
+  // Extrae un frame representativo (~30% de duracion) de un video a un temp jpg.
+  // Replica la logica de scanOrchestrator.extractRepresentativeFrame para que el
+  // bbox guardado por el scan coincida con el frame recortado aqui.
+  async function extractVideoFrame(videoPath) {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pensadero-clusterframe-'));
+    const outPath = path.join(tmpDir, 'rep.jpg');
+    // Probar primero con duration via ffprobe simple, sino fallback a 5s
+    const seekSec = await new Promise(resolve => {
+      const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoPath]);
+      let buf = '';
+      ff.stdout.on('data', d => { buf += d.toString(); });
+      ff.on('close', () => {
+        const dur = parseFloat(buf.trim());
+        resolve(isFinite(dur) && dur > 1 ? dur * 0.3 : 5);
+      });
+      ff.on('error', () => resolve(5));
+    });
+    return new Promise((resolve) => {
+      const p = spawn('ffmpeg', ['-y', '-ss', String(seekSec), '-i', videoPath, '-frames:v', '1', '-q:v', '3', outPath], { stdio: 'ignore' });
+      const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch {} resolve(null); }, 30_000);
+      p.on('close', (code) => { clearTimeout(timer); resolve(code === 0 ? outPath : null); });
+      p.on('error', () => { clearTimeout(timer); resolve(null); });
+    });
+  }
+
+  /**
+   * Recorta una cara desde una imagen (path) usando bbox + padding. Devuelve
+   * un Buffer JPEG redimensionado a tam max.
+   */
+  async function cropFaceFromImage(srcPath, bbox, size = 200) {
+    const img = sharp(srcPath);
+    const meta = await img.metadata();
+    if (!meta.width || !meta.height) throw new Error('imagen sin dimensiones');
+    const [x1, y1, x2, y2] = bbox;
+    const w = Math.max(1, x2 - x1);
+    const h = Math.max(1, y2 - y1);
+    const padX = w * 0.3;
+    const padY = h * 0.3;
+    let left = Math.max(0, Math.floor(x1 - padX));
+    let top = Math.max(0, Math.floor(y1 - padY));
+    let width = Math.min(meta.width - left, Math.ceil(w + padX * 2));
+    let height = Math.min(meta.height - top, Math.ceil(h + padY * 2));
+    if (width < 4 || height < 4) throw new Error('crop demasiado pequeño');
+    return img.extract({ left, top, width, height }).resize(size, size, { fit: 'cover' }).jpeg({ quality: 82 }).toBuffer();
+  }
+
+  // GET — thumbnail recortado de una cara concreta del cluster
+  router.get('/persons/clusters/:cluster_id/sample/:index', async (req, res) => {
+    const cluster = faceClusterer.getCluster(req.params.cluster_id);
+    if (!cluster) return res.status(404).json({ success: false, error: 'cluster no encontrado (cache expirado?)' });
+    const idx = parseInt(req.params.index, 10);
+    if (!isFinite(idx) || idx < 0 || idx >= cluster.samples.length) {
+      return res.status(400).json({ success: false, error: 'indice fuera de rango' });
+    }
+    const sample = cluster.samples[idx];
+    const srcPath = path.join(sample.folder, sample.basename);
+    const ext = path.extname(sample.basename).toLowerCase();
+    let cropSrc = srcPath;
+    let tmpToCleanup = null;
+    try {
+      if (VIDEO_EXTS.has(ext)) {
+        const framePath = await extractVideoFrame(srcPath);
+        if (!framePath) return res.status(500).json({ success: false, error: 'no se pudo extraer frame del video' });
+        cropSrc = framePath;
+        tmpToCleanup = framePath;
+      }
+      const buf = await cropFaceFromImage(cropSrc, sample.bbox, 200);
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.end(buf);
+    } catch (err) {
+      console.warn('[cluster-thumb]', err.message);
+      res.status(500).json({ success: false, error: err.message });
+    } finally {
+      if (tmpToCleanup) {
+        try { await fsp.unlink(tmpToCleanup); } catch {}
+        try { await fsp.rmdir(path.dirname(tmpToCleanup)); } catch {}
+      }
+    }
+  });
+
+  // POST — promote: convertir el cluster en una persona del registry
+  router.post('/persons/clusters/:cluster_id/promote', async (req, res) => {
+    const cluster = faceClusterer.getCluster(req.params.cluster_id);
+    if (!cluster) return res.status(404).json({ success: false, error: 'cluster no encontrado (cache expirado?)' });
+    const { person_id, display_name, aliases } = req.body || {};
+    if (!person_id || typeof person_id !== 'string') {
+      return res.status(400).json({ success: false, error: 'person_id requerido' });
+    }
+    if (!/^[a-zA-Z0-9_\-]+$/.test(person_id)) {
+      return res.status(400).json({ success: false, error: 'person_id alfanumerico (a-z, 0-9, _, -)' });
+    }
+
+    const state = peopleRegistry.getState();
+    if (!state.avatarsBase) return res.status(500).json({ success: false, error: 'avatarsBase no configurado' });
+
+    // Validar que el person_id no choque con uno existente. Si choca, salir
+    // por seguridad — no queremos sobreescribir embeddings.json del usuario.
+    if (state.personIds.includes(person_id)) {
+      return res.status(409).json({ success: false, error: `person_id "${person_id}" ya existe` });
+    }
+
+    const personDir = path.join(state.avatarsBase, 'people', person_id);
+    await fsp.mkdir(personDir, { recursive: true });
+
+    // 1) Crear embeddings.json directamente desde el centroid del cluster.
+    //    Formato compatible con faceService.loadAllEmbeddings.
+    const centroid = decodeEmbedding(cluster.centroid_b64);
+    if (!centroid) return res.status(500).json({ success: false, error: 'centroid no decodificable' });
+    const embJson = {
+      person_id,
+      version: 1,
+      count: cluster.face_count,
+      photos_used: [],
+      mean_similarity_to_centroid: cluster.avg_score,
+      min_similarity_to_centroid: null,
+      centroid: Array.from(centroid),
+      trained_at: new Date().toISOString(),
+      source: 'cluster_promote',
+      cluster_face_count: cluster.face_count,
+    };
+    try {
+      await fsp.writeFile(path.join(personDir, 'embeddings.json'), JSON.stringify(embJson), 'utf-8');
+    } catch (err) {
+      return res.status(500).json({ success: false, error: `no se pudo escribir embeddings.json: ${err.message}` });
+    }
+
+    // 2) Recortar el sample con mejor score como avatar visual
+    let avatarRelPath = null;
+    const bestSample = cluster.samples[0]; // ya ordenados desc por score
+    if (bestSample) {
+      const srcPath = path.join(bestSample.folder, bestSample.basename);
+      const ext = path.extname(bestSample.basename).toLowerCase();
+      let cropSrc = srcPath;
+      let tmpToCleanup = null;
+      try {
+        if (VIDEO_EXTS.has(ext)) {
+          const framePath = await extractVideoFrame(srcPath);
+          if (framePath) { cropSrc = framePath; tmpToCleanup = framePath; }
+        }
+        const buf = await cropFaceFromImage(cropSrc, bestSample.bbox, 400);
+        const avatarPath = path.join(personDir, 'avatar.jpg');
+        await fsp.writeFile(avatarPath, buf);
+        avatarRelPath = path.posix.join('people', person_id, 'avatar.jpg');
+      } catch (err) {
+        console.warn('[cluster-promote] no se pudo generar avatar:', err.message);
+      } finally {
+        if (tmpToCleanup) {
+          try { await fsp.unlink(tmpToCleanup); } catch {}
+          try { await fsp.rmdir(path.dirname(tmpToCleanup)); } catch {}
+        }
+      }
+    }
+
+    // 3) Crear entrada en el registry
+    try {
+      peopleRegistry.upsertPerson({
+        person_id,
+        display_name: (display_name || '').trim() || person_id,
+        aliases: Array.isArray(aliases) ? aliases : [],
+        avatar_path: avatarRelPath || undefined,
+      });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: `upsert fallo: ${err.message}` });
+    }
+
+    // 4) Refrescar el cache de embeddings del faceService para que la nueva
+    //    persona entre inmediatamente en futuros scans / reidentifies.
+    try {
+      const faceSvc = getFaceService();
+      await faceSvc.loadAllEmbeddings(state.avatarsBase);
+    } catch (err) {
+      console.warn('[cluster-promote] loadAllEmbeddings:', err.message);
+    }
+
+    // 5) Invalidar cache de clusters (el cluster promovido ya no es desconocido)
+    faceClusterer.invalidateCache();
+
+    if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+
+    res.json({
+      success: true,
+      data: {
+        person_id,
+        display_name: display_name || person_id,
+        face_count: cluster.face_count,
+        avatar_path: avatarRelPath,
+      },
+    });
   });
 
   // DELETE — borrar una foto concreta

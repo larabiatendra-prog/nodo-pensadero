@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
+import { config } from '../config';
 
 interface MediaModalProps {
   file: MediaFile | null;
@@ -546,26 +547,20 @@ export default function MediaModal({
                   </div>
                 )}
 
+                {/* Personas detectadas en este archivo */}
+                <FilePersonsBubbles
+                  file={file}
+                  onPersonFilter={onPersonFilter}
+                  onClosePreview={onClose}
+                />
+
                 {/* Tags */}
                 <div>
                   <div className="flex items-center space-x-2 mb-3">
                     <Tag className="w-4 h-4 text-slate-400" />
                     <h3 className="font-medium text-slate-900">Etiquetas</h3>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {file.tags.map((tag) => (
-                      <button
-                        key={tag}
-                        onClick={() => handleTagClick(tag)}
-                        className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium hover:bg-opacity-80 border border-transparent transition-all duration-200 cursor-pointer group"
-                        title={`Filtrar por etiqueta: ${tag}`}
-                      >
-                        <span className="group-hover:scale-105 transition-transform duration-200">
-                          {tag}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+                  <TagsList tags={file.tags} onTagClick={handleTagClick} />
                 </div>
 
               </div>
@@ -788,6 +783,147 @@ function FaceBoxesOverlay({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Lista de etiquetas colapsable. Muestra las primeras N por defecto y un boton
+ * "+M" para expandir. Cuando esta expandido aparece "- menos" para colapsar.
+ */
+function TagsList({ tags, onTagClick }: { tags: string[]; onTagClick: (t: string) => void }) {
+  const COLLAPSED_LIMIT = 8;
+  const [expanded, setExpanded] = useState(false);
+  if (!tags || tags.length === 0) return null;
+  const visible = expanded ? tags : tags.slice(0, COLLAPSED_LIMIT);
+  const hidden = tags.length - COLLAPSED_LIMIT;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {visible.map((tag) => (
+        <button
+          key={tag}
+          onClick={() => onTagClick(tag)}
+          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium hover:bg-opacity-80 border border-transparent transition-all duration-200 cursor-pointer group"
+          title={`Filtrar por etiqueta: ${tag}`}
+        >
+          <span className="group-hover:scale-105 transition-transform duration-200">{tag}</span>
+        </button>
+      ))}
+      {hidden > 0 && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-pizarra text-lavanda font-medium hover:bg-lavanda hover:text-white transition-colors"
+          title={`Mostrar ${hidden} etiquetas mas`}
+        >
+          +{hidden}
+        </button>
+      )}
+      {expanded && tags.length > COLLAPSED_LIMIT && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-pizarra text-lavanda font-medium hover:bg-lavanda hover:text-white transition-colors"
+          title="Colapsar etiquetas"
+        >
+          mostrar menos
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Bubbles de las personas detectadas en este archivo. Carga el registry para
+ * obtener avatares; muestra iniciales como fallback cuando no hay avatar o
+ * la imagen falla. Click filtra la galeria por esa persona.
+ */
+function FilePersonsBubbles({
+  file,
+  onPersonFilter,
+  onClosePreview,
+}: {
+  file: MediaFile;
+  onPersonFilter?: (personId: string) => void;
+  onClosePreview?: () => void;
+}) {
+  const [registry, setRegistry] = useState<Array<{ person_id: string; display_name: string; avatar_url: string | null }> | null>(null);
+  const [brokenAvatars, setBrokenAvatars] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listPersonsRegistry().then((r: any) => {
+      if (cancelled) return;
+      if (r && r.success && Array.isArray(r.data)) setRegistry(r.data);
+      else setRegistry([]);
+    }).catch(() => { if (!cancelled) setRegistry([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const faces = file.faces || [];
+  if (faces.length === 0) return null;
+
+  // Cruzar faces con registry para obtener avatar_url
+  const enriched = faces.map(f => {
+    const reg = registry?.find(p => p.person_id === f.person_id);
+    return {
+      person_id: f.person_id,
+      display_name: f.display_name || reg?.display_name || f.person_id,
+      avatar_url: reg?.avatar_url || null,
+    };
+  });
+
+  const lavendaColor = (personId: string) => {
+    let h = 0;
+    for (let i = 0; i < personId.length; i++) { h = (h << 5) - h + personId.charCodeAt(i); h |= 0; }
+    return `hsl(${240 + (Math.abs(h) % 61)}, 40%, 65%)`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-center space-x-2 mb-3">
+        <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+        <h3 className="font-medium text-slate-900">Personas</h3>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        {enriched.map(p => {
+          const showFallback = !p.avatar_url || brokenAvatars.has(p.person_id);
+          const initials = (p.display_name || p.person_id).trim().slice(0, 2).toUpperCase();
+          const clickable = !!onPersonFilter;
+          return (
+            <button
+              key={p.person_id}
+              onClick={() => {
+                if (clickable && p.person_id && onPersonFilter) {
+                  onPersonFilter(p.person_id);
+                  onClosePreview?.();
+                }
+              }}
+              title={`${p.display_name} — click para filtrar la galeria`}
+              className={`flex items-center gap-2 pl-1 pr-3 py-1 rounded-full bg-pizarra hover:bg-lavanda hover:text-white transition-colors text-xs ${clickable ? 'cursor-pointer' : 'cursor-default'}`}
+            >
+              <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0">
+                {showFallback ? (
+                  <div
+                    className="w-full h-full flex items-center justify-center text-noche font-semibold text-[10px]"
+                    style={{ backgroundColor: lavendaColor(p.person_id) }}
+                  >
+                    {initials}
+                  </div>
+                ) : (
+                  <img
+                    src={`${config.apiUrl.replace(/\/api$/, '')}${p.avatar_url}`}
+                    alt={p.display_name}
+                    className="w-full h-full object-cover"
+                    onError={() => {
+                      setBrokenAvatars(prev => { const n = new Set(prev); n.add(p.person_id); return n; });
+                    }}
+                  />
+                )}
+              </div>
+              <span className="font-medium">{p.display_name}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

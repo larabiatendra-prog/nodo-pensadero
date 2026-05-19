@@ -361,6 +361,28 @@ function mergeClipIntoFile(fileData, clip, catalog) {
         .map(normalizeSpace)
         .filter(Boolean);
     }
+    // face_boxes: bbox por cada cara detectada para que el visor pueda
+    // dibujar rectangulos + etiquetas. Strip de embeddings (no los necesita
+    // el cliente y serian ~3KB extra por cara en el payload).
+    if (Array.isArray(clip.identity.detections) && clip.identity.detections.length > 0) {
+      result.face_boxes = clip.identity.detections
+        .filter(d => d && Array.isArray(d.bbox) && d.bbox.length === 4)
+        .map(d => {
+          const personId = (typeof d.person_id === 'string' && d.person_id.trim()) ? d.person_id.trim() : null;
+          const displayName = personId
+            ? (peopleRegistry.getDisplayName(personId) || d.display_name || personId)
+            : null;
+          return {
+            bbox: d.bbox,
+            person_id: personId,
+            display_name: displayName,
+            det_score: typeof d.det_score === 'number' ? d.det_score : null,
+            confidence: typeof d.confidence === 'number' ? d.confidence : null,
+            age: typeof d.age === 'number' ? d.age : null,
+            gender: typeof d.gender === 'number' ? d.gender : null,
+          };
+        });
+    }
   }
 
   // Demographics / composition / technical (objetos completos)

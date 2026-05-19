@@ -360,17 +360,26 @@ async function scanFolder(folderPath, opts = {}) {
         // Persistir TODAS las detecciones (con embeddings base64) para que la
         // re-identificación retroactiva pueda recalcular matches al añadir
         // personas nuevas sin re-detectar las caras desde la imagen.
+        // Incluimos person_id/display_name por detección — uno-a-uno con la
+        // cara fisica — para que el visor pueda dibujar el nombre sobre el bbox.
         entry.identity.detections = faceDetections
-          .map(f => {
+          .map((f, idx) => {
             const b64 = encodeEmbedding(f.embedding);
             if (!b64) return null;
-            return {
+            const match = identified[idx];
+            const out = {
               bbox: f.bbox,
               embedding_b64: b64,
               det_score: f.det_score,
               age: f.age ?? null,
               gender: f.gender ?? null,
             };
+            if (match && match.person_id) {
+              out.person_id = match.person_id;
+              out.display_name = peopleRegistry.getDisplayName(match.person_id);
+              out.confidence = match.similarity;
+            }
+            return out;
           })
           .filter(Boolean);
 

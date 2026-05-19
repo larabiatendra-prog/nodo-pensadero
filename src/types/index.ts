@@ -13,6 +13,19 @@ export interface MediaFace {
   confidence?: number;
 }
 
+// Bounding box de una cara fisica detectada en la imagen. Cuando person_id
+// es null, la cara fue detectada pero no se ha identificado con nadie del
+// registry todavia. Las coords del bbox son en pixeles de la imagen original.
+export interface FaceBox {
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
+  person_id: string | null;
+  display_name: string | null;
+  det_score: number | null;
+  confidence: number | null;
+  age: number | null;
+  gender: number | null;
+}
+
 // Persona agregada devuelta por GET /api/persons
 export interface Person {
   person_id: string;
@@ -45,6 +58,7 @@ export interface MediaFile {
     [key: string]: unknown;
   };
   faces?: MediaFace[];
+  face_boxes?: FaceBox[];
 }
 
 export interface Collection {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Download,
@@ -12,9 +12,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Scissors,
-  Loader2
+  Loader2,
+  Eye,
+  EyeOff
 } from 'lucide-react';
-import { MediaFile } from '../types';
+import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
 
 interface MediaModalProps {
@@ -46,6 +48,20 @@ export default function MediaModal({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [backgroundRemovalError, setBackgroundRemovalError] = useState<string | null>(null);
+
+  // Toggle de overlay de bboxes de caras — preferencia persistida en localStorage
+  const [showFaceBoxes, setShowFaceBoxes] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const v = localStorage.getItem('pensadero_show_face_boxes');
+    return v === null ? true : v === '1';
+  });
+  useEffect(() => {
+    try { localStorage.setItem('pensadero_show_face_boxes', showFaceBoxes ? '1' : '0'); } catch {}
+  }, [showFaceBoxes]);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
+  // Resetear dimensiones cuando cambia el archivo
+  useEffect(() => { setImgNatural(null); }, [file?.id]);
 
 
   // Calcular índice actual del archivo en allFiles - ANTES de los useEffect
@@ -272,30 +288,57 @@ export default function MediaModal({
           </div>
         );
       case 'image':
-      default:
+      default: {
+        const boxes = file.face_boxes || [];
         return (
-          <div
-            className="rounded-lg overflow-hidden relative group cursor-pointer"
-            onClick={() => setIsFullscreen(true)}
-          >
-            <img
-              key={file.id}
-              src={file.url}
-              alt={file.name}
-              className="w-full h-full object-contain max-h-96"
-              onError={(e) => {
-                console.error('Error cargando imagen:', file.url);
-                e.currentTarget.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" fill="%23f3f4f6"/><text x="150" y="100" font-family="Arial" font-size="16" fill="%236b7280" text-anchor="middle">❌ Error cargando imagen</text></svg>';
-              }}
-            />
-            {/* Hover overlay */}
-            <div className="absolute inset-0 bg-noche bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-              <span className="text-white text-sm font-medium px-4 py-2 bg-noche bg-opacity-50 rounded-lg">
-                Pincha para pantalla completa
-              </span>
+          <div className="rounded-lg overflow-hidden relative group">
+            <div
+              className="relative inline-block max-w-full cursor-pointer"
+              onClick={() => setIsFullscreen(true)}
+            >
+              <img
+                ref={imgRef}
+                key={file.id}
+                src={file.url}
+                alt={file.name}
+                className="block max-h-96 w-auto max-w-full object-contain"
+                onLoad={(e) => {
+                  const t = e.currentTarget;
+                  if (t.naturalWidth && t.naturalHeight) {
+                    setImgNatural({ w: t.naturalWidth, h: t.naturalHeight });
+                  }
+                }}
+                onError={(e) => {
+                  console.error('Error cargando imagen:', file.url);
+                  e.currentTarget.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" fill="%23f3f4f6"/><text x="150" y="100" font-family="Arial" font-size="16" fill="%236b7280" text-anchor="middle">❌ Error cargando imagen</text></svg>';
+                }}
+              />
+              {showFaceBoxes && imgNatural && boxes.length > 0 && (
+                <FaceBoxesOverlay boxes={boxes} naturalWidth={imgNatural.w} naturalHeight={imgNatural.h} />
+              )}
+              {/* Hint hover de fullscreen — se oculta cuando hay bboxes visibles
+                  para no tapar las caras. */}
+              {!(showFaceBoxes && boxes.length > 0) && (
+                <div className="absolute inset-0 bg-noche bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
+                  <span className="text-white text-sm font-medium px-4 py-2 bg-noche bg-opacity-50 rounded-lg">
+                    Pincha para pantalla completa
+                  </span>
+                </div>
+              )}
             </div>
+            {/* Toggle de bboxes — solo visible si la imagen tiene caras detectadas */}
+            {boxes.length > 0 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowFaceBoxes(v => !v); }}
+                className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors"
+                title={showFaceBoxes ? 'Ocultar caras' : 'Mostrar caras detectadas'}
+              >
+                {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              </button>
+            )}
           </div>
         );
+      }
     }
   };
 
@@ -601,5 +644,54 @@ export default function MediaModal({
       </div>
     )}
     </>
+  );
+}
+
+/**
+ * Overlay de bboxes de caras sobre una imagen. Se posiciona como hijo de un
+ * wrapper inline-block que envuelve la <img>, asi los porcentajes son
+ * relativos al tamaño renderizado de la imagen sin bandas vacias.
+ */
+function FaceBoxesOverlay({ boxes, naturalWidth, naturalHeight }: { boxes: FaceBox[]; naturalWidth: number; naturalHeight: number }) {
+  if (!naturalWidth || !naturalHeight) return null;
+  return (
+    <div className="absolute inset-0 pointer-events-none">
+      {boxes.map((b, i) => {
+        const [x1, y1, x2, y2] = b.bbox;
+        const left = (x1 / naturalWidth) * 100;
+        const top = (y1 / naturalHeight) * 100;
+        const width = ((x2 - x1) / naturalWidth) * 100;
+        const height = ((y2 - y1) / naturalHeight) * 100;
+        const isKnown = !!b.person_id;
+        // Si la cara esta cerca del borde superior (<15%), colocar label DEBAJO
+        const labelBelow = top < 15;
+        const label = b.display_name || 'desconocido';
+        return (
+          <div
+            key={i}
+            className="absolute pointer-events-auto group/face"
+            style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+          >
+            <div
+              className={`absolute inset-0 rounded-md border-2 transition-colors ${
+                isKnown
+                  ? 'border-lavanda shadow-[0_0_0_1px_rgba(15,17,26,0.6)]'
+                  : 'border-bruma/70 border-dashed'
+              }`}
+            />
+            <div
+              className={`absolute whitespace-nowrap text-xs px-1.5 py-0.5 rounded-md backdrop-blur-sm transition-opacity ${
+                isKnown
+                  ? 'bg-lavanda/90 text-white'
+                  : 'bg-noche/70 text-lavanda-archivo'
+              } ${labelBelow ? 'top-full mt-1' : 'bottom-full mb-1'} left-0`}
+              style={{ fontSize: '11px' }}
+            >
+              {label}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }

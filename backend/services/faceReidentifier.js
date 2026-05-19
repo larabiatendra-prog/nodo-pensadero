@@ -78,6 +78,9 @@ function reidentifyEntry(entry, faceSvc) {
     return { changed: false, hadDetections: false };
   }
 
+  // Snapshot de los person_id actuales antes de mutar — para detectar cambio
+  const prevPersonIds = detections.map(d => d.person_id || null);
+
   // identifyFaces acepta `embedding_b64` (lo decodifica internamente).
   const identified = faceSvc.identifyFaces(detections);
   const named = identified
@@ -94,7 +97,23 @@ function reidentifyEntry(entry, faceSvc) {
   }
   const newFaces = Array.from(byId.values());
 
-  // Demografia inferida de TODAS las detecciones (no solo las identificadas)
+  // Actualizar tambien el person_id por detección (uno-a-uno con cada cara
+  // fisica) para que el visor pueda etiquetar cada bbox.
+  for (let i = 0; i < detections.length; i++) {
+    const det = detections[i];
+    const match = identified[i];
+    if (match && match.person_id) {
+      det.person_id = match.person_id;
+      det.display_name = peopleRegistry.getDisplayName(match.person_id);
+      det.confidence = match.similarity;
+    } else {
+      delete det.person_id;
+      delete det.display_name;
+      delete det.confidence;
+    }
+  }
+
+  // Demografia inferida de TODAS las detecciones
   const ageRanges = new Set();
   const genders = new Set();
   for (const f of detections) {
@@ -103,10 +122,13 @@ function reidentifyEntry(entry, faceSvc) {
     if (f.gender != null && GENDER_MAP[f.gender]) genders.add(GENDER_MAP[f.gender]);
   }
 
-  // Comparar con lo que habia para decidir si hubo cambio real
+  // Cambio real: bien el set agregado faces[] cambia, bien alguna detection
+  // tiene person_id distinto del previo (caso: una segunda aparicion de la
+  // misma persona pasa a estar etiquetada aunque no añada un nombre nuevo)
   const prevFaces = Array.isArray(entry.identity.faces) ? entry.identity.faces : [];
   const sameFaces = prevFaces.length === newFaces.length &&
     prevFaces.every(p => newFaces.find(n => n.person_id === p.person_id && Math.abs((n.confidence || 0) - (p.confidence || 0)) < 1e-4));
+  const detectionsChanged = detections.some((det, i) => (det.person_id || null) !== prevPersonIds[i]);
 
   entry.identity.faces = newFaces;
   entry.identity.face_count = detections.length;
@@ -114,7 +136,7 @@ function reidentifyEntry(entry, faceSvc) {
   if (ageRanges.size > 0) entry.demographics.age_ranges = Array.from(ageRanges);
   if (genders.size > 0) entry.demographics.genders = Array.from(genders);
 
-  return { changed: !sameFaces, hadDetections: true };
+  return { changed: !sameFaces || detectionsChanged, hadDetections: true };
 }
 
 /**

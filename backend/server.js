@@ -43,6 +43,7 @@ const createMediaRoutes = require('./routes/mediaRoutes');
 const createSystemRoutes = require('./routes/systemRoutes');
 const createScanRoutes = require('./routes/scanRoutes');
 const createPersonsManageRoutes = require('./routes/personsManageRoutes');
+const createColorSearchRoutes = require('./routes/colorSearchRoutes');
 
 // Multer para uploads de imagen (lo conservamos por si lo usa el frontend en
 // la búsqueda por imagen futura; actualmente no hay endpoint que lo consuma).
@@ -875,6 +876,13 @@ const personsManageRoutes = createPersonsManageRoutes({
   getScanPaths: loadScanPaths,
 });
 app.use('/api', personsManageRoutes);
+
+// Busqueda por color (Delta E sobre la palette del schema v2). Alimenta
+// la "rueda de colores" del frontend.
+const colorSearchRoutes = createColorSearchRoutes({
+  getMediaFiles: () => mediaFiles,
+});
+app.use('/api', colorSearchRoutes);
 
 // === PERSONS (registry + agregado memoizado) ===
 

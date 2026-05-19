@@ -524,6 +524,38 @@ class ApiService {
     });
   }
 
+  /**
+   * Lista las subcarpetas con material bajo `path`, junto con el estado del
+   * `_contexto.md` de cada una. Alimenta el modal de contexto previo al scan.
+   */
+  async scanInventory(folderPath: string) {
+    const qs = new URLSearchParams({ path: folderPath }).toString();
+    return this.fetchWithErrorHandling<ApiResponse<{
+      root: string;
+      rootContext: { meta: Record<string, any>; body: string } | null;
+      folders: Array<{
+        dir: string;
+        relPath: string;
+        mediaCount: number;
+        imageCount: number;
+        videoCount: number;
+        hasContext: boolean;
+        context: { meta: Record<string, any>; body: string } | null;
+      }>;
+    }>>(`${API_BASE_URL}/scan/inventory?${qs}`);
+  }
+
+  /**
+   * Guarda (o sobrescribe, o borra si todo viene vacío) el `_contexto.md`
+   * de la carpeta indicada.
+   */
+  async saveScanContext(folderPath: string, context: Record<string, any> | null) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan/context`, {
+      method: 'POST',
+      body: JSON.stringify({ folderPath, context }),
+    });
+  }
+
   // ============================================
   // GESTIÓN DE PERSONAS (registry CRUD + fotos)
   // ============================================
@@ -605,6 +637,27 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/reidentify/cancel/${jobId}`, {
       method: 'POST',
     });
+  }
+
+  // ============================================
+  // BUSQUEDA POR COLOR — alimenta la rueda HSL del frontend
+  // ============================================
+
+  async searchByColor(hex: string, threshold: number = 30, max: number = 500) {
+    const params = new URLSearchParams({
+      hex,
+      threshold: String(threshold),
+      max: String(max),
+    });
+    return this.fetchWithErrorHandling<ApiResponse<Array<{
+      fileId: string;
+      name: string;
+      distance: number;
+      matchedHex: string;
+      matchedName: string;
+    }>> & { count: number; totalMatched: number; threshold: number; targetHex: string }>(
+      `${API_BASE_URL}/search/by-color?${params.toString()}`
+    );
   }
 
   // ============================================

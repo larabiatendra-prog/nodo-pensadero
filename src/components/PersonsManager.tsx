@@ -101,6 +101,15 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     loadFaceStatus();
   }, []);
 
+  // Polling automatico mientras el daemon no esta listo. Cada llamada a
+  // loadFaceStatus dispara init() en background en el backend, asi que basta
+  // con consultar el status periodicamente. Se detiene en cuanto ready=true.
+  useEffect(() => {
+    if (faceStatus?.ready) return;
+    const interval = setInterval(() => { loadFaceStatus(); }, 3000);
+    return () => clearInterval(interval);
+  }, [faceStatus?.ready]);
+
   // Escuchar eventos de re-identificacion para actualizar la barra de progreso
   useEffect(() => {
     if (!progressData) return;

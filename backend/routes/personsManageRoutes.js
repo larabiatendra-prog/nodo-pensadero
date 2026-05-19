@@ -192,10 +192,24 @@ module.exports = function createPersonsManageRoutes(deps) {
     }
   });
 
-  // GET — estado del servicio de reconocimiento facial
+  // GET — estado del servicio de reconocimiento facial.
+  // Si el daemon no esta ready y no fallo (unavailable=false), dispara init()
+  // en background — el frontend hara polling y vera ready=true cuando el
+  // daemon Python termine de cargar los modelos (~5-7s). Tambien recarga el
+  // cache de embeddings para que trainedPersons refleje las personas con
+  // embeddings.json en disco.
   router.get('/persons/face-service/status', (req, res) => {
     const faceSvc = getFaceService();
-    res.json({ success: true, data: faceSvc.getStatus() });
+    const st = faceSvc.getStatus();
+    if (!st.ready && !st.unavailable) {
+      // Disparar sin esperar — la respuesta de este endpoint va con el estado actual
+      faceSvc.init().then(ok => {
+        if (ok) {
+          faceSvc.loadAllEmbeddings(peopleRegistry.getState().avatarsBase).catch(() => {});
+        }
+      }).catch(() => {});
+    }
+    res.json({ success: true, data: st });
   });
 
   // POST — re-identificacion retroactiva. Recorre todos los _pensadero.json

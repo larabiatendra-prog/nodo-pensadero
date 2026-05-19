@@ -15,7 +15,9 @@
 
 // Obtener URLs base desde variables de entorno o usar valores por defecto
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5000';
+// IMPORTANTE: incluir /ws en el path — el backend monta el WebSocketServer
+// en `{ server, path: '/ws' }` y rechaza upgrades sin ese path con HTTP 400.
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5000/ws';
 
 // ============================================
 // API_CONFIG - Objeto central de configuración

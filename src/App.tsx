@@ -90,6 +90,10 @@ function App() {
 
   // Person filter state - supports multiple selection (filtra por person_id detectado)
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
+  // Filtro de color de la rueda HSL. Mantenemos los fileIds que matchearon
+  // contra el endpoint /api/search/by-color y el hex objetivo para mostrarlo en UI.
+  const [colorFilterFileIds, setColorFilterFileIds] = useState<Set<string> | null>(null);
+  const [colorFilterHex, setColorFilterHex] = useState<string | null>(null);
 
   // Búsqueda natural — fileIds devueltos por el LLM, ordenados por score.
   // Cuando es null no hay búsqueda natural activa. Cuando es array, restringe la grid a esos IDs.
@@ -230,10 +234,11 @@ function App() {
       personIds?: string[];
       favoritesOnly?: boolean;
       skipDedup?: boolean;
+      colorFileIds?: Set<string> | null;
     } = {}
   ) => {
     let filtered = [...baseFiles];
-    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false } = options;
+    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds } = options;
 
     // 1. Aplicar búsqueda de texto si existe
     if (searchQuery && searchQuery.trim()) {
@@ -318,6 +323,11 @@ function App() {
       );
     }
 
+    // 5b. Filtro por color — fileIds devueltos por /api/search/by-color
+    if (colorFileIds && colorFileIds.size > 0) {
+      filtered = filtered.filter(file => colorFileIds.has(file.id));
+    }
+
     // 6. Búsqueda natural — restringe a los IDs devueltos por el LLM
     // y ordena según el ranking de score que vino del backend.
     if (naturalSearchIds !== null) {
@@ -385,7 +395,7 @@ function App() {
       resetInfiniteScroll();
       console.log(`📜 Scroll reseteado por cambio de filtros: ${currentCount} -> ${newCount} archivos`);
     }
-  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds]);
+  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds]);
 
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
@@ -1833,6 +1843,8 @@ function App() {
     setSelectedPersonIds([]);
     setShowFavoritesOnly(false);
     setNaturalSearchIds(null);
+    setColorFilterFileIds(null);
+    setColorFilterHex(null);
 
     resetInfiniteScroll();
   };
@@ -2458,6 +2470,10 @@ function App() {
                       }
                     }}
                     groupingDisabled={viewMode !== 'grid'}
+                    onColorFilterChange={(fileIds, hex) => {
+                      setColorFilterFileIds(fileIds);
+                      setColorFilterHex(hex);
+                    }}
                   />
                   {hasActiveFilters && (
                     <button
@@ -2829,7 +2845,8 @@ function App() {
     selectedTypes.length > 0 ||
     selectedPersonIds.length > 0 ||
     naturalSearchIds !== null ||
-    showFavoritesOnly
+    showFavoritesOnly ||
+    colorFilterHex !== null
   );
   hasActiveFiltersRef.current = hasActiveFilters;
 

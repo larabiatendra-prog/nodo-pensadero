@@ -1,6 +1,7 @@
 import React from 'react';
 import { Heart } from 'lucide-react';
 import DateRangeFilter from './DateRangeFilter';
+import ColorWheelFilter from './ColorWheelFilter';
 
 interface QuickFiltersProps {
   selectedTypes: string[];
@@ -13,6 +14,7 @@ interface QuickFiltersProps {
   dateFrom?: Date;
   dateTo?: Date;
   onDateRangeChange?: (from: Date | undefined, to: Date | undefined) => void;
+  onColorFilterChange?: (fileIds: Set<string> | null, hex: string | null) => void;
 }
 
 export default function QuickFilters({
@@ -26,6 +28,7 @@ export default function QuickFilters({
   dateFrom,
   dateTo,
   onDateRangeChange,
+  onColorFilterChange,
 }: QuickFiltersProps) {
 
   return (
@@ -110,7 +113,7 @@ export default function QuickFilters({
           </button>
         )}
 
-        {/* Date Range Filter - at the end */}
+        {/* Date Range Filter */}
         {onDateRangeChange && (
           <>
             <div className="h-6 w-px bg-slate-300 mx-2 hidden sm:block" />
@@ -120,6 +123,11 @@ export default function QuickFilters({
               onDateRangeChange={onDateRangeChange}
             />
           </>
+        )}
+
+        {/* Color Wheel Filter - al lado de fechas */}
+        {onColorFilterChange && (
+          <ColorWheelFilter onColorFilterChange={onColorFilterChange} />
         )}
 
         {/* Status indicators */}

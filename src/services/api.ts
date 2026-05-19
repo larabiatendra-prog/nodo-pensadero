@@ -590,6 +590,22 @@ class ApiService {
   async faceServiceStatus() {
     return this.fetchWithErrorHandling<ApiResponse<{ ready: boolean; unavailable: boolean; lastError: string | null; threshold: number; trainedPersons: number }>>(`${API_BASE_URL}/persons/face-service/status`);
   }
+
+  async reidentifyAll() {
+    return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/persons/reidentify`, {
+      method: 'POST',
+    });
+  }
+
+  async reidentifyStatus(jobId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/reidentify/status/${jobId}`);
+  }
+
+  async cancelReidentify(jobId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/reidentify/cancel/${jobId}`, {
+      method: 'POST',
+    });
+  }
 }
 
 // Tipos para Image Search

@@ -21,7 +21,7 @@ const os = require('os');
 const { spawn } = require('child_process');
 const sharp = require('sharp');
 const { getInstance: getScanner } = require('../visualScanService');
-const { getInstance: getFaceService } = require('./faceService');
+const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
 const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
 
@@ -356,6 +356,23 @@ async function scanFolder(folderPath, opts = {}) {
         entry.identity = entry.identity || {};
         entry.identity.faces = Array.from(byId.values());
         entry.identity.face_count = faceDetections.length;
+
+        // Persistir TODAS las detecciones (con embeddings base64) para que la
+        // re-identificación retroactiva pueda recalcular matches al añadir
+        // personas nuevas sin re-detectar las caras desde la imagen.
+        entry.identity.detections = faceDetections
+          .map(f => {
+            const b64 = encodeEmbedding(f.embedding);
+            if (!b64) return null;
+            return {
+              bbox: f.bbox,
+              embedding_b64: b64,
+              det_score: f.det_score,
+              age: f.age ?? null,
+              gender: f.gender ?? null,
+            };
+          })
+          .filter(Boolean);
 
         // Inferir demographics globales: tomar moda de gender/age de TODAS
         // las caras detectadas (no sólo las identificadas) para enriquecer

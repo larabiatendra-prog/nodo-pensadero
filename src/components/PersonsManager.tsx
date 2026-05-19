@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle } from 'lucide-react';
+import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
-import { API_CONFIG } from '../config';
+import { API_CONFIG, config } from '../config';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 interface Person {
   person_id: string;
@@ -44,6 +45,21 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
   // Entrenamiento en curso por persona
   const [trainingIds, setTrainingIds] = useState<Set<string>>(new Set());
 
+  // Estado del job de re-identificacion retroactiva
+  type ReidStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
+  const [reidJob, setReidJob] = useState<{
+    jobId: string | null;
+    status: ReidStatus;
+    total: number;
+    done: number;
+    changed: number;
+    skippedNoDetections: number;
+    catalogsWritten: number;
+    errorMessage?: string;
+  }>({ jobId: null, status: 'idle', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 });
+
+  const { progressData } = useWebSocket(config.wsUrl);
+
   // Form state
   const [newPersonId, setNewPersonId] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
@@ -55,6 +71,53 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
     loadPersons();
     loadFaceStatus();
   }, []);
+
+  // Escuchar eventos de re-identificacion para actualizar la barra de progreso
+  useEffect(() => {
+    if (!progressData) return;
+    const d: any = progressData;
+    if (!d.type || !String(d.type).startsWith('reidentify_')) return;
+    if (reidJob.jobId && d.jobId && d.jobId !== reidJob.jobId) return;
+
+    if (d.type === 'reidentify_start') {
+      setReidJob(prev => ({ ...prev, status: 'running' }));
+    } else if (d.type === 'reidentify_progress') {
+      setReidJob(prev => ({
+        ...prev,
+        status: 'running',
+        total: d.total ?? prev.total,
+        done: d.done ?? prev.done,
+        changed: d.changed ?? prev.changed,
+        skippedNoDetections: d.skippedNoDetections ?? prev.skippedNoDetections,
+      }));
+    } else if (d.type === 'reidentify_done') {
+      setReidJob(prev => ({
+        ...prev,
+        status: 'done',
+        total: d.total ?? prev.total,
+        done: d.done ?? prev.done,
+        changed: d.changed ?? prev.changed,
+        skippedNoDetections: d.skippedNoDetections ?? prev.skippedNoDetections,
+        catalogsWritten: d.catalogsWritten ?? prev.catalogsWritten,
+      }));
+      // Refrescar status (el trainedPersons no cambia pero por consistencia)
+      loadFaceStatus();
+    } else if (d.type === 'reidentify_error') {
+      setReidJob(prev => ({ ...prev, status: 'error', errorMessage: d.error || 'Error desconocido' }));
+    }
+  }, [progressData, reidJob.jobId]);
+
+  async function handleReidentify() {
+    setError(null);
+    setReidJob({ jobId: null, status: 'running', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 });
+    try {
+      const r: any = await api.reidentifyAll();
+      if (!r.success) throw new Error(r.error || 'Error iniciando re-identificacion');
+      if (r.jobId) setReidJob(prev => ({ ...prev, jobId: r.jobId }));
+    } catch (err: any) {
+      setReidJob({ jobId: null, status: 'error', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0, errorMessage: err.message || 'Error' });
+    }
+  }
 
   async function loadFaceStatus() {
     try {
@@ -257,13 +320,30 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
             Gente que aparece en tu archivo. Sube fotos de referencia para que el sistema aprenda a reconocerlas (próximamente con detección automática).
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-lavanda text-white rounded-full hover:bg-lavanda-claro transition-colors font-medium"
-        >
-          <Plus className="w-4 h-4" />
-          Añadir persona
-        </button>
+        <div className="flex items-center gap-2">
+          {faceStatus?.ready && faceStatus.trainedPersons > 0 && (
+            <button
+              onClick={handleReidentify}
+              disabled={reidJob.status === 'running'}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
+                reidJob.status === 'running'
+                  ? 'bg-lavanda/20 text-lavanda cursor-wait'
+                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
+              }`}
+              title="Recalcular matches en fotos ya escaneadas tras añadir o entrenar personas"
+            >
+              <Sparkles className={`w-4 h-4 ${reidJob.status === 'running' ? 'animate-pulse' : ''}`} />
+              Re-identificar biblioteca
+            </button>
+          )}
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-lavanda text-white rounded-full hover:bg-lavanda-claro transition-colors font-medium"
+          >
+            <Plus className="w-4 h-4" />
+            Añadir persona
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -307,6 +387,56 @@ export default function PersonsManager({ onBack }: PersonsManagerProps) {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Banner de progreso/resumen de re-identificacion */}
+      {reidJob.status !== 'idle' && (
+        <div className="mb-6 p-4 bg-pizarra border border-lavanda/30 rounded-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className={`w-4 h-4 text-lavanda ${reidJob.status === 'running' ? 'animate-pulse' : ''}`} />
+              <span className="text-sm font-medium text-marfil">
+                {reidJob.status === 'running' && 'Re-identificando biblioteca...'}
+                {reidJob.status === 'done' && 'Re-identificacion completada'}
+                {reidJob.status === 'error' && 'Error en re-identificacion'}
+                {reidJob.status === 'cancelled' && 'Re-identificacion cancelada'}
+              </span>
+            </div>
+            <span className="text-xs text-lavanda-archivo">
+              {reidJob.total > 0 ? `${reidJob.done}/${reidJob.total}` : 'preparando...'}
+            </span>
+          </div>
+          {reidJob.total > 0 && reidJob.status === 'running' && (
+            <div className="w-full bg-grafito rounded-full h-2 overflow-hidden mb-2">
+              <div
+                className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
+                style={{ width: `${Math.round((reidJob.done / reidJob.total) * 100)}%` }}
+              />
+            </div>
+          )}
+          {(reidJob.status === 'done' || reidJob.status === 'cancelled') && (
+            <div className="text-xs text-lavanda-archivo space-y-0.5">
+              <p>{reidJob.changed} {reidJob.changed === 1 ? 'foto actualizada' : 'fotos actualizadas'} con nuevos matches.</p>
+              <p>{reidJob.catalogsWritten} {reidJob.catalogsWritten === 1 ? 'carpeta reescrita' : 'carpetas reescritas'}.</p>
+              {reidJob.skippedNoDetections > 0 && (
+                <p className="text-bruma">
+                  {reidJob.skippedNoDetections} {reidJob.skippedNoDetections === 1 ? 'entrada antigua' : 'entradas antiguas'} sin embeddings persistidos — necesitan re-escaneo (Rutas → escanear con IA) para entrar en la re-identificacion.
+                </p>
+              )}
+            </div>
+          )}
+          {reidJob.status === 'error' && reidJob.errorMessage && (
+            <p className="text-xs text-red-400">{reidJob.errorMessage}</p>
+          )}
+          {(reidJob.status === 'done' || reidJob.status === 'error' || reidJob.status === 'cancelled') && (
+            <button
+              onClick={() => setReidJob({ jobId: null, status: 'idle', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 })}
+              className="mt-2 text-xs text-lavanda-archivo hover:text-marfil"
+            >
+              Cerrar
+            </button>
+          )}
         </div>
       )}
 

@@ -11,6 +11,11 @@
  *  - POST   /api/persons/registry/:id/photos — sube una foto (multipart, field 'photo')
  *  - DELETE /api/persons/registry/:id/photos/:filename — borra una foto concreta
  *  - POST   /api/persons/registry/:id/avatar — marca una foto como avatar principal
+ *  - GET    /api/persons/face-service/status — estado del daemon InsightFace
+ *  - POST   /api/persons/registry/:id/train  — re-entrena embeddings de una persona
+ *  - POST   /api/persons/reidentify          — re-identifica retroactivamente todas las fotos
+ *  - GET    /api/persons/reidentify/status/:jobId — estado del job de re-identificacion
+ *  - POST   /api/persons/reidentify/cancel/:jobId — cancela un job en curso
  *
  * Las fotos viven en `<AVATARS_BASE>/people/<person_id>/<n>.<ext>` para
  * que el endpoint estático `/persons-avatars` ya las sirva sin más config.
@@ -23,6 +28,7 @@ const fsp = require('fs').promises;
 const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
 const { getInstance: getFaceService } = require('../services/faceService');
+const faceReidentifier = require('../services/faceReidentifier');
 
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
@@ -33,7 +39,7 @@ const upload = multer({
 });
 
 module.exports = function createPersonsManageRoutes(deps) {
-  const { recomputePersonsAggregate } = deps || {};
+  const { recomputePersonsAggregate, broadcastProgress, getScanPaths } = deps || {};
   const router = express.Router();
 
   function getPersonDir(personId) {
@@ -182,6 +188,53 @@ module.exports = function createPersonsManageRoutes(deps) {
   router.get('/persons/face-service/status', (req, res) => {
     const faceSvc = getFaceService();
     res.json({ success: true, data: faceSvc.getStatus() });
+  });
+
+  // POST — re-identificacion retroactiva. Recorre todos los _pensadero.json
+  // bajo las rutas configuradas y recalcula los matches usando los embeddings
+  // ya persistidos. No re-detecta caras; es rapido (~ms por entry).
+  // Devuelve jobId; progreso por WebSocket (events reidentify_*).
+  router.post('/persons/reidentify', async (req, res) => {
+    try {
+      let rootDirs = [];
+      if (typeof getScanPaths === 'function') {
+        const paths = await getScanPaths();
+        rootDirs = (Array.isArray(paths) ? paths : [])
+          .filter(p => p && p.isActive !== false && p.path)
+          .map(p => p.path);
+      }
+      if (rootDirs.length === 0) {
+        return res.status(400).json({ success: false, error: 'no hay rutas activas configuradas' });
+      }
+
+      const jobId = `reid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      setImmediate(() => {
+        faceReidentifier.reidentifyAll({
+          rootDirs,
+          broadcastProgress: broadcastProgress || (() => {}),
+          jobId,
+        }).catch(err => {
+          console.error('[reidentify] error fatal:', err);
+        });
+      });
+
+      res.json({ success: true, jobId, status: 'started' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/persons/reidentify/status/:jobId', (req, res) => {
+    const status = faceReidentifier.getJobStatus(req.params.jobId);
+    if (!status) return res.status(404).json({ success: false, error: 'jobId desconocido' });
+    res.json({ success: true, data: status });
+  });
+
+  router.post('/persons/reidentify/cancel/:jobId', (req, res) => {
+    const ok = faceReidentifier.cancelJob(req.params.jobId);
+    if (!ok) return res.status(404).json({ success: false, error: 'job no cancelable' });
+    res.json({ success: true, cancelled: true });
   });
 
   // DELETE — borrar una foto concreta

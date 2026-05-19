@@ -30,6 +30,22 @@ const SCRIPT_PATH = path.join(PYTHON_DIR, 'face_detector.py');
 // different person <0.3.
 const DEFAULT_MATCH_THRESHOLD = parseFloat(process.env.FACE_MATCH_THRESHOLD || '0.5');
 
+// Embeddings de 512 floats: serializados como base64 de Float32Array para
+// reducir tamaño ~60% vs JSON array y permitir re-identificacion retroactiva
+// (recalcular matches sin re-detectar) cuando se añaden personas nuevas.
+function encodeEmbedding(arr) {
+  if (!arr || arr.length !== 512) return null;
+  const f32 = arr instanceof Float32Array ? arr : Float32Array.from(arr);
+  return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength).toString('base64');
+}
+
+function decodeEmbedding(b64) {
+  if (typeof b64 !== 'string' || !b64) return null;
+  const buf = Buffer.from(b64, 'base64');
+  if (buf.length !== 2048) return null; // 512 × 4 bytes
+  return new Float32Array(buf.buffer, buf.byteOffset, 512);
+}
+
 class FaceService {
   constructor() {
     this.proc = null;
@@ -315,8 +331,11 @@ class FaceService {
     }
 
     return detectedFaces.map(face => {
-      const emb = face.embedding;
-      if (!Array.isArray(emb) || emb.length !== 512) return { ...face };
+      // Aceptar tanto array crudo (recién detectada) como base64 (recuperada
+      // de un _pensadero.json para re-identificación retroactiva).
+      let emb = face.embedding;
+      if (!emb && face.embedding_b64) emb = decodeEmbedding(face.embedding_b64);
+      if (!emb || emb.length !== 512) return { ...face };
 
       // Embedding ya viene L2-normalizado de InsightFace (`normed_embedding`),
       // así que cosine = dot product.
@@ -368,4 +387,4 @@ function getInstance() {
   return _instance;
 }
 
-module.exports = { FaceService, getInstance };
+module.exports = { FaceService, getInstance, encodeEmbedding, decodeEmbedding };

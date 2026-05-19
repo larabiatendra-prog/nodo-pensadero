@@ -871,6 +871,8 @@ app.use('/api', scanRoutes);
 // apariciones). Estas rutas son /api/persons/registry/... — sin colisión.
 const personsManageRoutes = createPersonsManageRoutes({
   recomputePersonsAggregate,
+  broadcastProgress,
+  getScanPaths: loadScanPaths,
 });
 app.use('/api', personsManageRoutes);
 

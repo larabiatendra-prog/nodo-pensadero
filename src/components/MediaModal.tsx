@@ -673,10 +673,12 @@ function FaceBoxesOverlay({
   onPersonFilter?: (personId: string) => void;
   onClosePreview?: () => void;
 }) {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   if (!naturalWidth || !naturalHeight) return null;
   return (
     <div className="absolute inset-0 pointer-events-none">
       {boxes.map((b, i) => {
+        const dimmed = hoveredIdx !== null && hoveredIdx !== i;
         const [x1, y1, x2, y2] = b.bbox;
         const left = (x1 / naturalWidth) * 100;
         const top = (y1 / naturalHeight) * 100;
@@ -698,9 +700,11 @@ function FaceBoxesOverlay({
         return (
           <div
             key={i}
-            className={`absolute pointer-events-auto group/face ${clickable ? 'cursor-pointer' : ''}`}
+            className={`absolute pointer-events-auto group/face transition-opacity duration-150 ${clickable ? 'cursor-pointer' : ''} ${dimmed ? 'opacity-0' : 'opacity-100'}`}
             style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
             onClick={handleClick}
+            onMouseEnter={() => setHoveredIdx(i)}
+            onMouseLeave={() => setHoveredIdx(null)}
             title={clickable ? `Filtrar galeria por ${label}` : undefined}
           >
             <div

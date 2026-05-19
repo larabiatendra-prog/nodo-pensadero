@@ -12,6 +12,7 @@ const router = express.Router();
 
 const aiSearchService = require('../aiSearchService');
 const peopleRegistry = require('../peopleRegistry');
+const aliasTable = require('../aliasTable');
 
 module.exports = function createAiRoutes(deps) {
   const { getMediaFiles, getPeopleHints } = deps;
@@ -47,7 +48,20 @@ module.exports = function createAiRoutes(deps) {
     // En faces también se busca por person_id y por aliases del registry.
     if (q) {
       const query = normalize(q);
-      // nameOf devuelve el "nombre legible" de un face/space normalizado.
+      // Expansion via aliasTable: si "salto" esta mapeado al grupo
+      // "saltar/salto/saltito/brincar", la query matchea cualquiera de las
+      // variantes. Si q no esta mapeada, expandedTerms == [q].
+      const expandedTerms = aliasTable.expandTerm(q).map(normalize).filter(Boolean);
+      const expandedSet = new Set(expandedTerms);
+      // Si solo hay una variante (la query original) usamos includes; si hay
+      // mas, matchea CUALQUIERA contenida o igual al tag.
+      const matchesAnyExpanded = (text) => {
+        const t = normalize(text);
+        for (const term of expandedSet) {
+          if (t.includes(term)) return true;
+        }
+        return false;
+      };
       const faceText = (f) => {
         if (!f || typeof f !== 'object') return '';
         return [f.display_name, f.person_id].filter(Boolean).join(' ');
@@ -57,17 +71,16 @@ module.exports = function createAiRoutes(deps) {
         return [s.display_name, s.space_id].filter(Boolean).join(' ');
       };
       results = results.filter(file => {
-        if (normalize(file.name).includes(query)) return true;
-        if ((file.tags || []).some(tag => normalize(tag).includes(query))) return true;
-        if (normalize(file.visual_description).includes(query)) return true;
-        if (normalize(file.ocr_text).includes(query)) return true;
+        if (matchesAnyExpanded(file.name)) return true;
+        if ((file.tags || []).some(tag => matchesAnyExpanded(tag))) return true;
+        if (matchesAnyExpanded(file.visual_description)) return true;
+        if (matchesAnyExpanded(file.ocr_text)) return true;
         if (file.composition) {
-          if (normalize(file.composition.shot_type).includes(query)) return true;
-          if (normalize(file.composition.people_framing).includes(query)) return true;
+          if (matchesAnyExpanded(file.composition.shot_type)) return true;
+          if (matchesAnyExpanded(file.composition.people_framing)) return true;
         }
         if ((file.faces || []).some(f => {
           if (normalize(faceText(f)).includes(query)) return true;
-          // Buscar también en aliases del registry para ese person_id
           const aliases = peopleRegistry.getAliases(f && f.person_id);
           if (aliases.some(a => normalize(a).includes(query))) return true;
           return false;
@@ -97,13 +110,21 @@ module.exports = function createAiRoutes(deps) {
     }
 
     // Tags concretos (todos deben estar) — match accent-insensitive.
+    // Cada tag de la query se expande via aliasTable: si pides "salto",
+    // matchean tambien "saltar","saltito","brincar". La logica AND aplica a
+    // los grupos (cada grupo debe estar representado en file.tags) pero
+    // dentro del grupo basta una variante.
     if (tags) {
-      const tagList = tags.split(',').map(t => normalize(t)).filter(Boolean);
-      results = results.filter(file =>
-        tagList.every(tag =>
-          (file.tags || []).some(fileTag => normalize(fileTag).includes(tag))
-        )
-      );
+      const tagList = tags.split(',').map(t => t.trim()).filter(Boolean);
+      results = results.filter(file => {
+        const fileTagsNorm = (file.tags || []).map(t => normalize(t));
+        return tagList.every(tag => {
+          const expanded = aliasTable.expandTerm(tag).map(normalize);
+          return expanded.some(variant =>
+            fileTagsNorm.some(fileTag => fileTag.includes(variant))
+          );
+        });
+      });
     }
 
     // Año extraído

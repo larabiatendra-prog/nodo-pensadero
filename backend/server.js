@@ -44,6 +44,8 @@ const createSystemRoutes = require('./routes/systemRoutes');
 const createScanRoutes = require('./routes/scanRoutes');
 const createPersonsManageRoutes = require('./routes/personsManageRoutes');
 const createColorSearchRoutes = require('./routes/colorSearchRoutes');
+const createAliasRoutes = require('./routes/aliasRoutes');
+const aliasTable = require('./aliasTable');
 
 // Multer para uploads de imagen (lo conservamos por si lo usa el frontend en
 // la búsqueda por imagen futura; actualmente no hay endpoint que lo consuma).
@@ -884,6 +886,13 @@ const colorSearchRoutes = createColorSearchRoutes({
 });
 app.use('/api', colorSearchRoutes);
 
+// Tabla de sinonimos para expandir queries (Stage 1). El LLM propone grupos
+// que el usuario revisa via /api/tags/aliases/propose.
+const aliasRoutes = createAliasRoutes({
+  getMediaFiles: () => mediaFiles,
+});
+app.use('/api', aliasRoutes);
+
 // === PERSONS (registry + agregado memoizado) ===
 
 // GET /api/persons — devuelve el agregado memoizado. Sin I/O por request.
@@ -971,6 +980,9 @@ async function initialize() {
   }
   mountPersonsAvatars();
   watchPersonsRegistry();
+
+  // Cargar la tabla de sinonimos. Si no existe el archivo, opera vacia.
+  await aliasTable.load();
 
   await loadCache();
   await syncFiles();

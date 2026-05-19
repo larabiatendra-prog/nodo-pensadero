@@ -845,8 +845,10 @@ function FilePersonsBubbles({
   onPersonFilter?: (personId: string) => void;
   onClosePreview?: () => void;
 }) {
+  const PEOPLE_COLLAPSED_LIMIT = 4;
   const [registry, setRegistry] = useState<Array<{ person_id: string; display_name: string; avatar_url: string | null }> | null>(null);
   const [brokenAvatars, setBrokenAvatars] = useState<Set<string>>(new Set());
+  const [peopleExpanded, setPeopleExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -877,6 +879,9 @@ function FilePersonsBubbles({
     return `hsl(${240 + (Math.abs(h) % 61)}, 40%, 65%)`;
   };
 
+  const visiblePeople = peopleExpanded ? enriched : enriched.slice(0, PEOPLE_COLLAPSED_LIMIT);
+  const hiddenPeopleCount = enriched.length - PEOPLE_COLLAPSED_LIMIT;
+
   return (
     <div>
       <div className="flex items-center space-x-2 mb-3">
@@ -884,7 +889,7 @@ function FilePersonsBubbles({
         <h3 className="font-medium text-slate-900">Personas</h3>
       </div>
       <div className="flex flex-wrap gap-3">
-        {enriched.map(p => {
+        {visiblePeople.map(p => {
           const showFallback = !p.avatar_url || brokenAvatars.has(p.person_id);
           const initials = (p.display_name || p.person_id).trim().slice(0, 2).toUpperCase();
           const clickable = !!onPersonFilter;
@@ -923,6 +928,24 @@ function FilePersonsBubbles({
             </button>
           );
         })}
+        {hiddenPeopleCount > 0 && !peopleExpanded && (
+          <button
+            onClick={() => setPeopleExpanded(true)}
+            className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-pizarra text-lavanda font-medium hover:bg-lavanda hover:text-white transition-colors"
+            title={`Mostrar ${hiddenPeopleCount} personas mas`}
+          >
+            +{hiddenPeopleCount}
+          </button>
+        )}
+        {peopleExpanded && enriched.length > PEOPLE_COLLAPSED_LIMIT && (
+          <button
+            onClick={() => setPeopleExpanded(false)}
+            className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-pizarra text-lavanda font-medium hover:bg-lavanda hover:text-white transition-colors"
+            title="Colapsar lista de personas"
+          >
+            mostrar menos
+          </button>
+        )}
       </div>
     </div>
   );

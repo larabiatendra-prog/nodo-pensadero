@@ -1130,10 +1130,15 @@ function App() {
     setShowFolderScanner(false);
   };
 
-  const handleCreateCollection = async (name: string, description: string, coverImage?: { type: 'system' | 'custom'; value: string }) => {
+  const handleCreateCollection = async (
+    name: string,
+    description: string,
+    coverImage?: { type: 'system' | 'custom'; value: string },
+    smart?: { rules: any[]; combinator: 'AND' | 'OR' }
+  ) => {
     // Create collection locally first with unique temp ID
     const clientTempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const newCollection = {
+    const newCollection: any = {
       id: clientTempId, // Temporary ID - also sent to server to prevent duplicates
       name,
       description,
@@ -1145,6 +1150,12 @@ function App() {
       isPublic: false,
       createdBy: ''
     };
+    // Smart Folder: persistir los campos extra para que createCollection los envie al backend
+    if (smart && smart.rules.length > 0) {
+      newCollection.type = 'smart';
+      newCollection.rules = smart.rules;
+      newCollection.rule_combinator = smart.combinator;
+    }
 
     console.log('🔍 Debug - Nueva colección creada localmente:', newCollection);
 

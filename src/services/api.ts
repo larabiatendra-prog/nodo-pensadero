@@ -696,6 +696,20 @@ class ApiService {
     );
   }
 
+  // ============================================
+  // SMART FOLDERS — preview de reglas
+  // ============================================
+
+  async previewCollectionRules(rules: any[], rule_combinator: 'AND' | 'OR' = 'AND') {
+    return this.fetchWithErrorHandling<{ count: number; total: number; sample: string[] }>(
+      `${API_BASE_URL}/collections/preview-rules`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ rules, rule_combinator }),
+      }
+    );
+  }
+
   async searchByColor(hex: string, threshold: number = 30, max: number = 500) {
     const params = new URLSearchParams({
       hex,
@@ -934,6 +948,12 @@ export const createCollection = async (newCollection: any, _user_id?: string) =>
     };
     if (Array.isArray(newCollection.mediaFiles) && newCollection.mediaFiles.length > 0) {
       body.files = newCollection.mediaFiles;
+    }
+    // Smart Folder: incluir type/rules/rule_combinator si vienen
+    if (newCollection.type === 'smart' && Array.isArray(newCollection.rules)) {
+      body.type = 'smart';
+      body.rules = newCollection.rules;
+      body.rule_combinator = newCollection.rule_combinator || 'AND';
     }
 
     const data = await backendFetch<any>(COLLECTIONS_BASE, {

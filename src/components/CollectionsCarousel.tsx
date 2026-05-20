@@ -258,8 +258,25 @@ export function CollectionsCarousel({
     setItems(collections);
   }, [collections]);
 
+  // Empty state: si no hay ninguna coleccion todavia, mostrar SOLO la tarjeta
+  // de "Nueva Coleccion" para que el usuario pueda crear la primera. Antes
+  // el componente devolvia null y no habia forma de crear la primera.
   if (collections.length === 0) {
-    return null;
+    return (
+      <div className="mb-4 md:mb-8">
+        <div
+          onClick={onCreateCollection}
+          className="group relative w-full max-w-md mx-auto rounded-xl overflow-hidden cursor-pointer bg-pizarra/40 border-2 border-dashed border-pizarra transition-all duration-300 hover:shadow-xl hover:border-lavanda hover:bg-lavanda/5"
+          style={{ aspectRatio: '16/9' }}
+        >
+          <div className="w-full h-full flex flex-col items-center justify-center text-lavanda-archivo group-hover:text-lavanda transition-colors">
+            <Plus className="w-12 h-12 mb-3" />
+            <span className="text-lg font-medium">Crear primera colección</span>
+            <span className="text-sm opacity-70">Manual o Smart Folder con reglas</span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const scrollLeft = () => {

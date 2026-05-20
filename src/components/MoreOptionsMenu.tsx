@@ -4,6 +4,7 @@ import {
   Tag,
   BarChart3,
   FolderSync,
+  FolderOpen,
   Users,
   Languages,
   X
@@ -24,6 +25,7 @@ export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuPro
   // (ChromaDB / embeddings) que no se distribuye en Pensadero personal.
   // Reactivar requiere reintroducir el pipeline vectorial.
   const menuItems = [
+    { id: 'collections', icon: FolderOpen, label: 'Colecciones',          description: 'Colecciones manuales y Smart Folders con reglas' },
     { id: 'tags',        icon: Tag,        label: 'Gestión de Etiquetas', description: 'Administrar etiquetas del sistema' },
     { id: 'synonyms',    icon: Languages,  label: 'Sinónimos',            description: 'Agrupar palabras parecidas para la búsqueda' },
     { id: 'persons',     icon: Users,      label: 'Personas',             description: 'Registrar caras y entrenar identidades' },

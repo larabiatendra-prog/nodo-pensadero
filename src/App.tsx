@@ -26,6 +26,7 @@ import PathManager from './components/PathManager';
 import TagManager from './components/TagManager';
 import PersonsManager from './components/PersonsManager';
 import SynonymsManager from './components/SynonymsManager';
+import CollectionsView from './components/CollectionsView';
 
 import { CollectionsCarousel } from './components/CollectionsCarousel';
 import { CoverImageSelector } from './components/CoverImageSelector';
@@ -316,12 +317,13 @@ function App() {
       );
     }
 
-    // 5. Aplicar filtro de personas detectadas - LÓGICA OR
-    // Un archivo matchea si tiene al menos una de las personas seleccionadas en file.faces
+    // 5. Aplicar filtro de personas detectadas - LÓGICA AND
+    // Un archivo matchea solo si contiene TODAS las personas seleccionadas en file.faces
     if (personIds && personIds.length > 0) {
-      filtered = filtered.filter(file =>
-        file.faces?.some(f => personIds.includes(f.person_id))
-      );
+      filtered = filtered.filter(file => {
+        const faceIds = new Set(file.faces?.map(f => f.person_id) ?? []);
+        return personIds.every(pid => faceIds.has(pid));
+      });
     }
 
     // 5b. Filtro por color — fileIds devueltos por /api/search/by-color
@@ -2336,6 +2338,32 @@ function App() {
         case 'synonyms':
           return <SynonymsManager onBack={() => setActiveView('home')} />;
 
+        case 'collections':
+          return (
+            <CollectionsView
+              onBack={() => setActiveView('home')}
+              collections={collections}
+              mediaFiles={mediaFiles}
+              onCollectionSelect={(id) => {
+                setSelectedCollectionId(id);
+                setActiveView('home');
+              }}
+              onCreateCollection={() => setShowCreateCollection(true)}
+              onEditCollection={(id) => {
+                const col = collections.find(c => c.id === id);
+                if (col) { setEditingCollectionId(id); setEditingCollectionName(col.name); }
+              }}
+              onDeleteCollection={(id) => {
+                const e = { stopPropagation: () => { } } as React.MouseEvent;
+                handleDeleteCollection(id, e);
+              }}
+              onDownloadCollection={handleDownloadCollection}
+              onEditCover={handleEditCollectionCover}
+              onCollectionsReorder={handleCollectionsReorder}
+              downloadingCollectionId={downloadingCollectionId}
+            />
+          );
+
         case 'persons':
           return (
             <PersonsManager
@@ -2514,65 +2542,48 @@ function App() {
                 </div>
               )}
 
-              {/* [MF-COLLECTIONS-CAROUSEL-START] */}
-              {activeView === 'home' && (
-                selectedCollectionId ? (
-                  <div className="mb-8">
-                    <div className="flex items-center gap-4 mb-4">
-                      <button
-                        onClick={() => setSelectedCollectionId(null)}
-                        className="flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors"
-                        aria-label="Volver a Inicio"
-                      >
-                        <ChevronLeft className="w-5 h-5" />
-                        <span>Volver a Inicio</span>
-                      </button>
-                      <div className="flex items-center gap-3">
-                        <h2 className="text-xl font-semibold text-slate-900">
-                          {collections.find(c => c.id === selectedCollectionId)?.name}
-                        </h2>
-                        {selectedCollectionId && (
-                          <div className="flex items-center gap-2 text-sm">
-                            {hasActiveFilters ? (
-                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-lavanda/10 text-lavanda">
-                                <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-                                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                                </svg>
-                                {collectionFilteredCount} de {collectionTotalCount} archivos
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                                {collectionTotalCount} {collectionTotalCount === 1 ? 'archivo' : 'archivos'}
-                              </span>
-                            )}
-                          </div>
+              {/* El carrusel de colecciones se movio a la vista dedicada
+                  "Colecciones" (accesible desde el menu de tres puntos).
+                  Aqui en home solo se muestra la cabecera del detalle cuando
+                  el usuario abre una coleccion concreta. "Volver" regresa a
+                  la vista Colecciones. */}
+              {activeView === 'home' && selectedCollectionId && (
+                <div className="mb-8">
+                  <div className="flex items-center gap-4 mb-4">
+                    <button
+                      onClick={() => {
+                        setSelectedCollectionId(null);
+                        setActiveView('collections');
+                      }}
+                      className="flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors"
+                      aria-label="Volver a Colecciones"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                      <span>Volver a Colecciones</span>
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-xl font-semibold text-slate-900">
+                        {collections.find(c => c.id === selectedCollectionId)?.name}
+                      </h2>
+                      <div className="flex items-center gap-2 text-sm">
+                        {hasActiveFilters ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-lavanda/10 text-lavanda">
+                            <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
+                                d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                            </svg>
+                            {collectionFilteredCount} de {collectionTotalCount} archivos
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                            {collectionTotalCount} {collectionTotalCount === 1 ? 'archivo' : 'archivos'}
+                          </span>
                         )}
                       </div>
                     </div>
                   </div>
-                ) : (
-                  <CollectionsCarousel
-                    collections={collections}
-                    onCollectionSelect={(id) => setSelectedCollectionId(id)}
-                    onCreateCollection={() => setShowCreateCollection(true)}
-                    onEditCollection={(id) => {
-                      const col = collections.find(c => c.id === id);
-                      if (col) { setEditingCollectionId(id); setEditingCollectionName(col.name); }
-                    }}
-                    onDeleteCollection={(id) => {
-                      const e = { stopPropagation: () => { } } as React.MouseEvent;
-                      handleDeleteCollection(id, e);
-                    }}
-                    onDownloadCollection={handleDownloadCollection}
-                    onEditCover={handleEditCollectionCover}
-                    onCollectionsReorder={handleCollectionsReorder}
-                    downloadingCollectionId={downloadingCollectionId}
-                    mediaFiles={mediaFiles}
-                  />
-                )
+                </div>
               )}
-              {/* [MF-COLLECTIONS-CAROUSEL-END] */}
 
               {/* Connection error alert */}
               {connectionError && (

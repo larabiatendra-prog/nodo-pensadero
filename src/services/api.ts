@@ -643,6 +643,59 @@ class ApiService {
   // BUSQUEDA POR COLOR — alimenta la rueda HSL del frontend
   // ============================================
 
+  // ============================================
+  // SINONIMOS — alias table para expandir queries
+  // ============================================
+
+  async getAllCorpusTags() {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ tag: string; count: number }>> & { count: number }>(
+      `${API_BASE_URL}/tags/all`
+    );
+  }
+
+  async getAliasGroups() {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ canonical: string; aliases: string[] }>>>(
+      `${API_BASE_URL}/tags/aliases`
+    );
+  }
+
+  async proposeAliases(tags?: string[]) {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ canonical: string; aliases: string[] }>> & { count: number }>(
+      `${API_BASE_URL}/tags/aliases/propose`,
+      {
+        method: 'POST',
+        body: JSON.stringify(tags ? { tags } : {}),
+      }
+    );
+  }
+
+  async saveAliasGroups(groups: Array<{ canonical: string; aliases: string[] }>) {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ canonical: string; aliases: string[] }>>>(
+      `${API_BASE_URL}/tags/aliases/save`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ groups }),
+      }
+    );
+  }
+
+  async upsertAliasGroup(group: { canonical: string; aliases: string[] }) {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ canonical: string; aliases: string[] }>>>(
+      `${API_BASE_URL}/tags/aliases/upsert`,
+      {
+        method: 'POST',
+        body: JSON.stringify(group),
+      }
+    );
+  }
+
+  async deleteAliasGroup(canonical: string) {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ canonical: string; aliases: string[] }>>>(
+      `${API_BASE_URL}/tags/aliases/${encodeURIComponent(canonical)}`,
+      { method: 'DELETE' }
+    );
+  }
+
   async searchByColor(hex: string, threshold: number = 30, max: number = 500) {
     const params = new URLSearchParams({
       hex,

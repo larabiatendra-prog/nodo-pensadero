@@ -25,6 +25,7 @@ import PersonBubbles from './components/PersonBubbles';
 import PathManager from './components/PathManager';
 import TagManager from './components/TagManager';
 import PersonsManager from './components/PersonsManager';
+import SynonymsManager from './components/SynonymsManager';
 
 import { CollectionsCarousel } from './components/CollectionsCarousel';
 import { CoverImageSelector } from './components/CoverImageSelector';
@@ -2320,6 +2321,9 @@ function App() {
               </div>
             );
           }
+
+        case 'synonyms':
+          return <SynonymsManager onBack={() => setActiveView('home')} />;
 
         case 'persons':
           return (

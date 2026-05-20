@@ -18,10 +18,19 @@
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const sharp = require('sharp');
+
+// Replica server.js generateFileId — md5 del filePath. Se usa para indexar
+// el clipIndex por fileId (mismo identificador que ve el frontend).
+function fileIdFor(filePath) {
+  return crypto.createHash('md5').update(filePath).digest('hex');
+}
 const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
+const { getInstance: getClipService } = require('./clipService');
+const clipIndex = require('../clipIndex');
 const colorAnalyzer = require('../colorAnalyzer');
 const { enrichPalette } = require('../colorNamer');
 const peopleRegistry = require('../peopleRegistry');
@@ -227,6 +236,7 @@ async function scanFolder(folderPath, opts = {}) {
 
   const scanner = getScanner();
   const faceSvc = getFaceService();
+  const clipSvc = getClipService();
 
   // Cargar embeddings del registry en el cache del faceService antes del
   // batch. Si falla (sin Python/InsightFace), seguimos sin reconocimiento.
@@ -240,6 +250,21 @@ async function scanFolder(folderPath, opts = {}) {
   } catch (err) {
     console.warn('[scan] face service no disponible:', err.message);
     facesEnabled = false;
+  }
+
+  // CLIP / M-CLIP: lazy init. Si falla (modelo no descargado todavia, RAM
+  // insuficiente, etc.) seguimos sin embeddings — el resto del scan funciona.
+  let clipEnabled = false;
+  try {
+    await clipSvc.init();
+    if (clipSvc.getStatus().ready) {
+      // Asegurar que el indice central esta cargado
+      if (!clipIndex.isLoaded()) await clipIndex.load();
+      clipEnabled = true;
+    }
+  } catch (err) {
+    console.warn('[scan] CLIP service no disponible:', err.message);
+    clipEnabled = false;
   }
 
   // Estado inicial del job
@@ -398,6 +423,18 @@ async function scanFolder(folderPath, opts = {}) {
             } catch (cErr) {
               console.warn(`[scan-video] color analysis ${basename}: ${cErr.message}`);
             }
+            // CLIP embedding sobre el mismo frame (place recognition + image search)
+            if (clipEnabled) {
+              try {
+                const clipEmb = await clipSvc.embedImage(repFramePath);
+                if (clipEmb) {
+                  entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
+                  clipIndex.upsert(fileIdFor(filePath), clipEmb);
+                }
+              } catch (eErr) {
+                console.warn(`[scan-video] CLIP embedding ${basename}: ${eErr.message}`);
+              }
+            }
           }
         } catch (err) {
           console.warn(`[scan-video] extract frame ${basename}: ${err.message}`);
@@ -427,6 +464,18 @@ async function scanFolder(folderPath, opts = {}) {
           }
         } catch (cErr) {
           console.warn(`[scan-photo] color analysis ${basename}: ${cErr.message}`);
+        }
+        // CLIP embedding (place recognition + image search + text-to-image futuro)
+        if (clipEnabled) {
+          try {
+            const clipEmb = await clipSvc.embedImage(filePath);
+            if (clipEmb) {
+              entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
+              clipIndex.upsert(fileIdFor(filePath), clipEmb);
+            }
+          } catch (eErr) {
+            console.warn(`[scan-photo] CLIP embedding ${basename}: ${eErr.message}`);
+          }
         }
       }
 
@@ -553,7 +602,17 @@ async function scanFolder(folderPath, opts = {}) {
     }
   }
 
-  // 6) Cierre
+  // 6) Persistir clipIndex si hubo cambios (CLIP embeddings nuevos)
+  if (clipEnabled && clipIndex.isDirty()) {
+    try {
+      await clipIndex.save();
+      console.log(`[scan] CLIP index guardado (${clipIndex.size()} embeddings)`);
+    } catch (err) {
+      console.warn('[scan] error guardando CLIP index:', err.message);
+    }
+  }
+
+  // 7) Cierre
   job.status = job.cancelRequested ? 'cancelled' : 'done';
   job.finishedAt = Date.now();
   broadcastProgress({

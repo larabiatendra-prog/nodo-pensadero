@@ -46,6 +46,7 @@ const createPersonsManageRoutes = require('./routes/personsManageRoutes');
 const createColorSearchRoutes = require('./routes/colorSearchRoutes');
 const createAliasRoutes = require('./routes/aliasRoutes');
 const aliasTable = require('./aliasTable');
+const clipIndex = require('./clipIndex');
 
 // Multer para uploads de imagen (lo conservamos por si lo usa el frontend en
 // la búsqueda por imagen futura; actualmente no hay endpoint que lo consuma).
@@ -983,6 +984,10 @@ async function initialize() {
 
   // Cargar la tabla de sinonimos. Si no existe el archivo, opera vacia.
   await aliasTable.load();
+
+  // Cargar el indice de embeddings CLIP en memoria. Si no existe, opera vacio.
+  // El daemon Python CLIP se carga lazy (solo al primer embedImage / embedText).
+  await clipIndex.load();
 
   await loadCache();
   await syncFiles();

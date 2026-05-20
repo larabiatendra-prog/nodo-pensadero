@@ -23,6 +23,17 @@ numpy>=1.24
 opencv-python>=4.8
 pillow>=10.0
 
+# CLIP / M-CLIP — embeddings visuales + texto multilingue para
+# place recognition, image search y (a futuro) text-to-image en español.
+# torch+transformers son ~2 GB; multilingual-clip añade el text encoder
+# XLM-RoBERTa-Large. Total disco ~3 GB, VRAM cargado ~2.5 GB.
+torch>=2.0
+transformers>=4.38
+multilingual-clip>=1.0.10
+sentencepiece>=0.2  # tokenizer XLM-RoBERTa
+ftfy
+regex
+
 # CUDA runtime libraries vía pip (no requiere instalar CUDA Toolkit de
 # sistema, no requiere admin). face_detector.py registra estas carpetas
 # en el PATH al arrancar para que Windows resuelva las dependencias

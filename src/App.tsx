@@ -3026,6 +3026,32 @@ function App() {
         onClose={handleCancelEditCollection}
         onSave={handleSaveCollectionName}
         existingNames={collections.map(c => c.name)}
+        smart={(() => {
+          const c = collections.find(c => c.id === editingCollectionId);
+          if (c && c.type === 'smart') {
+            return { rules: (c.rules || []) as any, combinator: (c.rule_combinator || 'AND') as any };
+          }
+          return null;
+        })()}
+        onSaveSmart={async (id, newName, rules, combinator) => {
+          try {
+            await api.updateCollection(id, { name: newName, rules, rule_combinator: combinator });
+            // Refrescar colecciones desde backend para obtener mediaFiles resueltos
+            const r: any = await getCollectionsByUser();
+            if (r.success && Array.isArray(r.data)) {
+              setCollections(r.data.map((c: any) => ({
+                ...c,
+                createdAt: c.createdAt ? new Date(c.createdAt) : new Date(),
+                updatedAt: c.updatedAt ? new Date(c.updatedAt) : new Date(),
+              })));
+            }
+            setEditingCollectionId(null);
+            setEditingCollectionName('');
+          } catch (e: any) {
+            console.error('Error guardando Smart Folder:', e);
+            alert('Error guardando: ' + (e.message || 'desconocido'));
+          }
+        }}
       />
 
       {showAddToCollection && (

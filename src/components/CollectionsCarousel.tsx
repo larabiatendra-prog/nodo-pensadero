@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, FolderOpen, Edit2, Trash2, Download, Plus, Image, Loader } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FolderOpen, Edit2, Trash2, Download, Plus, Image, Loader, Wand2 } from 'lucide-react';
 import { Collection, MediaFile } from '../types';
 import {
   DndContext,
@@ -104,6 +104,14 @@ function SortableCollectionItem({
 
       {/* Gradient Overlay */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+
+      {/* Smart Folder badge — siempre visible para distinguir de las estaticas */}
+      {collection.type === 'smart' && (
+        <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-1 bg-lavanda/90 backdrop-blur-sm rounded-full text-white text-[10px] font-medium shadow-lg">
+          <Wand2 className="w-3 h-3" />
+          <span>Smart</span>
+        </div>
+      )}
 
       {/* Drag Indicator */}
       {isDragging && (

@@ -75,6 +75,11 @@ export interface Collection {
   mediaFiles: string[];
   createdAt: Date;
   updatedAt: Date;
+  // Smart Folder: type='smart' indica que mediaFiles se resuelve al vuelo
+  // desde rules + rule_combinator. type='static' o ausente = coleccion manual.
+  type?: 'static' | 'smart';
+  rules?: Array<{ field: string; op: string; value: any }>;
+  rule_combinator?: 'AND' | 'OR';
 }
 
 export interface SearchFilters {

@@ -283,7 +283,7 @@ class ApiService {
     }
   }
 
-  async updateCollection(collectionId: string, updates: { name?: string; description?: string }): Promise<ApiResponse<any>> {
+  async updateCollection(collectionId: string, updates: { name?: string; description?: string; rules?: any[]; rule_combinator?: 'AND' | 'OR'; type?: 'static' | 'smart' }): Promise<ApiResponse<any>> {
     try {
       return await this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/collections/${collectionId}`, {
         method: 'PATCH',

@@ -5,7 +5,7 @@
  *   space_id → { display_name, aliases, cover_image_path, centroid_b64,
  *                ref_photo_count, trained_at }
  *
- * El centroide CLIP (512 dims, base64) se calcula desde fotos de
+ * El centroide CLIP/SigLIP (base64) se calcula desde fotos de
  * referencia que el usuario sube. Permite place recognition automatico
  * durante el scan: cada foto del corpus se compara con todos los centroides
  * de espacios y, si la similitud supera el threshold, se asocia al
@@ -20,6 +20,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { EMBEDDING_DIM } = require('./services/clipService');
 
 // Threshold por defecto. 0.70 es conservador para CLIP base: la experiencia
 // real con corpus de eventos corporativos (auditorios, salas, networking)
@@ -31,7 +32,7 @@ const DEFAULT_THRESHOLD = parseFloat(process.env.SPACE_MATCH_THRESHOLD || '0.7')
 let registryPath = null;
 let avatarsBase = null;
 let spaceById = new Map();
-// Cache de centroides en memoria para matching rapido. Float32Array(512)
+// Cache de centroides en memoria para matching rapido. Float32Array(EMBEDDING_DIM)
 let centroidsCache = new Map();
 let warnedOnce = false;
 // Threshold actual configurable en runtime (se persiste al JSON del registry)
@@ -107,12 +108,12 @@ function loadRegistry(filePath, avatarsBaseOverride = null) {
 function _decodeCentroid(b64) {
   if (typeof b64 !== 'string') return null;
   const buf = Buffer.from(b64, 'base64');
-  if (buf.length !== 512 * 4) return null;
+  if (buf.length !== EMBEDDING_DIM * 4) return null;
   return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 }
 
 function _encodeCentroid(arr) {
-  if (!arr || arr.length !== 512) return null;
+  if (!arr || arr.length !== EMBEDDING_DIM) return null;
   const f32 = arr instanceof Float32Array ? arr : Float32Array.from(arr);
   return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength).toString('base64');
 }
@@ -230,7 +231,7 @@ function setCentroid(spaceId, centroid, refPhotoCount = 0) {
   const e = spaceById.get(spaceId);
   if (!e) throw new Error('space no existe: ' + spaceId);
   const b64 = _encodeCentroid(centroid);
-  if (!b64) throw new Error('centroide invalido (debe ser 512 dims)');
+  if (!b64) throw new Error(`centroide invalido (debe ser ${EMBEDDING_DIM} dims)`);
   e.centroid_b64 = b64;
   e.ref_photo_count = refPhotoCount;
   e.trained_at = new Date().toISOString();
@@ -279,18 +280,18 @@ function setRegistryPath(filePath, avatarsBaseOverride = null) {
 }
 
 /**
- * Identifica el space mas cercano dado un embedding (Float32Array 512).
+ * Identifica el space mas cercano dado un embedding (Float32Array EMBEDDING_DIM).
  * Devuelve {space_id, similarity} o null si ninguno supera el threshold.
  * Threshold default es el currentThreshold (configurable runtime).
  */
 function identifySpace(embedding, threshold = currentThreshold) {
-  if (!embedding || embedding.length !== 512) return null;
+  if (!embedding || embedding.length !== EMBEDDING_DIM) return null;
   if (centroidsCache.size === 0) return null;
   let best = null;
   let bestSim = -1;
   for (const [id, centroid] of centroidsCache.entries()) {
     let dot = 0;
-    for (let i = 0; i < 512; i++) dot += embedding[i] * centroid[i];
+    for (let i = 0; i < EMBEDDING_DIM; i++) dot += embedding[i] * centroid[i];
     if (dot > bestSim) {
       bestSim = dot;
       best = id;

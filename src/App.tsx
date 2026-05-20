@@ -100,6 +100,9 @@ function App() {
   // Busqueda por imagen (CLIP): fileIds que matchearon + dataURL para preview
   const [imageSearchFileIds, setImageSearchFileIds] = useState<Set<string> | null>(null);
   const [imageSearchPreview, setImageSearchPreview] = useState<string | null>(null);
+  // Busqueda por texto (SigLIP-2): fileIds que matchearon + query para preview
+  const [textSearchFileIds, setTextSearchFileIds] = useState<Set<string> | null>(null);
+  const [textSearchQuery, setTextSearchQuery] = useState<string | null>(null);
 
   // Búsqueda natural — fileIds devueltos por el LLM, ordenados por score.
   // Cuando es null no hay búsqueda natural activa. Cuando es array, restringe la grid a esos IDs.
@@ -242,10 +245,11 @@ function App() {
       skipDedup?: boolean;
       colorFileIds?: Set<string> | null;
       imageSearchIds?: Set<string> | null;
+      textSearchIds?: Set<string> | null;
     } = {}
   ) => {
     let filtered = [...baseFiles];
-    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
+    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds, textSearchIds = textSearchFileIds } = options;
 
     // 1. Aplicar búsqueda de texto si existe
     if (searchQuery && searchQuery.trim()) {
@@ -341,6 +345,11 @@ function App() {
       filtered = filtered.filter(file => imageSearchIds.has(file.id));
     }
 
+    // 5d. Busqueda por descripcion (SigLIP-2 multilingue) — /api/search/by-text
+    if (textSearchIds && textSearchIds.size > 0) {
+      filtered = filtered.filter(file => textSearchIds.has(file.id));
+    }
+
     // 6. Búsqueda natural — restringe a los IDs devueltos por el LLM
     // y ordena según el ranking de score que vino del backend.
     if (naturalSearchIds !== null) {
@@ -408,7 +417,7 @@ function App() {
       resetInfiniteScroll();
       console.log(`📜 Scroll reseteado por cambio de filtros: ${currentCount} -> ${newCount} archivos`);
     }
-  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds]);
+  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, textSearchFileIds]);
 
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
@@ -1871,6 +1880,8 @@ function App() {
     setColorFilterHex(null);
     setImageSearchFileIds(null);
     setImageSearchPreview(null);
+    setTextSearchFileIds(null);
+    setTextSearchQuery(null);
 
     resetInfiniteScroll();
   };
@@ -2549,6 +2560,11 @@ function App() {
                       setImageSearchPreview(preview);
                     }}
                     imageSearchPreview={imageSearchPreview}
+                    onTextSearchChange={(fileIds, query) => {
+                      setTextSearchFileIds(fileIds);
+                      setTextSearchQuery(query);
+                    }}
+                    textSearchQuery={textSearchQuery}
                   />
                   {hasActiveFilters && (
                     <button
@@ -2905,7 +2921,8 @@ function App() {
     naturalSearchIds !== null ||
     showFavoritesOnly ||
     colorFilterHex !== null ||
-    imageSearchPreview !== null
+    imageSearchPreview !== null ||
+    textSearchQuery !== null
   );
   hasActiveFiltersRef.current = hasActiveFilters;
 

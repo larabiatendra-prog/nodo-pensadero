@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Heart, Image as ImageIcon, X } from 'lucide-react';
+import { Heart, Image as ImageIcon, X, MessageSquareText, Search } from 'lucide-react';
 import DateRangeFilter from './DateRangeFilter';
 import ColorWheelFilter from './ColorWheelFilter';
 import { api } from '../services/api';
@@ -20,6 +20,9 @@ interface QuickFiltersProps {
   // Busqueda por imagen via CLIP
   onImageSearchChange?: (fileIds: Set<string> | null, preview: string | null) => void;
   imageSearchPreview?: string | null;
+  // Busqueda por texto (SigLIP-2 multilingue, español)
+  onTextSearchChange?: (fileIds: Set<string> | null, query: string | null) => void;
+  textSearchQuery?: string | null;
 }
 
 export default function QuickFilters({
@@ -37,9 +40,37 @@ export default function QuickFilters({
   colorFilterHex,
   onImageSearchChange,
   imageSearchPreview,
+  onTextSearchChange,
+  textSearchQuery,
 }: QuickFiltersProps) {
   const imgInputRef = useRef<HTMLInputElement>(null);
   const [imgSearching, setImgSearching] = useState(false);
+  const [showTextSearch, setShowTextSearch] = useState(false);
+  const [textInput, setTextInput] = useState('');
+  const [textSearching, setTextSearching] = useState(false);
+
+  async function handleTextSearch(query: string) {
+    if (!onTextSearchChange) return;
+    const q = query.trim();
+    if (!q) return;
+    setTextSearching(true);
+    try {
+      const r = await api.searchByText(q);
+      if (r.success && Array.isArray(r.data)) {
+        const ids = new Set(r.data.map(x => x.fileId));
+        onTextSearchChange(ids, q);
+        setShowTextSearch(false);
+        setTextInput('');
+      } else {
+        onTextSearchChange(new Set(), q);
+      }
+    } catch (err: any) {
+      console.warn('Text search error:', err);
+      alert('Error en búsqueda por descripción: ' + (err.message || 'desconocido'));
+    } finally {
+      setTextSearching(false);
+    }
+  }
 
   async function handleImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -211,6 +242,70 @@ export default function QuickFilters({
               {imageSearchPreview && <X className="w-3 h-3" />}
             </button>
           </>
+        )}
+
+        {/* Buscar por descripción (SigLIP-2 multilingue, soporte español) */}
+        {onTextSearchChange && (
+          <div className="relative">
+            {showTextSearch && !textSearchQuery ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); handleTextSearch(textInput); }}
+                className="flex items-center gap-1 bg-pizarra rounded-full pl-3 pr-1 py-0.5"
+              >
+                <MessageSquareText className="w-4 h-4 text-lavanda-archivo" />
+                <input
+                  type="text"
+                  value={textInput}
+                  onChange={e => setTextInput(e.target.value)}
+                  placeholder="playa al atardecer, retrato luz dorada..."
+                  autoFocus
+                  className="bg-transparent text-marfil text-sm outline-none w-56 placeholder:text-lavanda-archivo"
+                />
+                <button
+                  type="submit"
+                  disabled={textSearching || !textInput.trim()}
+                  className={`px-2 py-1 rounded-full ${textSearching || !textInput.trim() ? 'text-lavanda-archivo/50 cursor-not-allowed' : 'text-lavanda hover:text-marfil'}`}
+                  title="Buscar"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowTextSearch(false); setTextInput(''); }}
+                  className="px-2 py-1 rounded-full text-lavanda-archivo hover:text-marfil"
+                  title="Cancelar"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </form>
+            ) : (
+              <button
+                onClick={() => {
+                  if (textSearchQuery) {
+                    // Limpiar
+                    onTextSearchChange(null, null);
+                  } else {
+                    setShowTextSearch(true);
+                  }
+                }}
+                disabled={textSearching}
+                className={`flex items-center gap-2 px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+                  textSearching
+                    ? 'bg-lavanda/20 text-lavanda cursor-wait'
+                    : textSearchQuery
+                      ? 'bg-lavanda text-white shadow-md'
+                      : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda hover:bg-opacity-20'
+                }`}
+                title={textSearchQuery ? `Limpiar búsqueda: "${textSearchQuery}"` : 'Buscar archivos por descripción en lenguaje natural'}
+              >
+                <MessageSquareText className="w-4 h-4" />
+                <span className="hidden sm:inline">
+                  {textSearching ? 'Buscando...' : textSearchQuery ? `"${textSearchQuery.slice(0, 24)}${textSearchQuery.length > 24 ? '…' : ''}"` : 'Por descripción'}
+                </span>
+                {textSearchQuery && <X className="w-3 h-3" />}
+              </button>
+            )}
+          </div>
         )}
 
         {/* Status indicators */}

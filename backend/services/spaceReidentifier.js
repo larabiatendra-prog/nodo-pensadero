@@ -20,6 +20,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
+const { EMBEDDING_DIM } = require('./clipService');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 
@@ -55,7 +56,7 @@ async function findCatalogs(rootDir) {
 function _decodeEmbedding(b64) {
   if (typeof b64 !== 'string' || !b64) return null;
   const buf = Buffer.from(b64, 'base64');
-  if (buf.length !== 512 * 4) return null;
+  if (buf.length !== EMBEDDING_DIM * 4) return null;
   return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
 }
 

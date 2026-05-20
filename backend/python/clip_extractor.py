@@ -1,32 +1,37 @@
 """
-CLIP / M-CLIP Extractor — Pensadero NODO
+SigLIP-2 Extractor — Pensadero NODO
 
-Extrae embeddings visuales (CLIP ViT-B-32) y textuales (XLM-RoBERTa-Large
-multilingue) en el mismo espacio de 512 dimensiones. Permite:
+Extrae embeddings visuales y textuales en el mismo espacio de 768 dims usando
+SigLIP-2 (Google, 2024), el reemplazo moderno de CLIP. Multilingue nativo:
+soporta español sin necesidad de M-CLIP o cualquier projection layer extra.
 
-  - Place recognition: foto → embedding → match contra centroides de
-    espacios registrados
+Permite:
+  - Place recognition: foto → embedding → match contra centroides
   - Image search: foto query → top-N fotos similares
-  - Text-to-image (en fase 2): "playa al atardecer" en español → fotos
+  - Text-to-image: "playa al atardecer" → fotos similares
 
 Se invoca desde Node.js en modo stream (daemon), igual que face_detector.py.
 
 Protocolo stdin/stdout:
   IN  {"op":"embed_image","path":"/ruta/a.jpg"}
-  OUT {"ok":true,"result":{"embedding_b64":"<base64 float32[512]>","dim":512}}
+  OUT {"ok":true,"result":{"embedding_b64":"<base64 float32[768]>","dim":768}}
 
   IN  {"op":"embed_text","text":"texto en español o ingles"}
-  OUT {"ok":true,"result":{"embedding_b64":"...","dim":512}}
+  OUT {"ok":true,"result":{"embedding_b64":"...","dim":768}}
 
   IN  {"op":"ping"}  →  OUT {"ok":true,"result":"pong"}
   IN  {"op":"exit"}  →  OUT {"ok":true,"result":"bye"}  y cierra
 
-Cold start ~10-20s (carga XLM-Roberta-Large + CLIP ViT-B-32 + cuDNN).
-Imagenes ya cacheadas: ~50-80ms en GPU (RTX 3080), ~30ms en RTX 5070 Ti.
-En CPU: ~500ms imagen, ~150ms texto. Util en Dell solo si la VRAM esta apretada.
+Modelo: google/siglip2-base-patch16-naflex (~600 MB).
+  - naflex = Native Aspect-ratio FLEXible: respeta proporcion original
+  - Multilingue: 100+ idiomas incluyendo español
+  - Embedding 768 dims, L2-normalizado, image y text en el mismo espacio
+
+Cold start ~10-15s en GPU. Por imagen ~50ms en RTX 3080 / ~30ms en RTX 5070 Ti.
 
 Variables de entorno:
-  CLIP_PROVIDER=gpu|cpu  — fuerza dispositivo (default: auto-detect, GPU si disponible)
+  CLIP_PROVIDER=gpu|cpu  — fuerza dispositivo (default: auto, GPU si disponible)
+  CLIP_MODEL  — override del modelo (default google/siglip2-base-patch16-naflex)
 """
 
 import json
@@ -94,40 +99,20 @@ def _register_nvidia_dll_directories():
 _register_nvidia_dll_directories()
 
 
-# Imports diferidos para evitar coste si solo se invoca el wrapper sin tareas
 try:
     import torch
     from PIL import Image
-    from transformers import CLIPModel, CLIPProcessor, AutoTokenizer
+    from transformers import AutoProcessor, AutoModel
 except Exception as e:
-    sys.stderr.write(f"ERROR cargando dependencias CLIP: {e}\n")
+    sys.stderr.write(f"ERROR cargando dependencias: {e}\n")
     sys.exit(1)
 
-# El text encoder multilingue (M-CLIP) tiene una incompatibilidad con
-# transformers 5.x (meta-device error en AutoModel.from_pretrained).
-# Lo cargamos LAZY solo si se llama embed_text — para place recognition
-# e image search basta el image encoder de CLIP base, que SI funciona bien.
-# Cuando se quiera activar text-to-image en español, resolver:
-#   pip install "transformers<5"
-# o sustituir multilingual-clip por carga manual de XLM-RoBERTa-Large.
-try:
-    from multilingual_clip import pt_multilingual_clip
-    _MCLIP_AVAILABLE = True
-except Exception as e:
-    sys.stderr.write(f"[clip] multilingual-clip no disponible: {e}\n")
-    pt_multilingual_clip = None
-    _MCLIP_AVAILABLE = False
 
-
-# ----- Configuracion -----
-
-IMG_MODEL_NAME = 'openai/clip-vit-base-patch32'
-TEXT_MODEL_NAME = 'M-CLIP/XLM-Roberta-Large-Vit-B-32'
-EMBEDDING_DIM = 512
+MODEL_NAME = os.environ.get("CLIP_MODEL") or "google/siglip2-base-patch16-naflex"
+EMBEDDING_DIM = 768  # SigLIP-2 base
 
 
 def _resolve_device():
-    """Decide CUDA vs CPU segun CLIP_PROVIDER y disponibilidad real."""
     pref = (os.environ.get("CLIP_PROVIDER") or "gpu").lower()
     if pref == "cpu":
         return torch.device("cpu")
@@ -137,61 +122,39 @@ def _resolve_device():
 
 
 _device = None
-_img_model = None
-_img_processor = None
-_text_model = None
-_text_tokenizer = None
+_model = None
+_processor = None
 
 
-def _load_image_model():
-    """Carga solo el image encoder (CLIP base). Llamado al primer embed_image."""
-    global _device, _img_model, _img_processor
-    if _img_model is not None:
+def _load_model():
+    """Carga SigLIP-2 (image + text en un solo modelo)."""
+    global _device, _model, _processor
+    if _model is not None:
         return
     _device = _resolve_device()
     sys.stderr.write(f"[clip] device={_device.type}\n")
-    sys.stderr.write(f"[clip] cargando image encoder {IMG_MODEL_NAME}...\n")
-    _img_model = CLIPModel.from_pretrained(IMG_MODEL_NAME, use_safetensors=True).to(_device).eval()
-    _img_processor = CLIPProcessor.from_pretrained(IMG_MODEL_NAME)
-    sys.stderr.write(f"[clip] image encoder listo\n")
+    sys.stderr.write(f"[clip] cargando {MODEL_NAME}...\n")
+    _processor = AutoProcessor.from_pretrained(MODEL_NAME)
+    _model = AutoModel.from_pretrained(MODEL_NAME, use_safetensors=True).to(_device).eval()
+    sys.stderr.write(f"[clip] modelo listo\n")
 
 
-def _load_text_model():
-    """Carga lazy del text encoder M-CLIP. Solo al primer embed_text."""
-    global _text_model, _text_tokenizer
-    if _text_model is not None:
-        return
-    if not _MCLIP_AVAILABLE:
-        raise RuntimeError(
-            "multilingual-clip no disponible. Para activar text-to-image en español, "
-            "instalar transformers<5: pip install 'transformers<5'"
-        )
-    if _device is None:
-        _load_image_model()  # Inicia device
-    sys.stderr.write(f"[clip] cargando text encoder {TEXT_MODEL_NAME}...\n")
-    _text_model = pt_multilingual_clip.MultilingualCLIP.from_pretrained(TEXT_MODEL_NAME).to(_device).eval()
-    _text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_NAME)
-    sys.stderr.write(f"[clip] text encoder listo\n")
-
-
-def _load_models():
-    """Compat: carga solo el image encoder. El text encoder es lazy."""
-    _load_image_model()
-
-
-def _encode_image_to_b64(emb_tensor):
-    """Tensor 1D float32 → base64."""
+def _encode_to_b64(emb_tensor):
+    """Tensor 1D float32 → base64. Valida shape == EMBEDDING_DIM."""
     if emb_tensor.dim() > 1:
         emb_tensor = emb_tensor.squeeze(0)
     arr = emb_tensor.detach().cpu().to(torch.float32).numpy()
     if arr.shape != (EMBEDDING_DIM,):
-        raise RuntimeError(f"embedding con shape inesperada: {arr.shape}")
+        raise RuntimeError(f"embedding con shape inesperada: {arr.shape} (esperado {EMBEDDING_DIM})")
     return base64.b64encode(arr.tobytes()).decode("ascii")
 
 
+def _normalize_l2(t):
+    return t / t.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+
+
 def embed_image(path: str) -> dict:
-    """Devuelve {embedding_b64, dim} para una imagen."""
-    _load_models()
+    _load_model()
     if not os.path.isfile(path):
         raise RuntimeError(f"archivo no existe: {path}")
     try:
@@ -201,42 +164,26 @@ def embed_image(path: str) -> dict:
         raise RuntimeError(f"imagen ilegible ({e})")
 
     with torch.no_grad():
-        inputs = _img_processor(images=img, return_tensors="pt").to(_device)
-        feats = _img_model.get_image_features(**inputs)
-        # En transformers 5.x get_image_features puede devolver un wrapper
-        # (BaseModelOutputWithPooling) en vez de un Tensor directamente.
-        if not isinstance(feats, torch.Tensor):
-            for attr in ("image_embeds", "pooler_output", "last_hidden_state"):
-                cand = getattr(feats, attr, None)
-                if isinstance(cand, torch.Tensor):
-                    if attr == "last_hidden_state" and cand.dim() == 3:
-                        cand = cand.mean(dim=1)
-                    feats = cand
-                    break
-            else:
-                raise RuntimeError("get_image_features no devolvio tensor")
-        # Normalizar L2 → comparacion via dot product = cosine similarity
-        feats = feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-    return {"embedding_b64": _encode_image_to_b64(feats), "dim": EMBEDDING_DIM}
+        inputs = _processor(images=img, return_tensors="pt").to(_device)
+        feats = _model.get_image_features(**inputs)
+        feats = _normalize_l2(feats)
+    return {"embedding_b64": _encode_to_b64(feats), "dim": EMBEDDING_DIM}
 
 
 def embed_text(text: str) -> dict:
-    """Devuelve {embedding_b64, dim} para texto (en español, ingles u otro)."""
-    _load_text_model()
+    _load_model()
     if not isinstance(text, str) or not text.strip():
         raise RuntimeError("texto vacio")
-
     with torch.no_grad():
-        # pt_multilingual_clip.MultilingualCLIP.forward acepta lista de strings y tokenizer
-        feats = _text_model.forward([text.strip()], _text_tokenizer)
-        if hasattr(feats, 'to'):
-            feats = feats.to(_device)
-        feats = feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-    return {"embedding_b64": _encode_image_to_b64(feats), "dim": EMBEDDING_DIM}
+        # SigLIP-2 processor acepta texto con padding="max_length" por la
+        # arquitectura del tokenizer interno
+        inputs = _processor(text=[text.strip()], return_tensors="pt", padding="max_length").to(_device)
+        feats = _model.get_text_features(**inputs)
+        feats = _normalize_l2(feats)
+    return {"embedding_b64": _encode_to_b64(feats), "dim": EMBEDDING_DIM}
 
 
 def stream_loop():
-    """Lee JSON lineas por stdin, escribe respuestas por stdout."""
     sys.stderr.write("[clip] Stream mode listo\n")
     sys.stderr.flush()
     for raw in sys.stdin:
@@ -273,7 +220,6 @@ if __name__ == "__main__":
     if "--stream" in sys.argv:
         stream_loop()
     else:
-        # CLI one-shot util para tests
         if len(sys.argv) >= 3 and sys.argv[1] == "image":
             print(json.dumps(embed_image(sys.argv[2])))
         elif len(sys.argv) >= 3 and sys.argv[1] == "text":

@@ -25,7 +25,9 @@ const PYTHON_EXE_WIN = path.join(PYTHON_DIR, '.venv', 'Scripts', 'python.exe');
 const PYTHON_EXE_NIX = path.join(PYTHON_DIR, '.venv', 'bin', 'python');
 const SCRIPT_PATH = path.join(PYTHON_DIR, 'clip_extractor.py');
 
-const EMBEDDING_DIM = 512;
+// SigLIP-2 base usa 768 dims (cambio desde CLIP base ViT-B-32 que era 512).
+// Si cambias de modelo en CLIP_MODEL env var, actualiza esta constante.
+const EMBEDDING_DIM = 768;
 const COLD_START_TIMEOUT_MS = 120_000; // 2 min para cargar XLM-RoBERTa-Large
 const PER_REQUEST_TIMEOUT_MS = 60_000;
 

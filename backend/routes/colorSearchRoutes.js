@@ -156,5 +156,73 @@ module.exports = function createColorSearchRoutes(deps) {
     }
   });
 
+  // ============================================
+  // BUSQUEDA POR TEXTO (SigLIP-2 multilingue, español)
+  // ============================================
+  //
+  // POST /api/search/by-text  body: { query, max?, minSimilarity? }
+  // Codifica el texto con el text encoder de SigLIP-2 y busca los top-N
+  // archivos del corpus mas similares en el clipIndex.
+  router.post('/search/by-text', express.json(), async (req, res) => {
+    const { query } = req.body || {};
+    const maxResults = parseInt(req.body?.max, 10);
+    const minSim = parseFloat(req.body?.minSimilarity);
+    if (!query || typeof query !== 'string' || !query.trim()) {
+      return res.status(400).json({ success: false, error: 'query requerido' });
+    }
+    const limit = isFinite(maxResults) && maxResults > 0 ? maxResults : 100;
+    const thr = isFinite(minSim) ? minSim : 0;
+
+    try {
+      const clipSvc = getClipService();
+      const ready = await clipSvc.init();
+      if (!ready) {
+        return res.status(503).json({
+          success: false,
+          error: clipSvc.getStatus().lastError || 'CLIP service no disponible',
+        });
+      }
+
+      const queryEmb = await clipSvc.embedText(query.trim());
+      if (!queryEmb) {
+        return res.status(500).json({ success: false, error: 'no se pudo calcular embedding del texto' });
+      }
+
+      if (clipIndex.size() === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          count: 0,
+          message: 'El indice CLIP esta vacio. Escanea con IA para indexar archivos.',
+        });
+      }
+
+      const results = clipIndex.searchNearest(queryEmb, limit);
+      const filtered = thr > 0 ? results.filter(r => r.similarity >= thr) : results;
+      const files = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const byId = new Map(files.map(f => [f.id, f]));
+      const enriched = filtered.map(r => {
+        const f = byId.get(r.fileId);
+        return {
+          fileId: r.fileId,
+          similarity: r.similarity,
+          name: f ? f.name : null,
+          type: f ? f.type : null,
+        };
+      }).filter(r => r.name !== null);
+
+      res.json({
+        success: true,
+        data: enriched,
+        count: enriched.length,
+        totalIndexed: clipIndex.size(),
+        query: query.trim(),
+      });
+    } catch (err) {
+      console.error('[search-by-text]', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   return router;
 };

@@ -810,6 +810,20 @@ class ApiService {
     return response.json() as Promise<{ success: boolean; data: Array<{ fileId: string; similarity: number; name: string; type: string }>; count: number; totalIndexed: number }>;
   }
 
+  /**
+   * Busca archivos por descripcion en lenguaje natural (SigLIP-2 multilingue).
+   * El texto se codifica al mismo espacio que los embeddings de imagenes.
+   */
+  async searchByText(query: string, max: number = 100, minSimilarity: number = 0) {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{ fileId: string; similarity: number; name: string; type: string }>> & { count: number; totalIndexed: number; query: string }>(
+      `${API_BASE_URL}/search/by-text`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ query, max, minSimilarity }),
+      }
+    );
+  }
+
   async searchByColor(hex: string, threshold: number = 30, max: number = 500) {
     const params = new URLSearchParams({
       hex,

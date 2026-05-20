@@ -22,7 +22,7 @@
  *   searchNearest(query, topN, fileIdFilter?) — top-N por cosine similarity
  *
  * Embeddings se asumen L2-normalizados (vienen asi de clip_extractor.py),
- * por lo que cosine similarity = dot product. O(N x 512) por busqueda.
+ * por lo que cosine similarity = dot product. O(N x EMBEDDING_DIM) por busqueda.
  */
 
 const fs = require('fs').promises;
@@ -33,7 +33,7 @@ const INDEX_FILE = path.join(__dirname, 'clip_index.json');
 const INDEX_TMP = path.join(__dirname, 'clip_index.tmp');
 const MODEL_TAG = 'M-CLIP/XLM-Roberta-Large-Vit-B-32';
 
-// Map<fileId, Float32Array(512)>
+// Map<fileId, Float32Array(EMBEDDING_DIM)>
 let _index = new Map();
 let _loaded = false;
 let _saveQueue = Promise.resolve();
@@ -58,11 +58,18 @@ async function load() {
     const parsed = JSON.parse(raw);
     if (parsed && parsed.entries && typeof parsed.entries === 'object') {
       _index = new Map();
+      let discarded = 0;
       for (const [fileId, b64] of Object.entries(parsed.entries)) {
         const arr = _decodeB64(b64);
         if (arr) _index.set(fileId, arr);
+        else discarded++;
       }
-      console.log(`📚 CLIP index cargado: ${_index.size} embeddings`);
+      const persistedModel = parsed.model || '?';
+      if (discarded > 0) {
+        console.warn(`⚠️ CLIP index: descartados ${discarded} embeddings con dim incorrecta (modelo persistido: ${persistedModel}, actual: ${EMBEDDING_DIM}D). Re-escanea con Zap para regenerar.`);
+        _isDirty = true; // forzar save tras la limpieza
+      }
+      console.log(`📚 CLIP index cargado: ${_index.size} embeddings (${EMBEDDING_DIM}D)`);
     }
   } catch (err) {
     if (err.code !== 'ENOENT') {
@@ -71,7 +78,6 @@ async function load() {
     _index = new Map();
   }
   _loaded = true;
-  _isDirty = false;
 }
 
 async function _performSave() {

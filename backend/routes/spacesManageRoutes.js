@@ -24,7 +24,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const multer = require('multer');
 const spacesRegistry = require('../spacesRegistry');
-const { getInstance: getClipService } = require('../services/clipService');
+const { getInstance: getClipService, EMBEDDING_DIM } = require('../services/clipService');
 const spaceReidentifier = require('../services/spaceReidentifier');
 
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
@@ -302,7 +302,7 @@ async function _trainSpaceFromDir(spaceId, dir, clipSvc) {
   for (const f of files) {
     try {
       const emb = await clipSvc.embedImage(f);
-      if (emb && emb.length === 512) {
+      if (emb && emb.length === EMBEDDING_DIM) {
         embeddings.push(emb);
         used.push(path.basename(f));
       } else {
@@ -319,16 +319,16 @@ async function _trainSpaceFromDir(spaceId, dir, clipSvc) {
   }
 
   // Promediar y L2-normalizar
-  const centroid = new Float32Array(512);
+  const centroid = new Float32Array(EMBEDDING_DIM);
   for (const e of embeddings) {
-    for (let i = 0; i < 512; i++) centroid[i] += e[i];
+    for (let i = 0; i < EMBEDDING_DIM; i++) centroid[i] += e[i];
   }
-  for (let i = 0; i < 512; i++) centroid[i] /= embeddings.length;
+  for (let i = 0; i < EMBEDDING_DIM; i++) centroid[i] /= embeddings.length;
   let norm = 0;
-  for (let i = 0; i < 512; i++) norm += centroid[i] * centroid[i];
+  for (let i = 0; i < EMBEDDING_DIM; i++) norm += centroid[i] * centroid[i];
   norm = Math.sqrt(norm);
   if (norm > 0) {
-    for (let i = 0; i < 512; i++) centroid[i] /= norm;
+    for (let i = 0; i < EMBEDDING_DIM; i++) centroid[i] /= norm;
   }
 
   spacesRegistry.setCentroid(spaceId, centroid, embeddings.length);

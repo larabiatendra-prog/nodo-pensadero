@@ -23,16 +23,11 @@ numpy>=1.24
 opencv-python>=4.8
 pillow>=10.0
 
-# CLIP / M-CLIP — embeddings visuales + texto multilingue para
-# place recognition, image search y (a futuro) text-to-image en español.
-# torch+transformers son ~2 GB; multilingual-clip añade el text encoder
-# XLM-RoBERTa-Large. Total disco ~3 GB, VRAM cargado ~2.5 GB.
-torch>=2.0
-transformers>=4.38
-multilingual-clip>=1.0.10
-sentencepiece>=0.2  # tokenizer XLM-RoBERTa
-ftfy
-regex
+# SigLIP-2 (Google, 2024) — image+text embeddings multilingue en el mismo
+# espacio de 768 dims. Sustituye a CLIP base + M-CLIP. Soporta español
+# nativamente sin projection layers extra. ~600 MB modelo, ~1 GB VRAM.
+torch>=2.6           # requerido por transformers>=5 (vulnerabilidad CVE-2025-32434)
+transformers>=4.49   # SigLIP-2 anadido en 4.49; transformers 5.x funciona
 
 # CUDA runtime libraries vía pip (no requiere instalar CUDA Toolkit de
 # sistema, no requiere admin). face_detector.py registra estas carpetas

@@ -49,6 +49,11 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
   const [clipStatus, setClipStatus] = useState<{ ready: boolean; unavailable: boolean; lastError: string | null; embeddingDim: number; trainedSpaces: number } | null>(null);
   const [trainingIds, setTrainingIds] = useState<Set<string>>(new Set());
 
+  // Threshold global de matching (cosine similarity). Default 0.7, ajustable.
+  const [threshold, setThreshold] = useState<number>(0.7);
+  const [defaultThreshold, setDefaultThreshold] = useState<number>(0.7);
+  const [savingThreshold, setSavingThreshold] = useState(false);
+
   const [newSpaceId, setNewSpaceId] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newAliases, setNewAliases] = useState('');
@@ -58,7 +63,30 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
   useEffect(() => {
     loadSpaces();
     loadClipStatus();
+    loadSettings();
   }, []);
+
+  async function loadSettings() {
+    try {
+      const r = await api.getSpacesSettings();
+      if (r.success && r.data) {
+        setThreshold(r.data.match_threshold);
+        setDefaultThreshold(r.data.default_threshold);
+      }
+    } catch {}
+  }
+
+  async function saveThreshold(value: number) {
+    setSavingThreshold(true);
+    try {
+      const r = await api.setSpacesThreshold(value);
+      if (r.success && r.data) setThreshold(r.data.match_threshold);
+    } catch (err: any) {
+      setError(err.message || 'Error guardando threshold');
+    } finally {
+      setSavingThreshold(false);
+    }
+  }
 
   // Polling automatico mientras el daemon CLIP no esta listo
   useEffect(() => {
@@ -291,6 +319,40 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                 </p>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Slider de threshold global */}
+      {clipStatus?.ready && (
+        <div className="mb-6 p-4 bg-pizarra/40 border border-pizarra rounded-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <p className="text-sm font-medium text-marfil">Umbral de coincidencia</p>
+              <p className="text-xs text-lavanda-archivo">
+                Cuanto más alto, más estricto. Una foto se etiqueta con un espacio solo si la similitud CLIP supera este valor.
+              </p>
+            </div>
+            <span className="text-sm font-mono text-marfil bg-pizarra px-3 py-1 rounded-full">
+              {threshold.toFixed(2)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0.4}
+            max={0.95}
+            step={0.01}
+            value={threshold}
+            onChange={e => setThreshold(parseFloat(e.target.value))}
+            onMouseUp={() => saveThreshold(threshold)}
+            onTouchEnd={() => saveThreshold(threshold)}
+            disabled={savingThreshold}
+            className="w-full accent-lavanda"
+          />
+          <div className="flex justify-between text-[10px] text-bruma mt-0.5">
+            <span>0.40 (laxo)</span>
+            <span>default {defaultThreshold.toFixed(2)}</span>
+            <span>0.95 (estricto)</span>
           </div>
         </div>
       )}

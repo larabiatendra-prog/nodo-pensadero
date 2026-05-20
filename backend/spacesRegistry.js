@@ -21,7 +21,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_THRESHOLD = parseFloat(process.env.SPACE_MATCH_THRESHOLD || '0.6');
+// Threshold por defecto. 0.70 es conservador para CLIP base: la experiencia
+// real con corpus de eventos corporativos (auditorios, salas, networking)
+// muestra que 0.60-0.65 produce muchos falsos positivos por similitud
+// "tipo de escena" (gente en interior, ventanales, acreditaciones...) en
+// vez de "lugar concreto". Subir a 0.70 elimina la mayoría de FP.
+const DEFAULT_THRESHOLD = parseFloat(process.env.SPACE_MATCH_THRESHOLD || '0.7');
 
 let registryPath = null;
 let avatarsBase = null;
@@ -29,6 +34,8 @@ let spaceById = new Map();
 // Cache de centroides en memoria para matching rapido. Float32Array(512)
 let centroidsCache = new Map();
 let warnedOnce = false;
+// Threshold actual configurable en runtime (se persiste al JSON del registry)
+let currentThreshold = DEFAULT_THRESHOLD;
 
 function loadRegistry(filePath, avatarsBaseOverride = null) {
   registryPath = null;
@@ -69,6 +76,13 @@ function loadRegistry(filePath, avatarsBaseOverride = null) {
 
   if (!parsed || !Array.isArray(parsed.spaces)) {
     return { ok: false, count: 0, error: 'sin array spaces' };
+  }
+
+  // Cargar threshold global persistido (si existe). Si no, default.
+  if (typeof parsed.match_threshold === 'number' && parsed.match_threshold > 0 && parsed.match_threshold <= 1) {
+    currentThreshold = parsed.match_threshold;
+  } else {
+    currentThreshold = DEFAULT_THRESHOLD;
   }
 
   for (const space of parsed.spaces) {
@@ -139,8 +153,21 @@ function getState() {
     count: spaceById.size,
     spaceIds: Array.from(spaceById.keys()),
     trainedCount: centroidsCache.size,
-    threshold: DEFAULT_THRESHOLD,
+    threshold: currentThreshold,
+    defaultThreshold: DEFAULT_THRESHOLD,
   };
+}
+
+function getMatchThreshold() { return currentThreshold; }
+
+function setMatchThreshold(value) {
+  const v = parseFloat(value);
+  if (!isFinite(v) || v <= 0 || v > 1) {
+    throw new Error('threshold debe ser un numero entre 0 y 1');
+  }
+  currentThreshold = v;
+  saveToDisk();
+  return currentThreshold;
 }
 
 function listAll() {
@@ -232,6 +259,7 @@ function saveToDisk() {
   }
   const data = {
     version: 1,
+    match_threshold: currentThreshold,
     spaces: Array.from(spaceById.values()),
   };
   try {
@@ -253,8 +281,9 @@ function setRegistryPath(filePath, avatarsBaseOverride = null) {
 /**
  * Identifica el space mas cercano dado un embedding (Float32Array 512).
  * Devuelve {space_id, similarity} o null si ninguno supera el threshold.
+ * Threshold default es el currentThreshold (configurable runtime).
  */
-function identifySpace(embedding, threshold = DEFAULT_THRESHOLD) {
+function identifySpace(embedding, threshold = currentThreshold) {
   if (!embedding || embedding.length !== 512) return null;
   if (centroidsCache.size === 0) return null;
   let best = null;
@@ -280,6 +309,8 @@ module.exports = {
   getAliases,
   getCoverUrl,
   getState,
+  getMatchThreshold,
+  setMatchThreshold,
   listAll,
   upsertSpace,
   deleteSpace,

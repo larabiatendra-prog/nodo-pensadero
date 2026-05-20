@@ -99,10 +99,24 @@ try:
     import torch
     from PIL import Image
     from transformers import CLIPModel, CLIPProcessor, AutoTokenizer
-    from multilingual_clip import pt_multilingual_clip
 except Exception as e:
     sys.stderr.write(f"ERROR cargando dependencias CLIP: {e}\n")
     sys.exit(1)
+
+# El text encoder multilingue (M-CLIP) tiene una incompatibilidad con
+# transformers 5.x (meta-device error en AutoModel.from_pretrained).
+# Lo cargamos LAZY solo si se llama embed_text — para place recognition
+# e image search basta el image encoder de CLIP base, que SI funciona bien.
+# Cuando se quiera activar text-to-image en español, resolver:
+#   pip install "transformers<5"
+# o sustituir multilingual-clip por carga manual de XLM-RoBERTa-Large.
+try:
+    from multilingual_clip import pt_multilingual_clip
+    _MCLIP_AVAILABLE = True
+except Exception as e:
+    sys.stderr.write(f"[clip] multilingual-clip no disponible: {e}\n")
+    pt_multilingual_clip = None
+    _MCLIP_AVAILABLE = False
 
 
 # ----- Configuracion -----
@@ -129,22 +143,40 @@ _text_model = None
 _text_tokenizer = None
 
 
-def _load_models():
-    global _device, _img_model, _img_processor, _text_model, _text_tokenizer
+def _load_image_model():
+    """Carga solo el image encoder (CLIP base). Llamado al primer embed_image."""
+    global _device, _img_model, _img_processor
     if _img_model is not None:
         return
     _device = _resolve_device()
     sys.stderr.write(f"[clip] device={_device.type}\n")
-
     sys.stderr.write(f"[clip] cargando image encoder {IMG_MODEL_NAME}...\n")
-    _img_model = CLIPModel.from_pretrained(IMG_MODEL_NAME).to(_device).eval()
+    _img_model = CLIPModel.from_pretrained(IMG_MODEL_NAME, use_safetensors=True).to(_device).eval()
     _img_processor = CLIPProcessor.from_pretrained(IMG_MODEL_NAME)
+    sys.stderr.write(f"[clip] image encoder listo\n")
 
+
+def _load_text_model():
+    """Carga lazy del text encoder M-CLIP. Solo al primer embed_text."""
+    global _text_model, _text_tokenizer
+    if _text_model is not None:
+        return
+    if not _MCLIP_AVAILABLE:
+        raise RuntimeError(
+            "multilingual-clip no disponible. Para activar text-to-image en español, "
+            "instalar transformers<5: pip install 'transformers<5'"
+        )
+    if _device is None:
+        _load_image_model()  # Inicia device
     sys.stderr.write(f"[clip] cargando text encoder {TEXT_MODEL_NAME}...\n")
     _text_model = pt_multilingual_clip.MultilingualCLIP.from_pretrained(TEXT_MODEL_NAME).to(_device).eval()
     _text_tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_NAME)
+    sys.stderr.write(f"[clip] text encoder listo\n")
 
-    sys.stderr.write(f"[clip] modelos cargados\n")
+
+def _load_models():
+    """Compat: carga solo el image encoder. El text encoder es lazy."""
+    _load_image_model()
 
 
 def _encode_image_to_b64(emb_tensor):
@@ -171,6 +203,18 @@ def embed_image(path: str) -> dict:
     with torch.no_grad():
         inputs = _img_processor(images=img, return_tensors="pt").to(_device)
         feats = _img_model.get_image_features(**inputs)
+        # En transformers 5.x get_image_features puede devolver un wrapper
+        # (BaseModelOutputWithPooling) en vez de un Tensor directamente.
+        if not isinstance(feats, torch.Tensor):
+            for attr in ("image_embeds", "pooler_output", "last_hidden_state"):
+                cand = getattr(feats, attr, None)
+                if isinstance(cand, torch.Tensor):
+                    if attr == "last_hidden_state" and cand.dim() == 3:
+                        cand = cand.mean(dim=1)
+                    feats = cand
+                    break
+            else:
+                raise RuntimeError("get_image_features no devolvio tensor")
         # Normalizar L2 → comparacion via dot product = cosine similarity
         feats = feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-8)
     return {"embedding_b64": _encode_image_to_b64(feats), "dim": EMBEDDING_DIM}
@@ -178,7 +222,7 @@ def embed_image(path: str) -> dict:
 
 def embed_text(text: str) -> dict:
     """Devuelve {embedding_b64, dim} para texto (en español, ingles u otro)."""
-    _load_models()
+    _load_text_model()
     if not isinstance(text, str) or not text.strip():
         raise RuntimeError("texto vacio")
 

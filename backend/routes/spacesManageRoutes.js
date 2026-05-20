@@ -216,6 +216,31 @@ module.exports = function createSpacesManageRoutes(deps) {
     res.json({ success: true, data: { ...st, trainedSpaces: spacesRegistry.getState().trainedCount } });
   });
 
+  // Settings globales del registry (threshold de matching)
+  router.get('/spaces/settings', (req, res) => {
+    const state = spacesRegistry.getState();
+    res.json({
+      success: true,
+      data: {
+        match_threshold: state.threshold,
+        default_threshold: state.defaultThreshold,
+      },
+    });
+  });
+
+  router.patch('/spaces/settings', (req, res) => {
+    const { match_threshold } = req.body || {};
+    if (match_threshold === undefined) {
+      return res.status(400).json({ success: false, error: 'match_threshold requerido' });
+    }
+    try {
+      const v = spacesRegistry.setMatchThreshold(match_threshold);
+      res.json({ success: true, data: { match_threshold: v } });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
   return router;
 };
 

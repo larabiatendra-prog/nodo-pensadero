@@ -686,6 +686,17 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<{ ready: boolean; unavailable: boolean; lastError: string | null; embeddingDim: number; trainedSpaces: number }>>(`${API_BASE_URL}/spaces/clip-service/status`);
   }
 
+  async getSpacesSettings() {
+    return this.fetchWithErrorHandling<ApiResponse<{ match_threshold: number; default_threshold: number }>>(`${API_BASE_URL}/spaces/settings`);
+  }
+
+  async setSpacesThreshold(value: number) {
+    return this.fetchWithErrorHandling<ApiResponse<{ match_threshold: number }>>(`${API_BASE_URL}/spaces/settings`, {
+      method: 'PATCH',
+      body: JSON.stringify({ match_threshold: value }),
+    });
+  }
+
   async reidentifyAll() {
     return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/persons/reidentify`, {
       method: 'POST',

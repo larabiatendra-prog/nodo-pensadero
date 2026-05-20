@@ -513,6 +513,23 @@ class ApiService {
     });
   }
 
+  async startScanAll(force: boolean = false) {
+    return this.fetchWithErrorHandling<ApiResponse<any> & { jobIds?: string[]; count?: number; force?: boolean }>(
+      `${API_BASE_URL}/scan/start-all`,
+      { method: 'POST', body: JSON.stringify({ force }) }
+    );
+  }
+
+  async cancelScanAll() {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan/cancel-all`, {
+      method: 'POST',
+    });
+  }
+
+  async scanBatchStatus() {
+    return this.fetchWithErrorHandling<ApiResponse<{ running: boolean; aborted: boolean; total: number; processed: number; currentPathId: string | null; currentJobId: string | null; force: boolean; startedAt: string | null }>>(`${API_BASE_URL}/scan/batch-status`);
+  }
+
   async scanModels() {
     return this.fetchWithErrorHandling<ApiResponse<{ models: string[]; current: string }>>(`${API_BASE_URL}/scan/models`);
   }

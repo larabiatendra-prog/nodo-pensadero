@@ -883,6 +883,7 @@ app.use('/api', systemRoutes);
 const scanRoutes = createScanRoutes({
   broadcastProgress,
   syncFiles,
+  loadScanPaths,
 });
 app.use('/api', scanRoutes);
 

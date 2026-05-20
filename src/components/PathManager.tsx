@@ -54,6 +54,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   // escaneo real.
   const [contextModalPathId, setContextModalPathId] = useState<string | null>(null);
 
+  // Estado del bucle batch "Escanear todas las rutas". Solo uno activo a la vez.
+  const [batchScan, setBatchScan] = useState<{ running: boolean; total: number; processed: number; force: boolean } | null>(null);
+
   // WebSocket para progreso en tiempo real
   const { isConnected, progressData } = useWebSocket(config.wsUrl);
 
@@ -167,6 +170,29 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           return next;
         });
       }
+    }
+
+    // Bucle batch — pre-popular jobId↔pathId al arrancar, actualizar contador
+    if (progressData.type === 'batch_scan_start') {
+      const items = (progressData as any).items;
+      if (Array.isArray(items)) {
+        for (const it of items) {
+          if (it.jobId && it.pathId) jobIdToPathIdRef.current.set(it.jobId, it.pathId);
+        }
+      }
+      setBatchScan({
+        running: true,
+        total: (progressData as any).total || 0,
+        processed: 0,
+        force: !!(progressData as any).force,
+      });
+    }
+    if (progressData.type === 'batch_scan_progress') {
+      const idx = (progressData as any).index;
+      setBatchScan(prev => prev ? { ...prev, processed: typeof idx === 'number' ? idx : prev.processed } : prev);
+    }
+    if (progressData.type === 'batch_scan_done') {
+      setBatchScan(null);
     }
 
     if (progressData.type === 'scan_error' && progressData.jobId) {
@@ -349,6 +375,47 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
+  /**
+   * Escaneo masivo: dispara la IA sobre TODAS las rutas activas en serie.
+   * Devuelve los jobIds en el orden de las rutas activas para pre-poblar
+   * el mapping jobId↔pathId y que el progreso por ruta se renderize
+   * correctamente.
+   */
+  const handleScanAll = async (force: boolean) => {
+    if (batchScan?.running) return;
+    const activeCount = paths.filter(p => p.isActive).length;
+    if (activeCount === 0) {
+      alert('No hay rutas activas para escanear');
+      return;
+    }
+    if (force) {
+      if (!confirm(`¿Re-escanear con IA las ${activeCount} rutas activas (incluso ya catalogadas)? Puede tardar bastante.`)) return;
+    }
+    try {
+      const r: any = await api.startScanAll(force);
+      if (!r.success) throw new Error(r.error || 'Error iniciando escaneo masivo');
+      const jobIds: string[] = Array.isArray(r.jobIds) ? r.jobIds : [];
+      const activePaths = paths.filter(p => p.isActive);
+      // Pre-poblar el ref antes de que lleguen eventos WS (mismo patron que handleAiScan)
+      for (let i = 0; i < jobIds.length && i < activePaths.length; i++) {
+        jobIdToPathIdRef.current.set(jobIds[i], activePaths[i].id);
+      }
+      setBatchScan({ running: true, total: r.count || activePaths.length, processed: 0, force });
+    } catch (err: any) {
+      alert('Error: ' + (err.message || 'desconocido'));
+    }
+  };
+
+  const handleCancelAll = async () => {
+    if (!batchScan?.running) return;
+    if (!confirm('¿Detener el escaneo masivo? Se cancelará la ruta actual y no se procesarán las restantes.')) return;
+    try {
+      await api.cancelScanAll();
+    } catch {
+      // El estado se reseteara con batch_scan_done
+    }
+  };
+
   const handleRemovePath = async (pathId: string) => {
     if (!confirm('¿Estás seguro de que quieres eliminar esta ruta?')) return;
 
@@ -455,16 +522,66 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         </div>
       )}
 
-      {/* Botón para añadir nueva ruta */}
+      {/* Acciones globales: añadir ruta + escaneos masivos */}
       <div className="mb-6">
         {!showAddPath ? (
-          <button
-            onClick={() => setShowAddPath(true)}
-            className="flex items-center gap-2 btn-primary"
-          >
-            <Plus className="w-4 h-4" />
-            Añadir Nueva Ruta
-          </button>
+          <div className="flex items-center flex-wrap gap-2">
+            <button
+              onClick={() => setShowAddPath(true)}
+              className="flex items-center gap-2 btn-primary"
+            >
+              <Plus className="w-4 h-4" />
+              Añadir Nueva Ruta
+            </button>
+
+            {/* Escanear todas (solo nuevas) */}
+            <button
+              onClick={() => handleScanAll(false)}
+              disabled={
+                !!batchScan?.running ||
+                paths.filter(p => p.isActive).length === 0 ||
+                (vlmHealth ? (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable) : false)
+              }
+              className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-pizarra text-lavanda hover:bg-lavanda hover:bg-opacity-20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Escanear con IA todas las rutas activas (solo archivos nuevos)"
+            >
+              <Sparkles className="w-4 h-4" />
+              Escanear todas
+            </button>
+
+            {/* Re-escanear forzado todas */}
+            <button
+              onClick={() => handleScanAll(true)}
+              disabled={
+                !!batchScan?.running ||
+                paths.filter(p => p.isActive).length === 0 ||
+                (vlmHealth ? (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable) : false)
+              }
+              className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-pizarra text-melocoton hover:bg-melocoton hover:bg-opacity-20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Re-escanear FORZADO todas las rutas activas (incluye archivos ya catalogados)"
+            >
+              <Zap className="w-4 h-4" />
+              Re-escanear todas
+            </button>
+
+            {/* Indicador + cancelar cuando hay batch activo */}
+            {batchScan?.running && (
+              <div className="flex items-center gap-2 ml-2 px-3 py-2 rounded-full bg-tinta border border-pizarra">
+                <RefreshCw className="w-4 h-4 text-bruma animate-spin" />
+                <span className="text-sm text-lavanda-archivo">
+                  Escaneando ruta <span className="text-marfil font-medium">{Math.min(batchScan.processed + 1, batchScan.total)}</span>/<span className="text-marfil font-medium">{batchScan.total}</span>
+                  {batchScan.force && <span className="ml-1 text-melocoton text-xs">(forzado)</span>}
+                </span>
+                <button
+                  onClick={handleCancelAll}
+                  className="ml-1 text-xs px-2 py-0.5 rounded-full bg-pizarra text-lavanda-archivo hover:bg-lavanda hover:bg-opacity-20"
+                  title="Cancelar escaneo masivo"
+                >
+                  Detener
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <div className="bg-tinta rounded-3xl border border-pizarra p-4">
             <div className="flex items-center gap-3">

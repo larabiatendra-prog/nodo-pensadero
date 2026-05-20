@@ -773,6 +773,26 @@ class ApiService {
     );
   }
 
+  /**
+   * Sube una imagen y devuelve los archivos del corpus mas similares (CLIP).
+   * Threshold de similitud opcional (0-1, cosine). max=N limita resultados.
+   */
+  async searchByImage(file: File, max: number = 100, minSimilarity: number = 0) {
+    const formData = new FormData();
+    formData.append('image', file);
+    const params = new URLSearchParams({ max: String(max), minSimilarity: String(minSimilarity) });
+    const response = await fetch(`${API_BASE_URL}/search/by-image?${params.toString()}`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try { const j = await response.json(); if (j.error) errMsg = j.error; } catch {}
+      throw new Error(errMsg);
+    }
+    return response.json() as Promise<{ success: boolean; data: Array<{ fileId: string; similarity: number; name: string; type: string }>; count: number; totalIndexed: number }>;
+  }
+
   async searchByColor(hex: string, threshold: number = 30, max: number = 500) {
     const params = new URLSearchParams({
       hex,

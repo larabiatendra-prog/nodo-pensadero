@@ -1,24 +1,31 @@
 /**
- * Color Search Routes — Pensadero
+ * Search Routes — Pensadero
  *
- * Filtrado de mediaFiles por similitud cromatica usando la paleta del schema v2
- * (colors.palette: [{hex,name}]). El frontend manda un hex objetivo y un
- * threshold; el backend devuelve los archivos cuyo color dominante esta
- * mas cerca de ese hex en espacio CIELAB (Delta E 76).
+ * Agrupa busquedas avanzadas:
  *
- * Endpoints:
- *  - GET /api/search/by-color?hex=%23ff6600&threshold=30&max=200
+ *  - GET  /api/search/by-color?hex=%23ff6600&threshold=30&max=200
+ *      Devuelve los archivos cuya paleta tiene un color a distancia LAB
+ *      <= threshold del hex objetivo.
  *
- *      Devuelve los archivos ordenados por distancia ascendente.
- *      threshold: distancia maxima Delta E (default 30). Mas bajo = mas estricto.
- *      max: limite de resultados (default 500).
- *
- * Pensado para alimentar la "rueda de colores" del frontend pero usable
- * directamente con curl. Es O(N) sobre los mediaFiles cargados en memoria.
+ *  - POST /api/search/by-image (multipart, field 'image')
+ *      query: ?max=N&minSimilarity=F
+ *      Calcula el embedding CLIP de la imagen subida y devuelve los top-N
+ *      archivos del corpus mas similares (dot product en espacio CLIP).
  */
 
 const express = require('express');
+const fs = require('fs').promises;
+const path = require('path');
+const os = require('os');
+const multer = require('multer');
 const { hexToLab, paletteMinDistance } = require('../colorUtils');
+const clipIndex = require('../clipIndex');
+const { getInstance: getClipService } = require('../services/clipService');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 
 module.exports = function createColorSearchRoutes(deps) {
   const { getMediaFiles } = deps || {};
@@ -69,6 +76,84 @@ module.exports = function createColorSearchRoutes(deps) {
       threshold: thr,
       targetHex: hex,
     });
+  });
+
+  // ============================================
+  // BUSQUEDA POR IMAGEN (CLIP)
+  // ============================================
+  //
+  // Recibe una imagen via multipart, calcula su embedding M-CLIP y devuelve
+  // los top-N archivos mas similares del corpus (dot product en espacio CLIP).
+  router.post('/search/by-image', upload.single('image'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: 'falta archivo (field "image")' });
+
+    const maxResults = parseInt(req.query.max, 10);
+    const minSim = parseFloat(req.query.minSimilarity);
+    const limit = isFinite(maxResults) && maxResults > 0 ? maxResults : 100;
+    const thr = isFinite(minSim) ? minSim : 0;
+
+    // Guardar la imagen subida a un temp y calcular embedding
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pensadero-imgsearch-'));
+    const ext = path.extname(req.file.originalname || '.jpg').toLowerCase() || '.jpg';
+    const tmpPath = path.join(tmpDir, `q${ext}`);
+    let cleanup = async () => {
+      try { await fs.unlink(tmpPath); } catch {}
+      try { await fs.rmdir(tmpDir); } catch {}
+    };
+
+    try {
+      await fs.writeFile(tmpPath, req.file.buffer);
+
+      const clipSvc = getClipService();
+      const ready = await clipSvc.init();
+      if (!ready) {
+        return res.status(503).json({
+          success: false,
+          error: clipSvc.getStatus().lastError || 'CLIP service no disponible',
+        });
+      }
+
+      const queryEmb = await clipSvc.embedImage(tmpPath);
+      if (!queryEmb) {
+        return res.status(500).json({ success: false, error: 'no se pudo calcular embedding de la imagen' });
+      }
+
+      if (clipIndex.size() === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          count: 0,
+          message: 'El indice CLIP esta vacio. Escanea con IA para indexar archivos.',
+        });
+      }
+
+      const results = clipIndex.searchNearest(queryEmb, limit);
+      const filtered = thr > 0 ? results.filter(r => r.similarity >= thr) : results;
+      // Cruzar con mediaFiles para devolver datos basicos (name, type)
+      const files = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const byId = new Map(files.map(f => [f.id, f]));
+      const enriched = filtered.map(r => {
+        const f = byId.get(r.fileId);
+        return {
+          fileId: r.fileId,
+          similarity: r.similarity,
+          name: f ? f.name : null,
+          type: f ? f.type : null,
+        };
+      }).filter(r => r.name !== null); // filtrar IDs huerfanos
+
+      res.json({
+        success: true,
+        data: enriched,
+        count: enriched.length,
+        totalIndexed: clipIndex.size(),
+      });
+    } catch (err) {
+      console.error('[search-by-image]', err);
+      res.status(500).json({ success: false, error: err.message });
+    } finally {
+      await cleanup();
+    }
   });
 
   return router;

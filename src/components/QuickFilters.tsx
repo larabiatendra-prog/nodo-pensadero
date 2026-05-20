@@ -1,7 +1,8 @@
-import React from 'react';
-import { Heart } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Heart, Image as ImageIcon, X } from 'lucide-react';
 import DateRangeFilter from './DateRangeFilter';
 import ColorWheelFilter from './ColorWheelFilter';
+import { api } from '../services/api';
 
 interface QuickFiltersProps {
   selectedTypes: string[];
@@ -16,6 +17,9 @@ interface QuickFiltersProps {
   onDateRangeChange?: (from: Date | undefined, to: Date | undefined) => void;
   onColorFilterChange?: (fileIds: Set<string> | null, hex: string | null) => void;
   colorFilterHex?: string | null;
+  // Busqueda por imagen via CLIP
+  onImageSearchChange?: (fileIds: Set<string> | null, preview: string | null) => void;
+  imageSearchPreview?: string | null;
 }
 
 export default function QuickFilters({
@@ -31,7 +35,39 @@ export default function QuickFilters({
   onDateRangeChange,
   onColorFilterChange,
   colorFilterHex,
+  onImageSearchChange,
+  imageSearchPreview,
 }: QuickFiltersProps) {
+  const imgInputRef = useRef<HTMLInputElement>(null);
+  const [imgSearching, setImgSearching] = useState(false);
+
+  async function handleImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset
+    if (!file || !onImageSearchChange) return;
+    setImgSearching(true);
+    try {
+      const r = await api.searchByImage(file);
+      if (r.success && Array.isArray(r.data)) {
+        const ids = new Set(r.data.map(x => x.fileId));
+        // Crear data URL para preview
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const dataUrl = evt.target?.result as string;
+          onImageSearchChange(ids, dataUrl);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        onImageSearchChange(new Set(), null);
+      }
+    } catch (err: any) {
+      console.warn('Image search error:', err);
+      alert('Error en búsqueda por imagen: ' + (err.message || 'desconocido'));
+      onImageSearchChange(null, null);
+    } finally {
+      setImgSearching(false);
+    }
+  }
 
   return (
     <div className="flex items-center flex-wrap gap-1.5 md:gap-2">
@@ -133,6 +169,48 @@ export default function QuickFilters({
             onColorFilterChange={onColorFilterChange}
             activeHex={colorFilterHex}
           />
+        )}
+
+        {/* Buscar por imagen (CLIP) */}
+        {onImageSearchChange && (
+          <>
+            <input
+              ref={imgInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageSelected}
+            />
+            <button
+              onClick={() => {
+                if (imageSearchPreview) {
+                  // Si ya hay busqueda activa, click la limpia
+                  onImageSearchChange(null, null);
+                } else {
+                  imgInputRef.current?.click();
+                }
+              }}
+              disabled={imgSearching}
+              className={`flex items-center gap-2 px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+                imgSearching
+                  ? 'bg-lavanda/20 text-lavanda cursor-wait'
+                  : imageSearchPreview
+                    ? 'bg-lavanda text-white shadow-md'
+                    : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda hover:bg-opacity-20'
+              }`}
+              title={imageSearchPreview ? 'Limpiar búsqueda por imagen' : 'Buscar archivos similares a una imagen'}
+            >
+              {imageSearchPreview ? (
+                <img src={imageSearchPreview} alt="" className="w-4 h-4 rounded object-cover border border-white/40" />
+              ) : (
+                <ImageIcon className="w-4 h-4" />
+              )}
+              <span className="hidden sm:inline">
+                {imgSearching ? 'Buscando...' : imageSearchPreview ? 'Similares activos' : 'Por imagen'}
+              </span>
+              {imageSearchPreview && <X className="w-3 h-3" />}
+            </button>
+          </>
         )}
 
         {/* Status indicators */}

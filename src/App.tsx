@@ -97,6 +97,9 @@ function App() {
   // contra el endpoint /api/search/by-color y el hex objetivo para mostrarlo en UI.
   const [colorFilterFileIds, setColorFilterFileIds] = useState<Set<string> | null>(null);
   const [colorFilterHex, setColorFilterHex] = useState<string | null>(null);
+  // Busqueda por imagen (CLIP): fileIds que matchearon + dataURL para preview
+  const [imageSearchFileIds, setImageSearchFileIds] = useState<Set<string> | null>(null);
+  const [imageSearchPreview, setImageSearchPreview] = useState<string | null>(null);
 
   // Búsqueda natural — fileIds devueltos por el LLM, ordenados por score.
   // Cuando es null no hay búsqueda natural activa. Cuando es array, restringe la grid a esos IDs.
@@ -238,10 +241,11 @@ function App() {
       favoritesOnly?: boolean;
       skipDedup?: boolean;
       colorFileIds?: Set<string> | null;
+      imageSearchIds?: Set<string> | null;
     } = {}
   ) => {
     let filtered = [...baseFiles];
-    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds } = options;
+    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
 
     // 1. Aplicar búsqueda de texto si existe
     if (searchQuery && searchQuery.trim()) {
@@ -332,6 +336,11 @@ function App() {
       filtered = filtered.filter(file => colorFileIds.has(file.id));
     }
 
+    // 5c. Busqueda por imagen (CLIP) — fileIds devueltos por /api/search/by-image
+    if (imageSearchIds && imageSearchIds.size > 0) {
+      filtered = filtered.filter(file => imageSearchIds.has(file.id));
+    }
+
     // 6. Búsqueda natural — restringe a los IDs devueltos por el LLM
     // y ordena según el ranking de score que vino del backend.
     if (naturalSearchIds !== null) {
@@ -399,7 +408,7 @@ function App() {
       resetInfiniteScroll();
       console.log(`📜 Scroll reseteado por cambio de filtros: ${currentCount} -> ${newCount} archivos`);
     }
-  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds]);
+  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds]);
 
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
@@ -1860,6 +1869,8 @@ function App() {
     setNaturalSearchIds(null);
     setColorFilterFileIds(null);
     setColorFilterHex(null);
+    setImageSearchFileIds(null);
+    setImageSearchPreview(null);
 
     resetInfiniteScroll();
   };
@@ -2533,6 +2544,11 @@ function App() {
                       setColorFilterHex(hex);
                     }}
                     colorFilterHex={colorFilterHex}
+                    onImageSearchChange={(fileIds, preview) => {
+                      setImageSearchFileIds(fileIds);
+                      setImageSearchPreview(preview);
+                    }}
+                    imageSearchPreview={imageSearchPreview}
                   />
                   {hasActiveFilters && (
                     <button
@@ -2888,7 +2904,8 @@ function App() {
     selectedPersonIds.length > 0 ||
     naturalSearchIds !== null ||
     showFavoritesOnly ||
-    colorFilterHex !== null
+    colorFilterHex !== null ||
+    imageSearchPreview !== null
   );
   hasActiveFiltersRef.current = hasActiveFilters;
 

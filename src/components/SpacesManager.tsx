@@ -8,8 +8,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
  * SpacesManager — gestion de espacios fisicos con place recognition CLIP.
  *
  * Patron analogo a PersonsManager. Diferencias:
- *  - El "modelo de reconocimiento" es CLIP / M-CLIP (place rec por similitud
- *    visual), no InsightFace
+ *  - El "modelo de reconocimiento" es SigLIP-2 (place rec por similitud
+ *    visual en embeddings 768D L2-normalizados), no InsightFace
  *  - El "avatar" se llama "cover" (foto representativa del lugar)
  *  - Tras subir/borrar foto de referencia, se recalcula el CENTROIDE CLIP
  *    automaticamente en background
@@ -375,7 +375,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
             {clipStatus.ready ? (
               <>
                 <p className="font-medium text-marfil mb-0.5">
-                  Reconocimiento de espacios activo (M-CLIP)
+                  Reconocimiento de espacios activo (SigLIP-2)
                   {clipStatus.trainedSpaces > 0 && (
                     <span className="ml-2 text-xs text-lavanda-archivo">· {clipStatus.trainedSpaces} {clipStatus.trainedSpaces === 1 ? 'espacio entrenado' : 'espacios entrenados'}</span>
                   )}
@@ -656,7 +656,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                   <div className="p-6 border-2 border-dashed border-pizarra rounded-2xl text-center">
                     <Upload className="w-8 h-8 text-lavanda-archivo mx-auto mb-2" />
                     <p className="text-sm text-lavanda-archivo">
-                      Sube 5-10 fotos del espacio desde distintos ángulos. M-CLIP calculará un centroide que servirá para detectarlo automáticamente.
+                      Sube 5-10 fotos del espacio desde distintos ángulos. SigLIP-2 calculará un centroide que servirá para detectarlo automáticamente.
                     </p>
                   </div>
                 ) : (
@@ -774,7 +774,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
       <div className="mt-8 p-4 bg-pizarra/50 border border-pizarra rounded-2xl">
         <h4 className="text-sm font-medium text-marfil mb-1">Cómo funciona el reconocimiento de espacios</h4>
         <p className="text-xs text-lavanda-archivo">
-          Subes 5-10 fotos del lugar (Auditorio EDEM, Marina de Empresas, tu salón...) desde ángulos distintos. M-CLIP calcula un
+          Subes 5-10 fotos del lugar (Auditorio EDEM, Marina de Empresas, tu salón...) desde ángulos distintos. SigLIP-2 calcula un
           <span className="font-mono text-bruma"> embedding visual</span> de cada una y promedia un centroide para el espacio.
           Al escanear con IA tus carpetas, cada foto se compara contra todos los centroides; si supera el umbral, se asocia al
           <span className="font-mono text-bruma"> space_id</span> correspondiente. Esto alimenta búsquedas tipo "fotos en EDEM" y Smart Folders.

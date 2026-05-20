@@ -73,6 +73,18 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         setSelectedModel(r.data.current);
       }
     }).catch(() => {});
+    // Resync inicial: si hay un batch corriendo en el backend (porque
+    // recargamos el frontend mientras escaneaba), retomamos el indicador.
+    api.scanBatchStatus().then(r => {
+      if (r.success && r.data && r.data.running) {
+        setBatchScan({
+          running: true,
+          total: r.data.total,
+          processed: r.data.processed,
+          force: r.data.force,
+        });
+      }
+    }).catch(() => {});
   }, []);
 
   // Escuchar progreso de sincronización Y de escaneo visual IA

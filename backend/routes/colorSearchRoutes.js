@@ -82,7 +82,7 @@ module.exports = function createColorSearchRoutes(deps) {
   // BUSQUEDA POR IMAGEN (CLIP)
   // ============================================
   //
-  // Recibe una imagen via multipart, calcula su embedding M-CLIP y devuelve
+  // Recibe una imagen via multipart, calcula su embedding SigLIP-2 y devuelve
   // los top-N archivos mas similares del corpus (dot product en espacio CLIP).
   router.post('/search/by-image', upload.single('image'), async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, error: 'falta archivo (field "image")' });

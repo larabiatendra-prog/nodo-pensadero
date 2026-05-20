@@ -214,49 +214,60 @@ module.exports = function createScanRoutes(deps) {
     }
 
     setImmediate(async () => {
-      for (let i = 0; i < activePaths.length; i++) {
-        if (batchState.aborted) break;
-        const p = activePaths[i];
-        batchState.currentPathId = p.id;
-        batchState.currentJobId = jobIds[i];
+      // try/finally garantiza que SIEMPRE emitimos batch_scan_done y reseteamos
+      // el state. Si un error inesperado revienta el bucle, la UI no se queda
+      // con el indicador "Escaneando" colgado.
+      try {
+        for (let i = 0; i < activePaths.length; i++) {
+          if (batchState.aborted) break;
+          const p = activePaths[i];
+          batchState.currentPathId = p.id;
+          batchState.currentJobId = jobIds[i];
 
+          if (typeof broadcastProgress === 'function') {
+            try {
+              broadcastProgress({
+                type: 'batch_scan_progress',
+                index: i,
+                total: activePaths.length,
+                pathId: p.id,
+                path: p.path,
+                jobId: jobIds[i],
+              });
+            } catch (e) { console.warn('[scan-all] broadcast progress falló:', e.message); }
+          }
+
+          try {
+            await scanOrchestrator.scanFolder(p.path, {
+              force,
+              broadcastProgress: broadcastProgress || (() => {}),
+              jobId: jobIds[i],
+            });
+          } catch (err) {
+            console.error(`[scan-all] error en ruta ${p.path}:`, err.message);
+          }
+          batchState.processed = i + 1;
+        }
+
+        // Refrescar mediaFiles si hubo cambios (best-effort)
+        if (typeof syncFiles === 'function') {
+          try { await syncFiles(); } catch (e) { console.warn('[scan-all] post-sync falló:', e.message); }
+        }
+      } catch (fatal) {
+        console.error('[scan-all] error fatal:', fatal);
+      } finally {
         if (typeof broadcastProgress === 'function') {
-          broadcastProgress({
-            type: 'batch_scan_progress',
-            index: i,
-            total: activePaths.length,
-            pathId: p.id,
-            path: p.path,
-            jobId: jobIds[i],
-          });
+          try {
+            broadcastProgress({
+              type: 'batch_scan_done',
+              total: activePaths.length,
+              processed: batchState.processed,
+              aborted: batchState.aborted,
+            });
+          } catch (e) { console.warn('[scan-all] broadcast done falló:', e.message); }
         }
-
-        try {
-          await scanOrchestrator.scanFolder(p.path, {
-            force,
-            broadcastProgress: broadcastProgress || (() => {}),
-            jobId: jobIds[i],
-          });
-        } catch (err) {
-          console.error(`[scan-all] error en ruta ${p.path}:`, err.message);
-        }
-        batchState.processed = i + 1;
+        resetBatch();
       }
-
-      // Refrescar mediaFiles si hubo cambios (best-effort)
-      if (typeof syncFiles === 'function') {
-        try { await syncFiles(); } catch (e) { console.warn('[scan-all] post-sync falló:', e.message); }
-      }
-
-      if (typeof broadcastProgress === 'function') {
-        broadcastProgress({
-          type: 'batch_scan_done',
-          total: activePaths.length,
-          processed: batchState.processed,
-          aborted: batchState.aborted,
-        });
-      }
-      resetBatch();
     });
 
     res.json({ success: true, jobIds, count: activePaths.length, force });

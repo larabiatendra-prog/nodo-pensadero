@@ -253,7 +253,7 @@ async function scanFolder(folderPath, opts = {}) {
     facesEnabled = false;
   }
 
-  // CLIP / M-CLIP: lazy init. Si falla (modelo no descargado todavia, RAM
+  // CLIP / SigLIP-2: lazy init. Si falla (modelo no descargado todavia, RAM
   // insuficiente, etc.) seguimos sin embeddings — el resto del scan funciona.
   let clipEnabled = false;
   try {

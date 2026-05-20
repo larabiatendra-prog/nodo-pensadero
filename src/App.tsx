@@ -793,8 +793,7 @@ function App() {
       searchQuery: query,
       searchFilters: filters,
       tags: filters.tags,
-      types: selectedTypes
-      // colors: selectedColors // TODO: Implementar filtrado por colores
+      types: selectedTypes,
     });
 
     setFilteredFiles(filtered);

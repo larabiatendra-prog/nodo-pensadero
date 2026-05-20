@@ -1,14 +1,14 @@
 /**
  * CLIP Service — Pensadero NODO
  *
- * Wrapper Node sobre el daemon Python `clip_extractor.py` (M-CLIP).
+ * Wrapper Node sobre el daemon Python `clip_extractor.py` (SigLIP-2).
  * Mantiene un proceso Python persistente en stream mode para no recargar
  * el modelo en cada peticion (cold start ~15-20s).
  *
  * API:
  *   await clipService.init()                  → arranca el daemon
- *   await clipService.embedImage(filePath)    → Float32Array(512) L2-normalizado
- *   await clipService.embedText(text)         → idem
+ *   await clipService.embedImage(filePath)    → Float32Array(768) L2-normalizado
+ *   await clipService.embedText(text)         → idem (texto multilingue, español nativo)
  *   clipService.shutdown()                    → cierra el daemon
  *   clipService.getStatus()                   → {ready, unavailable, lastError}
  *
@@ -103,7 +103,7 @@ class ClipService {
         const pong = await this._sendCommand({ op: 'ping' }, COLD_START_TIMEOUT_MS);
         if (pong === 'pong') {
           this.ready = true;
-          console.log('[clipService] M-CLIP daemon listo');
+          console.log('[clipService] SigLIP-2 daemon listo');
           return true;
         }
         this.unavailable = true;

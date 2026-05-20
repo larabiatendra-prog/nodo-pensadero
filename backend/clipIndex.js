@@ -31,7 +31,10 @@ const { EMBEDDING_DIM } = require('./services/clipService');
 
 const INDEX_FILE = path.join(__dirname, 'clip_index.json');
 const INDEX_TMP = path.join(__dirname, 'clip_index.tmp');
-const MODEL_TAG = 'M-CLIP/XLM-Roberta-Large-Vit-B-32';
+// Tag persistido en clip_index.json. Si cambia el modelo, el load() detecta
+// dim distinta y descarta automaticamente. El nombre exacto se puede sobreescribir
+// con CLIP_MODEL_TAG por si se prueba otra variante (siglip2-large, etc.).
+const MODEL_TAG = process.env.CLIP_MODEL_TAG || 'google/siglip2-base-patch16-naflex';
 
 // Map<fileId, Float32Array(EMBEDDING_DIM)>
 let _index = new Map();

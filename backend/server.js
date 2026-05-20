@@ -47,6 +47,8 @@ const createColorSearchRoutes = require('./routes/colorSearchRoutes');
 const createAliasRoutes = require('./routes/aliasRoutes');
 const aliasTable = require('./aliasTable');
 const clipIndex = require('./clipIndex');
+const spacesRegistry = require('./spacesRegistry');
+const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
 
 // Multer para uploads de imagen (lo conservamos por si lo usa el frontend en
 // la búsqueda por imagen futura; actualmente no hay endpoint que lo consuma).
@@ -85,6 +87,10 @@ const PERSONS_REGISTRY_PATH = (process.env.PERSONS_REGISTRY || '').trim() ||
   path.join(DEFAULT_DATA_DIR, 'people_registry.json');
 const PERSONS_AVATARS_BASE = (process.env.PERSONS_AVATARS_BASE || '').trim() ||
   DEFAULT_DATA_DIR;
+// Spaces comparten el mismo avatarsBase que personas. El registry es un
+// archivo aparte (spaces_registry.json) por default en la misma carpeta.
+const SPACES_REGISTRY_PATH = (process.env.SPACES_REGISTRY || '').trim() ||
+  path.join(DEFAULT_DATA_DIR, 'spaces_registry.json');
 
 // Rutas de exports cargadas desde scan_paths.json
 let EXPORTS_PATHS = [];
@@ -167,6 +173,15 @@ function mountPersonsAvatars() {
       fallthrough: true
     }));
     console.log(`🖼️ Avatares servidos desde: ${base}`);
+    // Spaces comparten avatarsBase. Servimos las fotos de referencia y covers
+    // en /spaces-covers/spaces/<id>/... usando el mismo dir base.
+    app.use('/spaces-covers', express.static(base, {
+      maxAge: '1d',
+      etag: true,
+      lastModified: true,
+      fallthrough: true,
+    }));
+    console.log(`🏢 Covers de espacios servidos desde: ${base}`);
   } catch (err) {
     console.warn(`⚠️ No se monta /persons-avatars (${base}): ${err.message}`);
   }
@@ -880,6 +895,10 @@ const personsManageRoutes = createPersonsManageRoutes({
 });
 app.use('/api', personsManageRoutes);
 
+// Registry de espacios + training del centroide CLIP por espacio.
+const spacesManageRoutes = createSpacesManageRoutes({});
+app.use('/api', spacesManageRoutes);
+
 // Busqueda por color (Delta E sobre la palette del schema v2). Alimenta
 // la "rueda de colores" del frontend.
 const colorSearchRoutes = createColorSearchRoutes({
@@ -978,6 +997,18 @@ async function initialize() {
     // saveToDisk(), sin warnings ruidosos.
     peopleRegistry.setRegistryPath(PERSONS_REGISTRY_PATH, PERSONS_AVATARS_BASE);
     console.log(`👥 Registry vacío. Se creará en ${PERSONS_REGISTRY_PATH} al guardar la primera persona.`);
+  }
+  // Spaces: mismo patron. Comparten avatarsBase con personas.
+  try {
+    await fs.mkdir(path.dirname(SPACES_REGISTRY_PATH), { recursive: true });
+    await fs.mkdir(path.join(PERSONS_AVATARS_BASE, 'spaces'), { recursive: true });
+  } catch (err) {
+    console.warn(`⚠️ No se pudo preparar carpeta de spaces: ${err.message}`);
+  }
+  const spacesLoadResult = spacesRegistry.loadRegistry(SPACES_REGISTRY_PATH, PERSONS_AVATARS_BASE);
+  if (!spacesLoadResult.ok && spacesLoadResult.count === 0) {
+    spacesRegistry.setRegistryPath(SPACES_REGISTRY_PATH, PERSONS_AVATARS_BASE);
+    console.log(`🏢 Spaces registry vacío. Se creará en ${SPACES_REGISTRY_PATH} al guardar el primer espacio.`);
   }
   mountPersonsAvatars();
   watchPersonsRegistry();

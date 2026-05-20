@@ -34,6 +34,7 @@ const clipIndex = require('../clipIndex');
 const colorAnalyzer = require('../colorAnalyzer');
 const { enrichPalette } = require('../colorNamer');
 const peopleRegistry = require('../peopleRegistry');
+const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
 
@@ -430,6 +431,17 @@ async function scanFolder(folderPath, opts = {}) {
                 if (clipEmb) {
                   entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
                   clipIndex.upsert(fileIdFor(filePath), clipEmb);
+                  // Place recognition: matchear contra centroides de espacios
+                  const match = spacesRegistry.identifySpace(clipEmb);
+                  if (match) {
+                    entry.identity = entry.identity || {};
+                    entry.identity.spaces = entry.identity.spaces || [];
+                    entry.identity.spaces.push({
+                      space_id: match.space_id,
+                      display_name: spacesRegistry.getDisplayName(match.space_id),
+                      confidence: match.similarity,
+                    });
+                  }
                 }
               } catch (eErr) {
                 console.warn(`[scan-video] CLIP embedding ${basename}: ${eErr.message}`);
@@ -472,6 +484,17 @@ async function scanFolder(folderPath, opts = {}) {
             if (clipEmb) {
               entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
               clipIndex.upsert(fileIdFor(filePath), clipEmb);
+              // Place recognition: matchear contra centroides de espacios
+              const match = spacesRegistry.identifySpace(clipEmb);
+              if (match) {
+                entry.identity = entry.identity || {};
+                entry.identity.spaces = entry.identity.spaces || [];
+                entry.identity.spaces.push({
+                  space_id: match.space_id,
+                  display_name: spacesRegistry.getDisplayName(match.space_id),
+                  confidence: match.similarity,
+                });
+              }
             }
           } catch (eErr) {
             console.warn(`[scan-photo] CLIP embedding ${basename}: ${eErr.message}`);

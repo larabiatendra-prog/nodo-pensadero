@@ -218,8 +218,7 @@ ${contextSection}ESQUEMA EXACTO:
   "objects": ["objeto1","objeto2",...] (max 10, sustantivos simples en español),
   "actions": ["accion1",...] (max 5, verbos en infinitivo o sustantivos en español),
   "expressions": ["sonrisa","serio","neutro","sorpresa",...] (max 5, vacio si nadie),
-  "ocr_text": ["texto visible",...] (max 10 fragmentos legibles, vacio si nada),
-  "palette": [{"hex":"#RRGGBB","name":"nombre en español"}, ...] (3 colores dominantes con nombre humano)
+  "ocr_text": ["texto visible",...] (max 10 fragmentos legibles, vacio si nada)
 }
 
 REGLAS:
@@ -227,7 +226,7 @@ REGLAS:
 2. NO inferir edad ni genero de las personas — eso lo hace otro modulo con mas precision. Solo people_framing como conteo aproximado.
 3. camera_movement: solo si es un VIDEO (frame de video); en fotos devuelve null.
 4. ocr_text: solo si hay texto legible. NO inventes texto.
-5. palette: 3 colores principales con nombre humano en español (ejemplos validos: azul marino, ocre, dorado, blanco, gris claro, verde oliva, rojo intenso, rosa pastel, negro, marron, lavanda, turquesa, salmon, beige, naranja, amarillo mostaza).
+5. Los colores dominantes los extrae otro modulo (analisis perceptual de pixeles), tu NO los pongas.
 6. Si hay CONTEXTO DE LA CARPETA, usalo para precisar — incluyendo nombres de personas mencionadas si aparecen claramente en la imagen. NUNCA inventes nombres que el contexto no proporcione.
 7. Devuelve SOLO el JSON, sin texto antes ni despues.`;
   }

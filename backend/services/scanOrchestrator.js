@@ -22,6 +22,8 @@ const { spawn } = require('child_process');
 const sharp = require('sharp');
 const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
+const colorAnalyzer = require('../colorAnalyzer');
+const { enrichPalette } = require('../colorNamer');
 const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
@@ -374,18 +376,34 @@ async function scanFolder(folderPath, opts = {}) {
         entry = await scanner.scanVideo(filePath, { folderContext: folderContextStr });
         // technical lo rellena scanVideo desde ffprobe; no llamamos a sharp
         // que daría error en vídeos.
-        // Caras: extraemos un solo frame representativo (centro del vídeo) y
-        // lo pasamos por InsightFace. Es heurístico pero económico.
-        if (facesEnabled) {
-          try {
-            const repFrame = await extractRepresentativeFrame(filePath, entry.technical?.duration);
-            if (repFrame && repFrame.outPath) {
-              videoFrameTime = repFrame.seekSec;
-              faceDetections = await faceSvc.detectFaces(repFrame.outPath).catch(() => []);
-              try { await fs.unlink(repFrame.outPath); } catch {}
+        // Extraemos UN frame representativo y lo usamos para DOS cosas:
+        // 1) Deteccion facial via InsightFace
+        // 2) Analisis cromatico via colorAnalyzer (perceptual prominence)
+        let repFramePath = null;
+        try {
+          const repFrame = await extractRepresentativeFrame(filePath, entry.technical?.duration);
+          if (repFrame && repFrame.outPath) {
+            repFramePath = repFrame.outPath;
+            videoFrameTime = repFrame.seekSec;
+            if (facesEnabled) {
+              faceDetections = await faceSvc.detectFaces(repFramePath).catch(() => []);
             }
-          } catch (err) {
-            console.warn(`[scan-video] face detection skip ${basename}: ${err.message}`);
+            // Color analysis sobre el mismo frame (sustituye al palette del VLM)
+            try {
+              const colorResult = await colorAnalyzer.analyzeImageColors(repFramePath);
+              if (colorResult && Array.isArray(colorResult.palette) && colorResult.palette.length > 0) {
+                entry.colors = entry.colors || {};
+                entry.colors.palette = enrichPalette(colorResult.palette.slice(0, 3));
+              }
+            } catch (cErr) {
+              console.warn(`[scan-video] color analysis ${basename}: ${cErr.message}`);
+            }
+          }
+        } catch (err) {
+          console.warn(`[scan-video] extract frame ${basename}: ${err.message}`);
+        } finally {
+          if (repFramePath) {
+            try { await fs.unlink(repFramePath); } catch {}
           }
         }
       } else {
@@ -399,6 +417,17 @@ async function scanFolder(folderPath, opts = {}) {
         // En FOTOS el camera_movement no aplica (el prompt lo pide solo para
         // video pero modelos pequenos a veces lo rellenan igualmente).
         if (entry.composition) entry.composition.camera_movement = null;
+        // Palette algoritmica sobre la foto original (mas precisa perceptualmente
+        // que la heuristica del VLM, que a veces decia "rojo" para hex marrones).
+        try {
+          const colorResult = await colorAnalyzer.analyzeImageColors(filePath);
+          if (colorResult && Array.isArray(colorResult.palette) && colorResult.palette.length > 0) {
+            entry.colors = entry.colors || {};
+            entry.colors.palette = enrichPalette(colorResult.palette.slice(0, 3));
+          }
+        } catch (cErr) {
+          console.warn(`[scan-photo] color analysis ${basename}: ${cErr.message}`);
+        }
       }
 
       // Identidad: si tenemos detección de caras, sobrescribir lo que dijo

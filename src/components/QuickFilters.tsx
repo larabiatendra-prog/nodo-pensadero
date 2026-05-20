@@ -257,8 +257,15 @@ export default function QuickFilters({
                   type="text"
                   value={textInput}
                   onChange={e => setTextInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') {
+                      setShowTextSearch(false);
+                      setTextInput('');
+                    }
+                  }}
                   placeholder="playa al atardecer, retrato luz dorada..."
                   autoFocus
+                  maxLength={200}
                   className="bg-transparent text-marfil text-sm outline-none w-56 placeholder:text-lavanda-archivo"
                 />
                 <button

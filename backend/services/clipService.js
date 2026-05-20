@@ -28,7 +28,7 @@ const SCRIPT_PATH = path.join(PYTHON_DIR, 'clip_extractor.py');
 // SigLIP-2 base usa 768 dims (cambio desde CLIP base ViT-B-32 que era 512).
 // Si cambias de modelo en CLIP_MODEL env var, actualiza esta constante.
 const EMBEDDING_DIM = 768;
-const COLD_START_TIMEOUT_MS = 120_000; // 2 min para cargar XLM-RoBERTa-Large
+const COLD_START_TIMEOUT_MS = 120_000; // 2 min para cargar SigLIP-2 (descarga inicial ~600 MB)
 const PER_REQUEST_TIMEOUT_MS = 60_000;
 
 class ClipService {
@@ -195,7 +195,7 @@ class ClipService {
   }
 
   /**
-   * Decodifica base64 → Float32Array(512). Si la longitud es invalida, null.
+   * Decodifica base64 → Float32Array(EMBEDDING_DIM). Si la longitud es invalida, null.
    */
   _decode(b64) {
     if (typeof b64 !== 'string' || !b64) return null;
@@ -205,7 +205,7 @@ class ClipService {
   }
 
   /**
-   * Calcula el embedding de una imagen (path local). Devuelve Float32Array(512)
+   * Calcula el embedding de una imagen (path local). Devuelve Float32Array(EMBEDDING_DIM)
    * L2-normalizado para comparacion via dot product.
    */
   async embedImage(filePath) {
@@ -222,7 +222,7 @@ class ClipService {
 
   /**
    * Calcula el embedding de un texto en español/ingles/multilingue.
-   * Devuelve Float32Array(512) L2-normalizado.
+   * Devuelve Float32Array(EMBEDDING_DIM) L2-normalizado.
    */
   async embedText(text) {
     const ok = await this.init();
@@ -237,7 +237,7 @@ class ClipService {
   }
 
   /**
-   * Convierte un Float32Array(512) a base64 string para persistir en sidecars.
+   * Convierte un Float32Array(EMBEDDING_DIM) a base64 string para persistir en sidecars.
    */
   encodeEmbedding(arr) {
     if (!arr || arr.length !== EMBEDDING_DIM) return null;

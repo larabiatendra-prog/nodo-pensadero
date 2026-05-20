@@ -15,6 +15,7 @@ interface QuickFiltersProps {
   dateTo?: Date;
   onDateRangeChange?: (from: Date | undefined, to: Date | undefined) => void;
   onColorFilterChange?: (fileIds: Set<string> | null, hex: string | null) => void;
+  colorFilterHex?: string | null;
 }
 
 export default function QuickFilters({
@@ -29,6 +30,7 @@ export default function QuickFilters({
   dateTo,
   onDateRangeChange,
   onColorFilterChange,
+  colorFilterHex,
 }: QuickFiltersProps) {
 
   return (
@@ -127,7 +129,10 @@ export default function QuickFilters({
 
         {/* Color Wheel Filter - al lado de fechas */}
         {onColorFilterChange && (
-          <ColorWheelFilter onColorFilterChange={onColorFilterChange} />
+          <ColorWheelFilter
+            onColorFilterChange={onColorFilterChange}
+            activeHex={colorFilterHex}
+          />
         )}
 
         {/* Status indicators */}

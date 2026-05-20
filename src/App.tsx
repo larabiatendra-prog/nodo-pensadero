@@ -2474,6 +2474,7 @@ function App() {
                       setColorFilterFileIds(fileIds);
                       setColorFilterHex(hex);
                     }}
+                    colorFilterHex={colorFilterHex}
                   />
                   {hasActiveFilters && (
                     <button

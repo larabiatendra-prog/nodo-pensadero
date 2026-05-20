@@ -20,6 +20,10 @@ import { api } from '../services/api';
 
 interface ColorWheelFilterProps {
   onColorFilterChange: (fileIds: Set<string> | null, hex: string | null) => void;
+  // Hex activo segun el padre. Sirve para que "Limpiar todos los filtros"
+  // (que vive en App.tsx) tambien resetee el estado interno de la rueda.
+  // Cuando el padre lo cambia a null, este componente borra su seleccion.
+  activeHex?: string | null;
 }
 
 const WHEEL_SIZE = 200;
@@ -73,7 +77,7 @@ function drawWheel(canvas: HTMLCanvasElement, lightness: number) {
   ctx.putImageData(img, 0, 0);
 }
 
-export default function ColorWheelFilter({ onColorFilterChange }: ColorWheelFilterProps) {
+export default function ColorWheelFilter({ onColorFilterChange, activeHex }: ColorWheelFilterProps) {
   const [open, setOpen] = useState(false);
   const [selectedHex, setSelectedHex] = useState<string | null>(null);
   const [threshold, setThreshold] = useState(25);
@@ -102,6 +106,17 @@ export default function ColorWheelFilter({ onColorFilterChange }: ColorWheelFilt
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
+
+  // Sincronizar con el estado del padre: si el padre limpia el filtro (ej.
+  // "Limpiar todos los filtros" o tecla ESC), borrar tambien la seleccion
+  // interna para que la UI refleje el estado real.
+  useEffect(() => {
+    if (activeHex === null || activeHex === undefined) {
+      setSelectedHex(null);
+      setMarker(null);
+      setMatchCount(null);
+    }
+  }, [activeHex]);
 
   const applyColorFilter = async (hex: string, thr: number) => {
     setLoading(true);

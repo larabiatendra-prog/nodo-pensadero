@@ -623,6 +623,69 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<{ ready: boolean; unavailable: boolean; lastError: string | null; threshold: number; trainedPersons: number }>>(`${API_BASE_URL}/persons/face-service/status`);
   }
 
+  // ============================================
+  // GESTION DE ESPACIOS (registry CRUD + fotos + training CLIP)
+  // ============================================
+
+  async listSpacesRegistry() {
+    return this.fetchWithErrorHandling<ApiResponse<any[]>>(`${API_BASE_URL}/spaces/registry`);
+  }
+
+  async upsertSpace(space: { space_id: string; display_name?: string; aliases?: string[]; cover_image_path?: string }) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/spaces/registry`, {
+      method: 'POST',
+      body: JSON.stringify(space),
+    });
+  }
+
+  async deleteSpace(spaceId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/spaces/registry/${encodeURIComponent(spaceId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listSpacePhotos(spaceId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ filename: string; url: string }[]>>(`${API_BASE_URL}/spaces/registry/${encodeURIComponent(spaceId)}/photos`);
+  }
+
+  async uploadSpacePhoto(spaceId: string, file: File) {
+    const formData = new FormData();
+    formData.append('photo', file);
+    const response = await fetch(`${API_BASE_URL}/spaces/registry/${encodeURIComponent(spaceId)}/photos`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try { const j = await response.json(); if (j.error) errMsg = j.error; } catch {}
+      throw new Error(errMsg);
+    }
+    return response.json();
+  }
+
+  async deleteSpacePhoto(spaceId: string, filename: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/spaces/registry/${encodeURIComponent(spaceId)}/photos/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async setSpaceCover(spaceId: string, filename: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/spaces/registry/${encodeURIComponent(spaceId)}/cover`, {
+      method: 'POST',
+      body: JSON.stringify({ filename }),
+    });
+  }
+
+  async trainSpace(spaceId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/spaces/registry/${encodeURIComponent(spaceId)}/train`, {
+      method: 'POST',
+    });
+  }
+
+  async clipServiceStatus() {
+    return this.fetchWithErrorHandling<ApiResponse<{ ready: boolean; unavailable: boolean; lastError: string | null; embeddingDim: number; trainedSpaces: number }>>(`${API_BASE_URL}/spaces/clip-service/status`);
+  }
+
   async reidentifyAll() {
     return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/persons/reidentify`, {
       method: 'POST',

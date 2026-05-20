@@ -27,6 +27,7 @@ import TagManager from './components/TagManager';
 import PersonsManager from './components/PersonsManager';
 import SynonymsManager from './components/SynonymsManager';
 import CollectionsView from './components/CollectionsView';
+import SpacesManager from './components/SpacesManager';
 
 import { CollectionsCarousel } from './components/CollectionsCarousel';
 import { CoverImageSelector } from './components/CoverImageSelector';
@@ -2337,6 +2338,20 @@ function App() {
 
         case 'synonyms':
           return <SynonymsManager onBack={() => setActiveView('home')} />;
+
+        case 'spaces':
+          return (
+            <SpacesManager
+              onBack={() => setActiveView('home')}
+              mediaFiles={mediaFiles}
+              onSelectFile={(file) => setSelectedFile(file)}
+              onFilterBySpace={(_spaceId) => {
+                // Por simpleza inicial: solo cerrar vista (filter por espacio
+                // requeriria un nuevo estado en App, pendiente para fase futura).
+                setActiveView('home');
+              }}
+            />
+          );
 
         case 'collections':
           return (

@@ -697,6 +697,12 @@ class ApiService {
     });
   }
 
+  async reidentifySpaces() {
+    return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/spaces/reidentify`, {
+      method: 'POST',
+    });
+  }
+
   async reidentifyAll() {
     return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/persons/reidentify`, {
       method: 'POST',

@@ -594,7 +594,7 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
           tags: smartTagsResult.tags,
           extractedDate: smartTagsResult.extractedDate,
           colorData,
-          isFavorite: favoritesManager.isFavorite(fileId)
+          isFavorite: favoritesManager.isFavorite(fullPath)
         };
 
         // Persistimos en cache la versión SIN catalog (el catalog se mergea siempre al vuelo)
@@ -706,7 +706,8 @@ async function syncFiles() {
 
     // Limpieza de huérfanos
     const currentFileIds = mediaFiles.map(f => f.id);
-    await favoritesManager.cleanupOrphanedFavorites(currentFileIds);
+    const currentPaths = mediaFiles.map(f => f.fullPath).filter(Boolean);
+    await favoritesManager.cleanupOrphanedFavorites(currentPaths);
     await collectionsManager.cleanupOrphanedFiles(currentFileIds);
 
     // Recalcular agregado de personas tras cada sync (memoización)
@@ -896,7 +897,10 @@ const personsManageRoutes = createPersonsManageRoutes({
 app.use('/api', personsManageRoutes);
 
 // Registry de espacios + training del centroide CLIP por espacio.
-const spacesManageRoutes = createSpacesManageRoutes({});
+const spacesManageRoutes = createSpacesManageRoutes({
+  broadcastProgress,
+  getScanPaths: loadScanPaths,
+});
 app.use('/api', spacesManageRoutes);
 
 // Busqueda por color (Delta E sobre la palette del schema v2). Alimenta

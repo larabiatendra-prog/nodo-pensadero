@@ -25,6 +25,7 @@ const fsp = require('fs').promises;
 const multer = require('multer');
 const spacesRegistry = require('../spacesRegistry');
 const { getInstance: getClipService } = require('../services/clipService');
+const spaceReidentifier = require('../services/spaceReidentifier');
 
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
@@ -34,6 +35,7 @@ const upload = multer({
 });
 
 module.exports = function createSpacesManageRoutes(deps) {
+  const { broadcastProgress, getScanPaths } = deps || {};
   const router = express.Router();
 
   function getSpaceDir(spaceId) {
@@ -238,6 +240,35 @@ module.exports = function createSpacesManageRoutes(deps) {
       res.json({ success: true, data: { match_threshold: v } });
     } catch (err) {
       res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
+  // Re-identificar todos los catalogos: recalcula matches con el threshold
+  // actual sin volver a correr CLIP (usa los clip_embedding_b64 persistidos).
+  // Util tras cambiar threshold o reentrenar espacios.
+  router.post('/spaces/reidentify', async (req, res) => {
+    try {
+      let rootDirs = [];
+      if (typeof getScanPaths === 'function') {
+        const paths = await getScanPaths();
+        rootDirs = (Array.isArray(paths) ? paths : [])
+          .filter(p => p && p.isActive !== false && p.path)
+          .map(p => p.path);
+      }
+      if (rootDirs.length === 0) {
+        return res.status(400).json({ success: false, error: 'no hay rutas activas configuradas' });
+      }
+      const jobId = `reid_space_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setImmediate(() => {
+        spaceReidentifier.reidentifyAll({
+          rootDirs,
+          broadcastProgress: broadcastProgress || (() => {}),
+          jobId,
+        }).catch(err => console.error('[reidentify-space] error fatal:', err));
+      });
+      res.json({ success: true, jobId, status: 'started' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 

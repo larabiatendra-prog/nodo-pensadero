@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MapPin, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle } from 'lucide-react';
+import { MapPin, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
-import { API_CONFIG } from '../config';
+import { API_CONFIG, config } from '../config';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 /**
  * SpacesManager — gestion de espacios fisicos con place recognition CLIP.
@@ -53,6 +54,61 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
   const [threshold, setThreshold] = useState<number>(0.7);
   const [defaultThreshold, setDefaultThreshold] = useState<number>(0.7);
   const [savingThreshold, setSavingThreshold] = useState(false);
+
+  // Re-identificacion de la biblioteca
+  type ReidStatus = 'idle' | 'running' | 'done' | 'error';
+  const [reidJob, setReidJob] = useState<{
+    status: ReidStatus;
+    total: number;
+    done: number;
+    changed: number;
+    skippedNoEmbedding: number;
+    catalogsWritten: number;
+    errorMessage?: string;
+  }>({ status: 'idle', total: 0, done: 0, changed: 0, skippedNoEmbedding: 0, catalogsWritten: 0 });
+
+  const { progressData } = useWebSocket(config.wsUrl);
+
+  // Listener WS para eventos reidentify_space_*
+  useEffect(() => {
+    if (!progressData) return;
+    const d: any = progressData;
+    if (!d.type || !String(d.type).startsWith('reidentify_space_')) return;
+    if (d.type === 'reidentify_space_start') {
+      setReidJob(prev => ({ ...prev, status: 'running' }));
+    } else if (d.type === 'reidentify_space_progress') {
+      setReidJob(prev => ({
+        ...prev,
+        status: 'running',
+        total: d.total ?? prev.total,
+        done: d.done ?? prev.done,
+        changed: d.changed ?? prev.changed,
+        skippedNoEmbedding: d.skippedNoEmbedding ?? prev.skippedNoEmbedding,
+      }));
+    } else if (d.type === 'reidentify_space_done') {
+      setReidJob({
+        status: 'done',
+        total: d.total ?? 0,
+        done: d.done ?? 0,
+        changed: d.changed ?? 0,
+        skippedNoEmbedding: d.skippedNoEmbedding ?? 0,
+        catalogsWritten: d.catalogsWritten ?? 0,
+      });
+    } else if (d.type === 'reidentify_space_error') {
+      setReidJob(prev => ({ ...prev, status: 'error', errorMessage: d.error || 'Error' }));
+    }
+  }, [progressData]);
+
+  async function handleReidentify() {
+    setError(null);
+    setReidJob({ status: 'running', total: 0, done: 0, changed: 0, skippedNoEmbedding: 0, catalogsWritten: 0 });
+    try {
+      const r: any = await api.reidentifySpaces();
+      if (!r.success) throw new Error(r.error || 'Error iniciando re-identificacion');
+    } catch (err: any) {
+      setReidJob({ status: 'error', total: 0, done: 0, changed: 0, skippedNoEmbedding: 0, catalogsWritten: 0, errorMessage: err.message || 'Error' });
+    }
+  }
 
   const [newSpaceId, setNewSpaceId] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
@@ -272,13 +328,30 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
             Lugares físicos de tu archivo (Auditorio EDEM, Marina de Empresas...). Sube fotos de referencia y CLIP aprenderá a reconocerlos automáticamente en futuras fotos.
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-lavanda text-white rounded-full hover:bg-lavanda-claro transition-colors font-medium flex-shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          Añadir espacio
-        </button>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {clipStatus?.ready && clipStatus.trainedSpaces > 0 && (
+            <button
+              onClick={handleReidentify}
+              disabled={reidJob.status === 'running'}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
+                reidJob.status === 'running'
+                  ? 'bg-lavanda/20 text-lavanda cursor-wait'
+                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
+              }`}
+              title="Recalcular matches en fotos ya escaneadas con el threshold y centroides actuales (sin re-correr CLIP)"
+            >
+              <Sparkles className={`w-4 h-4 ${reidJob.status === 'running' ? 'animate-pulse' : ''}`} />
+              Re-identificar biblioteca
+            </button>
+          )}
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-lavanda text-white rounded-full hover:bg-lavanda-claro transition-colors font-medium"
+          >
+            <Plus className="w-4 h-4" />
+            Añadir espacio
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -320,6 +393,55 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Banner de progreso de re-identificacion */}
+      {reidJob.status !== 'idle' && (
+        <div className="mb-6 p-4 bg-pizarra border border-lavanda/30 rounded-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className={`w-4 h-4 text-lavanda ${reidJob.status === 'running' ? 'animate-pulse' : ''}`} />
+              <span className="text-sm font-medium text-marfil">
+                {reidJob.status === 'running' && 'Re-identificando biblioteca...'}
+                {reidJob.status === 'done' && 'Re-identificacion completada'}
+                {reidJob.status === 'error' && 'Error en re-identificacion'}
+              </span>
+            </div>
+            <span className="text-xs text-lavanda-archivo">
+              {reidJob.total > 0 ? `${reidJob.done}/${reidJob.total}` : 'preparando...'}
+            </span>
+          </div>
+          {reidJob.total > 0 && reidJob.status === 'running' && (
+            <div className="w-full bg-grafito rounded-full h-2 overflow-hidden mb-2">
+              <div
+                className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
+                style={{ width: `${Math.round((reidJob.done / reidJob.total) * 100)}%` }}
+              />
+            </div>
+          )}
+          {reidJob.status === 'done' && (
+            <div className="text-xs text-lavanda-archivo space-y-0.5">
+              <p>{reidJob.changed} {reidJob.changed === 1 ? 'foto actualizada' : 'fotos actualizadas'}.</p>
+              <p>{reidJob.catalogsWritten} {reidJob.catalogsWritten === 1 ? 'carpeta reescrita' : 'carpetas reescritas'}.</p>
+              {reidJob.skippedNoEmbedding > 0 && (
+                <p className="text-bruma">
+                  {reidJob.skippedNoEmbedding} {reidJob.skippedNoEmbedding === 1 ? 'entrada sin embedding CLIP' : 'entradas sin embedding CLIP'} (necesitan re-scan con Zap).
+                </p>
+              )}
+            </div>
+          )}
+          {reidJob.status === 'error' && reidJob.errorMessage && (
+            <p className="text-xs text-red-400">{reidJob.errorMessage}</p>
+          )}
+          {(reidJob.status === 'done' || reidJob.status === 'error') && (
+            <button
+              onClick={() => setReidJob({ status: 'idle', total: 0, done: 0, changed: 0, skippedNoEmbedding: 0, catalogsWritten: 0 })}
+              className="mt-2 text-xs text-lavanda-archivo hover:text-marfil"
+            >
+              Cerrar
+            </button>
+          )}
         </div>
       )}
 

@@ -29,7 +29,7 @@ interface RulesEditorProps {
 // Definiciones de campos disponibles
 // ============================================
 
-type InputKind = 'enum' | 'text' | 'color' | 'date' | 'none' | 'person';
+type InputKind = 'enum' | 'text' | 'color' | 'date' | 'none' | 'person' | 'space';
 
 interface FieldDef {
   id: string;
@@ -62,6 +62,7 @@ const FIELD_DEFINITIONS: FieldDef[] = [
   // Contenido
   { id: 'tag', label: 'Etiqueta contiene', group: 'Contenido', field: 'tags', op: 'contains', input: { kind: 'text', placeholder: 'salto, marina...' } },
   { id: 'person', label: 'Persona aparece', group: 'Contenido', field: '', op: 'has_person', input: { kind: 'person' } },
+  { id: 'space', label: 'Espacio aparece', group: 'Contenido', field: '', op: 'has_space', input: { kind: 'space' } },
   { id: 'description', label: 'Descripción contiene', group: 'Contenido', field: 'visual_description', op: 'contains', input: { kind: 'text', placeholder: 'palabra a buscar' } },
 
   // Composicion
@@ -239,6 +240,11 @@ interface Person {
   display_name: string;
 }
 
+interface Space {
+  space_id: string;
+  display_name: string;
+}
+
 export default function RulesEditor({ rules, combinator, onChange }: RulesEditorProps) {
   // Convertir reglas externas en filas
   const [rows, setRows] = useState<RuleRow[]>(() =>
@@ -248,12 +254,16 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
   const [totalFiles, setTotalFiles] = useState<number | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [persons, setPersons] = useState<Person[]>([]);
+  const [spaces, setSpaces] = useState<Space[]>([]);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Cargar lista de personas para el dropdown de "Persona aparece"
+  // Cargar listas de personas y espacios para los dropdowns
   useEffect(() => {
     api.listPersonsRegistry().then((r: any) => {
       if (r.success && Array.isArray(r.data)) setPersons(r.data);
+    }).catch(() => {});
+    api.listSpacesRegistry().then((r: any) => {
+      if (r.success && Array.isArray(r.data)) setSpaces(r.data);
     }).catch(() => {});
   }, []);
 
@@ -301,6 +311,8 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
       initialValue = def.input.options[0].value;
     } else if (def.input.kind === 'person' && persons.length > 0) {
       initialValue = persons[0].person_id;
+    } else if (def.input.kind === 'space' && spaces.length > 0) {
+      initialValue = spaces[0].space_id;
     } else if (def.input.kind === 'color') {
       initialValue = { hex: '#ff6600', threshold: 25 };
     } else if (def.input.kind === 'none') {
@@ -403,6 +415,18 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
                       {persons.length === 0 && <option value="">(sin personas registradas)</option>}
                       {persons.map(p => (
                         <option key={p.person_id} value={p.person_id}>{p.display_name}</option>
+                      ))}
+                    </select>
+                  )}
+                  {def.input.kind === 'space' && (
+                    <select
+                      value={row.value || ''}
+                      onChange={e => updateRow(idx, e.target.value)}
+                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                    >
+                      {spaces.length === 0 && <option value="">(sin espacios registrados)</option>}
+                      {spaces.map(s => (
+                        <option key={s.space_id} value={s.space_id}>{s.display_name}</option>
                       ))}
                     </select>
                   )}

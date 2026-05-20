@@ -55,6 +55,14 @@ function evalHasPerson(file, value) {
   return file.faces.some(f => f && targetSet.has(f.person_id));
 }
 
+// has_space: el archivo tiene al menos uno de los espacios indicados en spaces
+function evalHasSpace(file, value) {
+  if (!Array.isArray(file?.spaces)) return false;
+  const target = Array.isArray(value) ? value : [value];
+  const targetSet = new Set(target.filter(x => typeof x === 'string'));
+  return file.spaces.some(s => s && targetSet.has(s.space_id));
+}
+
 // color_similar: alguna entry de file.colors.palette esta a distancia <= threshold del hex
 function evalColorSimilar(file, value) {
   const hex = value?.hex;
@@ -78,6 +86,7 @@ function evaluateRule(file, rule) {
 
   // Atajos especificos sin path tradicional
   if (op === 'has_person') return evalHasPerson(file, value);
+  if (op === 'has_space') return evalHasSpace(file, value);
   if (op === 'color_similar') return evalColorSimilar(file, value);
 
   const actual = getField(file, field);

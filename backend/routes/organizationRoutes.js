@@ -25,10 +25,11 @@ const router = express.Router();
 
 const favoritesManager = require('../favoritesManager');
 const collectionsManager = require('../collectionsManager');
+const smartFolderEvaluator = require('../smartFolderEvaluator');
 
 module.exports = function createOrganizationRoutes(deps) {
-  // deps no se usa actualmente; lo dejamos por compatibilidad si en futuro
-  // hace falta enriquecer respuestas con mediaFiles.
+  // getMediaFiles: necesario para resolver Smart Folders al vuelo.
+  const { getMediaFiles } = deps || {};
 
   // ============================================
   // FAVORITOS
@@ -88,7 +89,18 @@ module.exports = function createOrganizationRoutes(deps) {
   router.get('/collections', (req, res) => {
     try {
       const collections = collectionsManager.getAllCollections();
-      res.json(collections);
+      // Para Smart Folders: resolver mediaFiles al vuelo evaluando reglas.
+      // El frontend ya espera mediaFiles como array de IDs en cada coleccion,
+      // asi que las smart se ven indistinguibles de las estaticas en la UI.
+      const files = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const enriched = collections.map(c => {
+        if (c.type === 'smart' && Array.isArray(c.rules) && c.rules.length > 0) {
+          const matches = smartFolderEvaluator.filterFiles(files, c.rules, c.rule_combinator);
+          return { ...c, mediaFiles: matches.map(f => f.id) };
+        }
+        return c;
+      });
+      res.json(enriched);
     } catch (error) {
       console.error('❌ Error obteniendo colecciones:', error);
       res.status(500).json({ error: error.message });
@@ -108,7 +120,11 @@ module.exports = function createOrganizationRoutes(deps) {
         coverImage,
         coverType,
         clientTempId,
-        files
+        files,
+        // Smart Folder
+        type,
+        rules,
+        rule_combinator,
       } = req.body || {};
 
       // Anti-duplicado por clientTempId
@@ -124,11 +140,12 @@ module.exports = function createOrganizationRoutes(deps) {
         description || '',
         coverImage || null,
         coverType || 'auto',
-        clientTempId || null
+        clientTempId || null,
+        { type, rules, rule_combinator }
       );
 
-      // Si se pasaron archivos iniciales, añadirlos
-      if (Array.isArray(files) && files.length > 0) {
+      // Si se pasaron archivos iniciales (solo aplica a estaticas), añadirlos
+      if (newCollection.type !== 'smart' && Array.isArray(files) && files.length > 0) {
         for (const fileId of files) {
           try {
             await collectionsManager.addFileToCollection(newCollection.id, fileId);
@@ -139,10 +156,42 @@ module.exports = function createOrganizationRoutes(deps) {
       }
 
       const final = collectionsManager.getCollection(newCollection.id);
-      res.status(201).json(final);
+      // Si es smart, resolver mediaFiles al vuelo para devolver al cliente
+      if (final.type === 'smart') {
+        const allFiles = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+        const matches = smartFolderEvaluator.filterFiles(allFiles, final.rules, final.rule_combinator);
+        res.status(201).json({ ...final, mediaFiles: matches.map(f => f.id) });
+      } else {
+        res.status(201).json(final);
+      }
     } catch (error) {
       console.error('❌ Error creando colección:', error);
       res.status(400).json({ error: error.message });
+    }
+  });
+
+  /**
+   * POST /api/collections/preview-rules
+   * Body: { rules, rule_combinator }
+   * Evalua reglas SIN guardar. Devuelve { count, sample } para preview en el editor.
+   */
+  router.post('/collections/preview-rules', (req, res) => {
+    try {
+      const { rules, rule_combinator } = req.body || {};
+      if (!Array.isArray(rules)) {
+        return res.status(400).json({ error: 'rules debe ser un array' });
+      }
+      const allFiles = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const matches = smartFolderEvaluator.filterFiles(allFiles, rules, rule_combinator);
+      // Devolver count + primeros 12 IDs para preview de miniaturas
+      res.json({
+        count: matches.length,
+        total: allFiles.length,
+        sample: matches.slice(0, 12).map(f => f.id),
+      });
+    } catch (error) {
+      console.error('❌ Error en preview-rules:', error);
+      res.status(500).json({ error: error.message });
     }
   });
 
@@ -152,12 +201,19 @@ module.exports = function createOrganizationRoutes(deps) {
    */
   router.patch('/collections/:id', async (req, res) => {
     try {
-      const { name, description, coverImage, coverType } = req.body || {};
+      const { name, description, coverImage, coverType, rules, rule_combinator, type } = req.body || {};
       const collection = await collectionsManager.updateCollection(
         req.params.id,
-        { name, description, coverImage, coverType }
+        { name, description, coverImage, coverType, rules, rule_combinator, type }
       );
-      res.json(collection);
+      // Si es smart, devolver con mediaFiles resueltos
+      if (collection.type === 'smart') {
+        const allFiles = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+        const matches = smartFolderEvaluator.filterFiles(allFiles, collection.rules, collection.rule_combinator);
+        res.json({ ...collection, mediaFiles: matches.map(f => f.id) });
+      } else {
+        res.json(collection);
+      }
     } catch (error) {
       console.error('❌ Error actualizando colección:', error);
       if (error.message === 'Colección no encontrada') {

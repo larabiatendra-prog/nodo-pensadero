@@ -111,9 +111,19 @@ class CollectionsManager {
   }
 
   /**
-   * Crear nueva colección
+   * Crear nueva colección.
+   *
+   * @param {string} name
+   * @param {string} description
+   * @param {string|null} coverImage
+   * @param {string} coverType
+   * @param {string|null} clientTempId
+   * @param {object} [opts]
+   * @param {'static'|'smart'} [opts.type] — tipo de coleccion (default 'static')
+   * @param {Array} [opts.rules] — reglas (solo si type='smart')
+   * @param {'AND'|'OR'} [opts.rule_combinator] — combinador (default 'AND')
    */
-  async createCollection(name, description = '', coverImage = null, coverType = 'auto', clientTempId = null) {
+  async createCollection(name, description = '', coverImage = null, coverType = 'auto', clientTempId = null, opts = {}) {
     try {
       // Validar nombre
       if (!name || name.trim().length === 0) {
@@ -132,6 +142,15 @@ class CollectionsManager {
         throw new Error('Ya existe una colección con ese nombre');
       }
 
+      const type = opts.type === 'smart' ? 'smart' : 'static';
+      const rules = Array.isArray(opts.rules) ? opts.rules : [];
+      const rule_combinator = (opts.rule_combinator === 'OR') ? 'OR' : 'AND';
+
+      // Validacion smart folder
+      if (type === 'smart' && rules.length === 0) {
+        throw new Error('Una Smart Folder necesita al menos una regla');
+      }
+
       // Obtener el siguiente número de orden
       const maxOrder = this.getMaxOrder();
 
@@ -144,7 +163,10 @@ class CollectionsManager {
         coverImage: coverImage,
         coverType: coverType,
         order: maxOrder + 1,
-        clientTempId: clientTempId || null, // ID temporal del cliente para evitar duplicados
+        clientTempId: clientTempId || null,
+        type,
+        rules,
+        rule_combinator,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
@@ -152,7 +174,7 @@ class CollectionsManager {
       this.collections.set(newCollection.id, newCollection);
       await this.saveCollections();
 
-      console.log(`📁 Nueva colección creada: "${newCollection.name}" (${newCollection.id})`);
+      console.log(`📁 Nueva colección creada: "${newCollection.name}" [${type}] (${newCollection.id})`);
       return newCollection;
     } catch (error) {
       console.error(`❌ Error creando colección "${name}":`, error);
@@ -282,6 +304,22 @@ class CollectionsManager {
       // Actualizar tipo de portada si se proporciona
       if (updates.coverType !== undefined) {
         collection.coverType = updates.coverType;
+      }
+
+      // Smart folder: actualizar reglas y combinator si vienen
+      if (updates.rules !== undefined) {
+        if (!Array.isArray(updates.rules)) throw new Error('rules debe ser array');
+        collection.rules = updates.rules;
+        // Garantizar tipo smart si llegan reglas
+        if (collection.type !== 'smart' && updates.rules.length > 0) {
+          collection.type = 'smart';
+        }
+      }
+      if (updates.rule_combinator !== undefined) {
+        collection.rule_combinator = (String(updates.rule_combinator).toUpperCase() === 'OR') ? 'OR' : 'AND';
+      }
+      if (updates.type !== undefined) {
+        collection.type = updates.type === 'smart' ? 'smart' : 'static';
       }
 
       // Actualizar timestamp

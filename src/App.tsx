@@ -97,9 +97,11 @@ function App() {
   // contra el endpoint /api/search/by-color y el hex objetivo para mostrarlo en UI.
   const [colorFilterFileIds, setColorFilterFileIds] = useState<Set<string> | null>(null);
   const [colorFilterHex, setColorFilterHex] = useState<string | null>(null);
-  // Busqueda por imagen similar: fileIds que matchearon + dataURL para indicador.
-  // Se dispara desde el menu de tres puntos (utilidad oculta, no filtro principal).
-  const [imageSearchFileIds, setImageSearchFileIds] = useState<Set<string> | null>(null);
+  // Busqueda por imagen similar: array ordenado por similitud (la mas parecida
+  // primero). Se trata como un orden, no como un Set, para que la galeria
+  // muestre los resultados ranqueados (mismo patron que naturalSearchIds).
+  // Se dispara desde el menu de tres puntos (utilidad oculta).
+  const [imageSearchFileIds, setImageSearchFileIds] = useState<string[] | null>(null);
   const [imageSearchPreview, setImageSearchPreview] = useState<string | null>(null);
 
   // Búsqueda natural — fileIds devueltos por el LLM, ordenados por score.
@@ -242,7 +244,7 @@ function App() {
       favoritesOnly?: boolean;
       skipDedup?: boolean;
       colorFileIds?: Set<string> | null;
-      imageSearchIds?: Set<string> | null;
+      imageSearchIds?: string[] | null;
     } = {}
   ) => {
     let filtered = [...baseFiles];
@@ -337,9 +339,14 @@ function App() {
       filtered = filtered.filter(file => colorFileIds.has(file.id));
     }
 
-    // 5c. Busqueda por imagen (CLIP) — fileIds devueltos por /api/search/by-image
-    if (imageSearchIds && imageSearchIds.size > 0) {
-      filtered = filtered.filter(file => imageSearchIds.has(file.id));
+    // 5c. Busqueda por imagen (SigLIP-2) — array de fileIds ordenado por
+    // similitud descendente. Mantenemos ese orden en la galeria (mismo
+    // patron que naturalSearchIds): primero las mas parecidas.
+    if (imageSearchIds && imageSearchIds.length > 0) {
+      const order = new Map(imageSearchIds.map((id, idx) => [id, idx]));
+      filtered = filtered
+        .filter(file => order.has(file.id))
+        .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     }
 
 
@@ -2061,6 +2068,13 @@ function App() {
       return filteredFiles;
     }
 
+    // Si hay busqueda por imagen activa o natural, NO reordenar por fecha:
+    // ambos vienen ya ordenados por relevancia (similitud o score del LLM).
+    // Re-ordenarlos por fecha destruye el unico orden util.
+    if ((imageSearchFileIds && imageSearchFileIds.length > 0) || naturalSearchIds !== null) {
+      return filteredFiles;
+    }
+
     if (!filteredFiles || filteredFiles.length === 0) {
       return [];
     }
@@ -2091,7 +2105,7 @@ function App() {
       })
       .map(item => item.file); // Extract back to original file objects
 
-  }, [filteredFiles, activeView, selectedCollectionId, extractDateFromFilename, optimizedNameCompare]);
+  }, [filteredFiles, activeView, selectedCollectionId, extractDateFromFilename, optimizedNameCompare, imageSearchFileIds, naturalSearchIds]);
 
   const getAllDisplayFiles = () => {
     // Get base files first
@@ -2560,11 +2574,14 @@ function App() {
               )}
 
               {/* Indicador "Búsqueda por imagen similar activa" — visible solo
-                  en home cuando se ha disparado desde el menú de tres puntos. */}
+                  en home cuando se ha disparado desde el menú de tres puntos.
+                  Muestra el numero de resultados y el orden por similitud. */}
               {activeView === 'home' && imageSearchPreview && (
                 <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-full bg-lavanda/10 border border-lavanda/30 w-fit">
                   <img src={imageSearchPreview} alt="" className="w-8 h-8 rounded object-cover border border-lavanda/40" />
-                  <span className="text-sm text-marfil">Mostrando imágenes similares</span>
+                  <span className="text-sm text-marfil">
+                    Mostrando {imageSearchFileIds?.length ?? 0} más parecidas (orden por similitud, ≥ 75%)
+                  </span>
                   <button
                     onClick={() => { setImageSearchFileIds(null); setImageSearchPreview(null); }}
                     className="ml-1 p-1 rounded-full text-lavanda-archivo hover:text-marfil hover:bg-lavanda/20"
@@ -3009,27 +3026,27 @@ function App() {
             }}
             onImageSearch={async (file) => {
               // Buscar imagenes similares — utilidad oculta accesible desde
-              // el menu de tres puntos. Vuelve a home y aplica el filtro.
-              console.log('[image-search] iniciando, archivo:', file.name, file.size, 'bytes');
+              // el menu de tres puntos. Estrategia:
+              //   - max=50 resultados (no devolvemos toneladas)
+              //   - minSimilarity=0.75 (descartamos parecidos forzados)
+              //   - mantenemos el orden de similitud que viene del backend
               try {
-                const r = await api.searchByImage(file);
-                console.log('[image-search] respuesta:', { success: r.success, count: r.data?.length });
-                if (r.success && Array.isArray(r.data)) {
-                  const ids = new Set(r.data.map((x: any) => x.fileId));
-                  console.log('[image-search] Set construido con', ids.size, 'IDs. Sample:', Array.from(ids).slice(0, 3));
+                const r = await api.searchByImage(file, 50, 0.75);
+                if (r.success && Array.isArray(r.data) && r.data.length > 0) {
+                  // r.data viene ya ordenado por similitud descendente
+                  const orderedIds = r.data.map((x: any) => x.fileId);
                   const reader = new FileReader();
                   reader.onload = (evt) => {
                     setImageSearchPreview(evt.target?.result as string);
                   };
                   reader.readAsDataURL(file);
-                  setImageSearchFileIds(ids);
-                  setActiveView('home'); // volver a home para ver resultados
-                  // Forzar limpieza de busqueda natural para que no compita con
-                  // los IDs filtrados (si el usuario tenia una busqueda natural
-                  // activa, esa lista de IDs ordenados sobrescribiria el filtro).
+                  setImageSearchFileIds(orderedIds);
+                  // Limpiar busqueda natural por si estaba activa (chocaria
+                  // con el orden de similitud).
                   setNaturalSearchIds(null);
+                  setActiveView('home');
                 } else {
-                  alert('No se han encontrado imágenes similares.');
+                  alert('No se han encontrado imágenes con un parecido razonable (umbral 75%). Prueba con otra foto o reduce el umbral si lo necesitas.');
                 }
               } catch (err: any) {
                 console.error('[image-search] error:', err);

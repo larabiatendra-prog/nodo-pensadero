@@ -149,6 +149,27 @@ def _encode_to_b64(emb_tensor):
     return base64.b64encode(arr.tobytes()).decode("ascii")
 
 
+def _features_to_tensor(feats):
+    """En algunas combinaciones de transformers + SigLIP-2, get_*_features()
+    devuelve un wrapper (BaseModelOutputWithPooling, etc.) en vez de un Tensor
+    directo. Esta funcion extrae el tensor de features en orden de preferencia.
+    """
+    if isinstance(feats, torch.Tensor):
+        return feats
+    for attr in ('image_embeds', 'text_embeds', 'pooler_output', 'last_hidden_state'):
+        if hasattr(feats, attr):
+            t = getattr(feats, attr)
+            if t is None:
+                continue
+            if attr == 'last_hidden_state' and t.dim() == 3:
+                # [B, T, D] → pooled via CLS token (primer token)
+                t = t[:, 0, :]
+            return t
+    raise RuntimeError(
+        f"get_features devolvio un objeto sin tensor extraible: {type(feats).__name__}"
+    )
+
+
 def _normalize_l2(t):
     return t / t.norm(dim=-1, keepdim=True).clamp(min=1e-8)
 
@@ -166,6 +187,7 @@ def embed_image(path: str) -> dict:
     with torch.no_grad():
         inputs = _processor(images=img, return_tensors="pt").to(_device)
         feats = _model.get_image_features(**inputs)
+        feats = _features_to_tensor(feats)
         feats = _normalize_l2(feats)
     return {"embedding_b64": _encode_to_b64(feats), "dim": EMBEDDING_DIM}
 
@@ -179,6 +201,7 @@ def embed_text(text: str) -> dict:
         # arquitectura del tokenizer interno
         inputs = _processor(text=[text.strip()], return_tensors="pt", padding="max_length").to(_device)
         feats = _model.get_text_features(**inputs)
+        feats = _features_to_tensor(feats)
         feats = _normalize_l2(feats)
     return {"embedding_b64": _encode_to_b64(feats), "dim": EMBEDDING_DIM}
 

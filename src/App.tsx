@@ -3010,10 +3010,13 @@ function App() {
             onImageSearch={async (file) => {
               // Buscar imagenes similares — utilidad oculta accesible desde
               // el menu de tres puntos. Vuelve a home y aplica el filtro.
+              console.log('[image-search] iniciando, archivo:', file.name, file.size, 'bytes');
               try {
                 const r = await api.searchByImage(file);
+                console.log('[image-search] respuesta:', { success: r.success, count: r.data?.length });
                 if (r.success && Array.isArray(r.data)) {
                   const ids = new Set(r.data.map((x: any) => x.fileId));
+                  console.log('[image-search] Set construido con', ids.size, 'IDs. Sample:', Array.from(ids).slice(0, 3));
                   const reader = new FileReader();
                   reader.onload = (evt) => {
                     setImageSearchPreview(evt.target?.result as string);
@@ -3021,10 +3024,15 @@ function App() {
                   reader.readAsDataURL(file);
                   setImageSearchFileIds(ids);
                   setActiveView('home'); // volver a home para ver resultados
+                  // Forzar limpieza de busqueda natural para que no compita con
+                  // los IDs filtrados (si el usuario tenia una busqueda natural
+                  // activa, esa lista de IDs ordenados sobrescribiria el filtro).
+                  setNaturalSearchIds(null);
                 } else {
                   alert('No se han encontrado imágenes similares.');
                 }
               } catch (err: any) {
+                console.error('[image-search] error:', err);
                 alert('Error buscando imágenes similares: ' + (err.message || 'desconocido'));
               }
             }}

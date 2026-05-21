@@ -100,9 +100,13 @@ function App() {
   // Busqueda por imagen similar: array ordenado por similitud (la mas parecida
   // primero). Se trata como un orden, no como un Set, para que la galeria
   // muestre los resultados ranqueados (mismo patron que naturalSearchIds).
-  // Se dispara desde el menu de tres puntos (utilidad oculta).
+  // Se dispara arrastrando una imagen sobre la vista home (drag & drop).
   const [imageSearchFileIds, setImageSearchFileIds] = useState<string[] | null>(null);
   const [imageSearchPreview, setImageSearchPreview] = useState<string | null>(null);
+  // Estado del drag & drop: cuenta de entradas para gestionar enter/leave en
+  // elementos anidados sin oscilar el overlay.
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  const dragCounterRef = useRef(0);
 
   // Búsqueda natural — fileIds devueltos por el LLM, ordenados por score.
   // Cuando es null no hay búsqueda natural activa. Cuando es array, restringe la grid a esos IDs.
@@ -1864,6 +1868,94 @@ function App() {
   };
 
   // Clear all active filters
+  /**
+   * Ejecuta una busqueda por imagen similar usando SigLIP-2:
+   *   - max=50 resultados
+   *   - minSimilarity=0.75 (descartamos parecidos forzados)
+   *   - mantenemos el orden de similitud que viene del backend
+   * Disparado por drag & drop sobre la vista home.
+   */
+  const executeImageSearch = async (file: File) => {
+    try {
+      const r = await api.searchByImage(file, 50, 0.75);
+      if (r.success && Array.isArray(r.data) && r.data.length > 0) {
+        const orderedIds = r.data.map((x: any) => x.fileId);
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          setImageSearchPreview(evt.target?.result as string);
+        };
+        reader.readAsDataURL(file);
+        setImageSearchFileIds(orderedIds);
+        setNaturalSearchIds(null);
+        setActiveView('home');
+      } else {
+        alert('No se han encontrado imágenes con un parecido razonable (umbral 75%).');
+      }
+    } catch (err: any) {
+      console.error('[image-search] error:', err);
+      alert('Error buscando imágenes similares: ' + (err.message || 'desconocido'));
+    }
+  };
+
+  // Drag & drop global: solo activo cuando estamos en la vista home. Si el
+  // usuario suelta una imagen en cualquier zona, dispara busqueda por
+  // similitud. PreventDefault en window evita que el navegador abra la
+  // imagen como si fuera una nueva pestaña.
+  useEffect(() => {
+    if (activeView !== 'home') {
+      // En vistas que no son home, solo bloqueamos el comportamiento por
+      // defecto del navegador (abrir el archivo) sin mostrar overlay ni
+      // procesar la imagen.
+      const blockDefault = (e: DragEvent) => { e.preventDefault(); };
+      window.addEventListener('dragover', blockDefault);
+      window.addEventListener('drop', blockDefault);
+      return () => {
+        window.removeEventListener('dragover', blockDefault);
+        window.removeEventListener('drop', blockDefault);
+      };
+    }
+
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      if (!e.dataTransfer?.types.includes('Files')) return;
+      dragCounterRef.current++;
+      if (dragCounterRef.current === 1) setIsDraggingImage(true);
+    };
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+      if (dragCounterRef.current === 0) setIsDraggingImage(false);
+    };
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDraggingImage(false);
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      const imageFile = Array.from(files).find(f => f.type.startsWith('image/'));
+      if (imageFile) {
+        executeImageSearch(imageFile);
+      } else {
+        alert('Solo puedes arrastrar imágenes para buscar similares.');
+      }
+    };
+
+    window.addEventListener('dragenter', handleDragEnter);
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('dragleave', handleDragLeave);
+    window.addEventListener('drop', handleDrop);
+    return () => {
+      window.removeEventListener('dragenter', handleDragEnter);
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('dragleave', handleDragLeave);
+      window.removeEventListener('drop', handleDrop);
+    };
+  }, [activeView]);
+
   const clearAllFilters = () => {
     setCurrentSearchQuery('');
     setCurrentSearchFilters(null);
@@ -2944,6 +3036,21 @@ function App() {
 
   return (
     <div className="min-h-screen bg-noche">
+      {/* Overlay de drag & drop: visible cuando el usuario arrastra una
+          imagen sobre Pensadero estando en la vista home. pointer-events-none
+          para que el drop llegue al window y no se "coma" el evento. */}
+      {isDraggingImage && activeView === 'home' && (
+        <div className="fixed inset-0 z-[100] bg-noche/85 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="bg-tinta border-4 border-dashed border-lavanda rounded-3xl px-12 py-10 flex flex-col items-center gap-4 shadow-2xl">
+            <svg className="w-20 h-20 text-lavanda" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <p className="text-2xl font-medium text-marfil">Suelta aquí para buscar imágenes similares</p>
+            <p className="text-sm text-lavanda-archivo">Encontrará las más parecidas de tu archivo</p>
+          </div>
+        </div>
+      )}
+
       <Toaster
         position="bottom-center"
         containerStyle={{
@@ -3023,35 +3130,6 @@ function App() {
               setShowFavoritesOnly(false);
               setSelectedCollectionId(null);
               setActiveView(view);
-            }}
-            onImageSearch={async (file) => {
-              // Buscar imagenes similares — utilidad oculta accesible desde
-              // el menu de tres puntos. Estrategia:
-              //   - max=50 resultados (no devolvemos toneladas)
-              //   - minSimilarity=0.75 (descartamos parecidos forzados)
-              //   - mantenemos el orden de similitud que viene del backend
-              try {
-                const r = await api.searchByImage(file, 50, 0.75);
-                if (r.success && Array.isArray(r.data) && r.data.length > 0) {
-                  // r.data viene ya ordenado por similitud descendente
-                  const orderedIds = r.data.map((x: any) => x.fileId);
-                  const reader = new FileReader();
-                  reader.onload = (evt) => {
-                    setImageSearchPreview(evt.target?.result as string);
-                  };
-                  reader.readAsDataURL(file);
-                  setImageSearchFileIds(orderedIds);
-                  // Limpiar busqueda natural por si estaba activa (chocaria
-                  // con el orden de similitud).
-                  setNaturalSearchIds(null);
-                  setActiveView('home');
-                } else {
-                  alert('No se han encontrado imágenes con un parecido razonable (umbral 75%). Prueba con otra foto o reduce el umbral si lo necesitas.');
-                }
-              } catch (err: any) {
-                console.error('[image-search] error:', err);
-                alert('Error buscando imágenes similares: ' + (err.message || 'desconocido'));
-              }
             }}
           />
         </div>

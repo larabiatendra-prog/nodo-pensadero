@@ -47,6 +47,42 @@ class AISearchService {
   }
 
   /**
+   * Cambia el modelo activo en runtime (sin persistencia a disco). El cambio
+   * vale hasta el proximo reinicio del backend.
+   */
+  setModel(model) {
+    if (!model || typeof model !== 'string') return;
+    this.model = model;
+    console.log('🤖 AI Search Service modelo cambiado a:', this.model);
+  }
+
+  /**
+   * Lista los modelos APTOS para entender lenguaje natural (no para describir
+   * fotos). Excluye:
+   *   - VLMs (qwen*vl, gemma3*, llava*, etc.) — los visualScanService ya los
+   *     filtra para el scan. Aqui los quitamos porque el "Natural" no nesita
+   *     mirar imagenes, sino entender la pregunta del usuario en texto.
+   *     (Aunque gemma3 sirve para ambas cosas, lo dejamos disponible aqui
+   *     porque es buen LLM tambien.)
+   *   - Embedders (nomic-embed-text*, mxbai-embed*) — solo generan vectores,
+   *     no texto.
+   *
+   * Devuelve modelos como qwen2.5:Xb-instruct, llama3.1:8b, mistral, gemma3:Xb
+   * (este ultimo si entra en la lista), etc.
+   */
+  async listTextModels() {
+    const list = await this.ollama.list();
+    const all = (list.models || []).map(m => m.name).filter(Boolean);
+    const embedderRegex = /(embed|nomic-embed)/i;
+    const purelyVisionRegex = /(qwen.*vl|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama)/i;
+    return all.filter(name => {
+      if (embedderRegex.test(name)) return false;
+      if (purelyVisionRegex.test(name)) return false;
+      return true;
+    });
+  }
+
+  /**
    * Normaliza texto: minúsculas + sin acentos.
    */
   normalizeText(text) {

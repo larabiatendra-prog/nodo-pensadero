@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Search, X, Tag, Calendar, MinusCircle, Sparkles, Hash, Loader2 } from 'lucide-react';
 import { SearchFilters } from '../types';
 import { buildApiUrl, API_CONFIG } from '../config';
+import { api } from '../services/api';
 
 // Schema canónico del intent que devuelve el LLM (ver aiSearchService.js).
 export interface NaturalIntent {
@@ -69,6 +70,10 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   const [naturalLoading, setNaturalLoading] = useState(false);
   const [naturalIntent, setNaturalIntent] = useState<NaturalIntent | null>(null);
   const [naturalNotice, setNaturalNotice] = useState<string | null>(null);
+  // Modelo activo para "Natural". Se carga al montar via /api/ai/models.
+  // Si el usuario lo cambia, se persiste solo en runtime del backend.
+  const [aiAvailableModels, setAiAvailableModels] = useState<string[]>([]);
+  const [aiSelectedModel, setAiSelectedModel] = useState<string>('');
   // Metadata de la última búsqueda natural (para indicar si Stage 2 entró,
   // cuántos resultados, etc.). null cuando no hay búsqueda activa.
   const [naturalMetadata, setNaturalMetadata] = useState<{
@@ -84,6 +89,16 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       window.localStorage.setItem('pensadero.searchMode', searchMode);
     }
   }, [searchMode]);
+
+  // Cargar modelos disponibles para "Natural" al montar (solo una vez)
+  useEffect(() => {
+    api.aiModels().then(r => {
+      if (r.success && r.data) {
+        setAiAvailableModels(r.data.models);
+        setAiSelectedModel(r.data.current);
+      }
+    }).catch(() => {});
+  }, []);
 
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -465,6 +480,27 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Selector de modelo IA (solo visible en modo Natural).
+                Permite elegir el LLM que entiende tus preguntas — util para
+                cambiar entre modelos ligeros (gemma3:4b, ~3 GB) y modelos
+                grandes (qwen2.5:14b-instruct, ~9 GB) segun la VRAM disponible. */}
+            {isNatural && aiAvailableModels.length > 0 && (
+              <select
+                value={aiSelectedModel}
+                onChange={async (e) => {
+                  const model = e.target.value;
+                  setAiSelectedModel(model);
+                  await api.setAiModel(model).catch(() => {});
+                }}
+                className="hidden md:block bg-grafito border border-pizarra rounded-full px-2.5 py-1 text-xs text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda max-w-[180px]"
+                title="Modelo que entiende tus búsquedas en lenguaje natural"
+              >
+                {aiAvailableModels.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            )}
+
             {/* Toggle Tags ↔ Natural */}
             <div className="flex items-center bg-noche/40 rounded-full p-0.5" role="tablist" aria-label="Modo de búsqueda">
               <button
@@ -578,27 +614,6 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               )}
             </>
           )}
-        </div>
-      )}
-
-      {/* Top tags rápidas — chips clicables cuando no hay tags activas y la barra
-          está cerrada. Permite descubrir etiquetas sin tener que escribir.
-          En modo Natural se ocultan: el LLM las hereda implícitamente del catálogo. */}
-      {!isNatural && !showSuggestions && allActiveTags.length === 0 && tagsData?.topTags && tagsData.topTags.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 mt-3 px-2">
-          <span className="text-xs font-mono text-humo">Etiquetas frecuentes:</span>
-          {tagsData.topTags.slice(0, 12).map(({ tag, count }) => (
-            <button
-              key={tag}
-              onClick={() => addTag(tag)}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs bg-grafito text-niebla hover:bg-lavanda hover:text-noche transition-colors"
-              title={`${count} archivo${count === 1 ? '' : 's'} con esta etiqueta`}
-            >
-              <Tag className="w-3 h-3" />
-              {tag}
-              <span className="font-mono text-[10px] opacity-70">{count}</span>
-            </button>
-          ))}
         </div>
       )}
 

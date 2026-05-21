@@ -337,6 +337,20 @@ class ApiService {
     }
   }
 
+  // Modelos de texto disponibles para "Natural" (lenguaje natural). Filtra
+  // VLM y embedders.
+  async aiModels() {
+    return this.fetchWithErrorHandling<ApiResponse<{ models: string[]; current: string; filtered: boolean }>>(`${API_BASE_URL}/ai/models`);
+  }
+
+  // Cambia el modelo activo del buscador natural en runtime.
+  async setAiModel(model: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ model: string }>>(`${API_BASE_URL}/ai/model`, {
+      method: 'PATCH',
+      body: JSON.stringify({ model }),
+    });
+  }
+
   // =====================
   // Image Similarity Search - Búsqueda por imagen
   // =====================

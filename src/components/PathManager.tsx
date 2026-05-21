@@ -514,10 +514,13 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         </div>
       )}
 
-      {/* Selector de modelo VLM — visible solo cuando Ollama está disponible */}
+      {/* Selector de modelo VLM — visible solo cuando Ollama está disponible.
+          Solo se listan modelos con capacidad de vision (filtrado en backend). */}
       {vlmHealth?.ollamaRunning && availableModels.length > 0 && (
-        <div className="mb-6 flex items-center gap-3">
-          <span className="text-sm text-lavanda-archivo">Modelo VLM:</span>
+        <div className="mb-6 flex items-center gap-3 flex-wrap">
+          <span className="text-sm text-lavanda-archivo" title="Modelo de IA que mira cada foto y la describe durante el escaneo">
+            Modelo que describe las fotos:
+          </span>
           <select
             value={selectedModel}
             onChange={async (e) => {

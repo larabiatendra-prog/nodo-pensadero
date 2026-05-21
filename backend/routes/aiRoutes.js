@@ -246,5 +246,33 @@ module.exports = function createAiRoutes(deps) {
     }
   });
 
+  // === MODELS — lista modelos aptos para entender lenguaje natural ===
+  // Filtra los embedders y los VLM puros. Con ?all=1 devuelve la lista
+  // completa sin filtrar (debugging).
+  router.get('/ai/models', async (req, res) => {
+    try {
+      const showAll = req.query.all === '1' || req.query.all === 'true';
+      const models = showAll
+        ? await aiSearchService.listTextModels().catch(() => [])
+        : await aiSearchService.listTextModels();
+      res.json({
+        success: true,
+        data: { models, current: aiSearchService.model, filtered: !showAll },
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // === SET MODEL — cambia el modelo activo del buscador natural en runtime ===
+  router.patch('/ai/model', (req, res) => {
+    const { model } = req.body || {};
+    if (!model || typeof model !== 'string') {
+      return res.status(400).json({ success: false, error: 'model requerido' });
+    }
+    aiSearchService.setModel(model);
+    res.json({ success: true, data: { model } });
+  });
+
   return router;
 };

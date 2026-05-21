@@ -82,12 +82,18 @@ module.exports = function createScanRoutes(deps) {
     }
   });
 
-  // === MODELS — lista modelos disponibles en Ollama + modelo activo ===
+  // === MODELS — lista modelos disponibles para describir fotos ===
+  // Filtra los VLM (modelos con capacidad de vision) — los de solo texto
+  // o embedders no sirven para el scan. Con ?all=1 devuelve la lista sin
+  // filtrar (debugging).
   router.get('/scan/models', async (req, res) => {
     try {
       const scanner = getScanner();
-      const models = await scanner.listModels();
-      res.json({ success: true, data: { models, current: scanner.model } });
+      const showAll = req.query.all === '1' || req.query.all === 'true';
+      const models = showAll
+        ? await scanner.listModels()
+        : await scanner.listVisionModels();
+      res.json({ success: true, data: { models, current: scanner.model, filtered: !showAll } });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }

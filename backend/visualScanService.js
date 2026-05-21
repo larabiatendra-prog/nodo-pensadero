@@ -191,6 +191,31 @@ class VisualScanService {
     return (list.models || []).map(m => m.name).filter(Boolean);
   }
 
+  /**
+   * Lista solo modelos con capacidad de vision (multimodales). Filtra por
+   * nombre porque las familias VLM tienen nombres estandar:
+   *   - qwen*-vl, qwen2.5vl, qwen-vl
+   *   - gemma3 (todos los gemma3 son multimodales)
+   *   - llava, bakllava
+   *   - moondream
+   *   - minicpm-v (y variantes)
+   *   - llama3.2-vision, mllama
+   *
+   * Evita modelos de solo texto (llama3.1:8b, qwen2.5:14b-instruct,
+   * dolphin-llama3...) y embedders (nomic-embed-text...) que en el scan
+   * fallarian foto a foto. Esto es lo que el usuario ve en el selector.
+   *
+   * Heuristica por nombre en vez de ollama.show() porque show() puede
+   * tardar 1-2s por modelo y aqui solo nos interesa la fiabilidad: las
+   * familias VLM conocidas tienen patrones estables.
+   */
+  async listVisionModels() {
+    const list = await this.ollama.list();
+    const all = (list.models || []).map(m => m.name).filter(Boolean);
+    const visionNameRegex = /(qwen.*vl|gemma3(:|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama)/i;
+    return all.filter(name => visionNameRegex.test(name));
+  }
+
   _buildPrompt(folderContext) {
     const ctx = typeof folderContext === 'string' ? folderContext.trim() : '';
     const contextSection = ctx

@@ -23,6 +23,7 @@ const path = require('path');
 const router = express.Router();
 
 const { getInstance: getScanner } = require('../visualScanService');
+const { getInstance: getClipService } = require('../services/clipService');
 const scanOrchestrator = require('../services/scanOrchestrator');
 const folderContext = require('../services/folderContext');
 
@@ -59,6 +60,23 @@ module.exports = function createScanRoutes(deps) {
     try {
       const health = await getScanner().healthCheck();
       res.json({ success: true, data: health });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // === CLIP HEALTH — diagnostico del daemon SigLIP-2 ===
+  // GET  /api/clip/health         → estado actual sin tocar nada
+  // POST /api/clip/warmup         → fuerza warmup (util como "test rapido"
+  //                                 antes de lanzar un scan masivo)
+  router.get('/clip/health', (req, res) => {
+    res.json({ success: true, data: getClipService().getStatus() });
+  });
+
+  router.post('/clip/warmup', async (req, res) => {
+    try {
+      const r = await getClipService().warmup();
+      res.json({ success: r.ok, data: r });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }

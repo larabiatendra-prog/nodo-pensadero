@@ -253,15 +253,22 @@ async function scanFolder(folderPath, opts = {}) {
     facesEnabled = false;
   }
 
-  // CLIP / SigLIP-2: lazy init. Si falla (modelo no descargado todavia, RAM
-  // insuficiente, etc.) seguimos sin embeddings — el resto del scan funciona.
+  // CLIP / SigLIP-2: arranque + warmup explicito ANTES de procesar archivos.
+  // El warmup envia un embed_text con texto minimo para forzar la carga del
+  // modelo y detectar fallos de inmediato (OOM CUDA, modelo no descargado,
+  // dependencias rotas) en vez de descubrirlo a las 12h cuando el indice
+  // sigue vacio. Si warmup falla, seguimos SIN embeddings — el resto del
+  // scan (descripcion VLM, caras) funciona igual y el aviso queda visible.
   let clipEnabled = false;
   try {
-    await clipSvc.init();
-    if (clipSvc.getStatus().ready) {
-      // Asegurar que el indice central esta cargado
+    const warm = await clipSvc.warmup();
+    if (warm.ok) {
       if (!clipIndex.isLoaded()) await clipIndex.load();
       clipEnabled = true;
+      console.log('[scan] CLIP/SigLIP-2 listo y validado');
+    } else {
+      console.warn('[scan] ⚠️ CLIP/SigLIP-2 no disponible:', warm.error);
+      console.warn('[scan] El scan continua SIN embeddings. La busqueda por imagen/texto no funcionara hasta arreglarlo.');
     }
   } catch (err) {
     console.warn('[scan] CLIP service no disponible:', err.message);

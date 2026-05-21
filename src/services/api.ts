@@ -492,6 +492,16 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<{ ollamaRunning: boolean; modelAvailable: boolean; model: string; error?: string }>>(`${API_BASE_URL}/scan/health`);
   }
 
+  async clipHealth() {
+    return this.fetchWithErrorHandling<ApiResponse<{ ready: boolean; inCooldown: boolean; cooldownUntil: number; consecutiveFailures: number; lastError: string | null; embeddingDim: number }>>(`${API_BASE_URL}/clip/health`);
+  }
+
+  async clipWarmup() {
+    return this.fetchWithErrorHandling<ApiResponse<{ ok: boolean; error?: string; dim?: number }>>(`${API_BASE_URL}/clip/warmup`, {
+      method: 'POST',
+    });
+  }
+
   async startScan(path: string, force: boolean = false) {
     return this.fetchWithErrorHandling<ApiResponse<any> & { jobId?: string }>(`${API_BASE_URL}/scan/start`, {
       method: 'POST',

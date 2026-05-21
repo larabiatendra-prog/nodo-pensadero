@@ -39,31 +39,45 @@ class ClipService {
     this.stdoutBuffer = '';
     this.starting = null;
     this.ready = false;
-    this.unavailable = false;
+    // Cooldown reemplaza la flag pegajosa `unavailable`. Si init() o un
+    // warmup posterior fallan, marcamos un timeout corto durante el que no
+    // reintentamos (evita martilleo). Pasado ese cooldown, vuelve a intentar.
+    // 0 = no en cooldown, > 0 = epoch ms hasta cuando no reintentar.
+    this.cooldownUntil = 0;
     this.lastError = null;
+    // Contador de fallos consecutivos para diagnostico.
+    this.consecutiveFailures = 0;
   }
 
   /**
    * Arranca el daemon Python si no esta vivo. Idempotente.
+   * Antes: una vez `unavailable=true`, NUNCA reintentaba. Ahora: cooldown
+   * corto (30s) tras fallo, despues vuelve a intentar.
    */
   async init() {
     if (this.ready) return true;
-    if (this.unavailable) return false;
+    if (this.cooldownUntil && Date.now() < this.cooldownUntil) return false;
     if (this.starting) return this.starting;
 
     this.starting = (async () => {
       const pythonExe = fs.existsSync(PYTHON_EXE_WIN) ? PYTHON_EXE_WIN
                        : fs.existsSync(PYTHON_EXE_NIX) ? PYTHON_EXE_NIX
                        : null;
+      // Cooldown corto al fallar. Estos errores son "pegajosos pero
+      // recuperables tras un reinicio o reinstalacion".
+      const FAIL_COOLDOWN_MS = 60_000;
+
       if (!pythonExe) {
-        this.unavailable = true;
         this.lastError = 'Python venv no encontrado en backend/python/.venv';
+        this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
+        this.consecutiveFailures++;
         console.warn('[clipService]', this.lastError);
         return false;
       }
       if (!fs.existsSync(SCRIPT_PATH)) {
-        this.unavailable = true;
         this.lastError = `Script no encontrado: ${SCRIPT_PATH}`;
+        this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
+        this.consecutiveFailures++;
         console.warn('[clipService]', this.lastError);
         return false;
       }
@@ -78,8 +92,9 @@ class ClipService {
           },
         });
       } catch (err) {
-        this.unavailable = true;
         this.lastError = `No se pudo arrancar Python: ${err.message}`;
+        this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
+        this.consecutiveFailures++;
         return false;
       }
 
@@ -103,15 +118,22 @@ class ClipService {
         const pong = await this._sendCommand({ op: 'ping' }, COLD_START_TIMEOUT_MS);
         if (pong === 'pong') {
           this.ready = true;
+          this.cooldownUntil = 0;
+          this.consecutiveFailures = 0;
+          this.lastError = null;
           console.log('[clipService] SigLIP-2 daemon listo');
           return true;
         }
-        this.unavailable = true;
         this.lastError = 'ping no devolvio pong';
+        this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
+        this.consecutiveFailures++;
+        console.warn('[clipService] init fallo:', this.lastError);
         return false;
       } catch (err) {
-        this.unavailable = true;
         this.lastError = `init fallo: ${err.message}`;
+        this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
+        this.consecutiveFailures++;
+        console.warn('[clipService] init fallo:', err.message);
         return false;
       }
     })();
@@ -213,8 +235,12 @@ class ClipService {
     if (!ok) return null;
     try {
       const r = await this._sendCommand({ op: 'embed_image', path: filePath });
-      return this._decode(r && r.embedding_b64);
+      const emb = this._decode(r && r.embedding_b64);
+      if (emb) this.consecutiveFailures = 0;
+      return emb;
     } catch (err) {
+      this.consecutiveFailures++;
+      this.lastError = err.message;
       console.warn(`[clipService] embedImage fallo (${filePath}):`, err.message);
       return null;
     }
@@ -229,10 +255,42 @@ class ClipService {
     if (!ok) return null;
     try {
       const r = await this._sendCommand({ op: 'embed_text', text });
-      return this._decode(r && r.embedding_b64);
+      const emb = this._decode(r && r.embedding_b64);
+      if (emb) this.consecutiveFailures = 0;
+      return emb;
     } catch (err) {
+      this.consecutiveFailures++;
+      this.lastError = err.message;
       console.warn(`[clipService] embedText fallo:`, err.message);
       return null;
+    }
+  }
+
+  /**
+   * Warmup: fuerza la carga del modelo enviando un embed_text con un texto
+   * minimo. Util al inicio de un scan masivo para validar que SigLIP-2 esta
+   * realmente operativo ANTES de empezar a procesar miles de archivos. Si
+   * falla, devuelve {ok:false, error} y el orquestador puede decidir abortar
+   * o continuar sin embeddings.
+   */
+  async warmup() {
+    const initialized = await this.init();
+    if (!initialized) {
+      return { ok: false, error: this.lastError || 'No se pudo arrancar el daemon CLIP' };
+    }
+    try {
+      const r = await this._sendCommand({ op: 'embed_text', text: 'ping' }, COLD_START_TIMEOUT_MS);
+      const emb = this._decode(r && r.embedding_b64);
+      if (!emb) {
+        return { ok: false, error: 'el daemon respondio sin embedding valido (posible OOM o modelo no cargado)' };
+      }
+      this.consecutiveFailures = 0;
+      return { ok: true, dim: EMBEDDING_DIM };
+    } catch (err) {
+      this.consecutiveFailures++;
+      this.lastError = err.message;
+      console.warn('[clipService] warmup fallo:', err.message);
+      return { ok: false, error: err.message };
     }
   }
 
@@ -261,7 +319,9 @@ class ClipService {
   getStatus() {
     return {
       ready: this.ready,
-      unavailable: this.unavailable,
+      inCooldown: this.cooldownUntil > Date.now(),
+      cooldownUntil: this.cooldownUntil,
+      consecutiveFailures: this.consecutiveFailures,
       lastError: this.lastError,
       embeddingDim: EMBEDDING_DIM,
     };

@@ -2586,6 +2586,15 @@ function App() {
                         includedTags={includedTags}
                         excludedTags={excludedTags}
                         onTagsChange={handleTagsChange}
+                        selectedPersonIds={selectedPersonIds}
+                        onAddPerson={(pid) => {
+                          if (!selectedPersonIds.includes(pid)) {
+                            setSelectedPersonIds([...selectedPersonIds, pid]);
+                          }
+                        }}
+                        onRemovePerson={(pid) => {
+                          setSelectedPersonIds(selectedPersonIds.filter(id => id !== pid));
+                        }}
                         onNaturalSearch={(fileIds, _intent, primaryCount) => {
                           setNaturalSearchIds(fileIds);
                           setNaturalSearchPrimaryCount(typeof primaryCount === 'number' ? primaryCount : (fileIds?.length ?? 0));

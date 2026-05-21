@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, X, Tag, Calendar, MinusCircle, Sparkles, Hash, Loader2 } from 'lucide-react';
-import { SearchFilters } from '../types';
+import { Search, X, Tag, Calendar, MinusCircle, Sparkles, Hash, Loader2, AtSign, User } from 'lucide-react';
+import { SearchFilters, Person } from '../types';
 import { buildApiUrl, API_CONFIG } from '../config';
 import { api } from '../services/api';
+import config from '../config';
 
 // Schema canónico del intent que devuelve el LLM (ver aiSearchService.js).
 export interface NaturalIntent {
@@ -46,11 +47,16 @@ interface SearchBarProps {
   // probables" que se mostrarán bajo un separador en la UI.
   // Si fileIds === null, se borra el filtro natural y se vuelve al flujo normal.
   onNaturalSearch?: (fileIds: string[] | null, intent: NaturalIntent | null, primaryCount?: number) => void;
+  // @persona: lista de personas en el archivo + callbacks para añadir/quitar.
+  // Permite filtrar la galeria por persona desde la propia barra de busqueda.
+  selectedPersonIds?: string[];
+  onAddPerson?: (personId: string) => void;
+  onRemovePerson?: (personId: string) => void;
 }
 
 type SearchMode = 'tags' | 'natural';
 
-export default function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch }: SearchBarProps) {
+export default function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson }: SearchBarProps) {
   const [query, setQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -111,8 +117,38 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   // All active tags (included + excluded)
   const allActiveTags = [...localIncludedTags, ...localExcludedTags];
 
+  // Personas para autocompletado @nombre. Fetch unico al montar.
+  const [persons, setPersons] = useState<Person[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${config.apiBaseUrl}/persons`)
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        if (cancelled) return;
+        if (json && json.success && Array.isArray(json.data)) setPersons(json.data);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Detectar modo @persona: query empieza con "@" → buscar personas en lugar
+  // de tags. Permite combinar @nombre con tags ya activos (AND con filtros).
+  const isPersonMention = query.startsWith('@');
+  const personMentionQuery = isPersonMention ? query.slice(1).trim() : '';
+
+  const personSuggestions: Person[] = isPersonMention
+    ? persons
+        .filter(p => !selectedPersonIds.includes(p.person_id))
+        .filter(p => {
+          if (!personMentionQuery) return true;
+          const q = normalizeString(personMentionQuery);
+          return normalizeString(p.display_name).includes(q) || normalizeString(p.person_id).includes(q);
+        })
+        .slice(0, 8)
+    : [];
+
   // Filter suggestions based on query from real backend data (accent-insensitive)
-  const suggestions = (tagsData?.allTags || []).filter(tag =>
+  const suggestions = isPersonMention ? [] : (tagsData?.allTags || []).filter(tag =>
     normalizeString(tag).includes(normalizeString(query)) && !allActiveTags.includes(tag)
   ).slice(0, 8);
 
@@ -267,6 +303,14 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         if (query.trim()) runNaturalSearch();
         return;
       }
+      // Modo @persona: Enter selecciona la persona resaltada o la primera
+      if (isPersonMention && personSuggestions.length > 0) {
+        const idx = selectedSuggestionIndex >= 0 && selectedSuggestionIndex < personSuggestions.length
+          ? selectedSuggestionIndex
+          : 0;
+        addPerson(personSuggestions[idx].person_id);
+        return;
+      }
       if (e.shiftKey && query.trim()) {
         // Shift+Enter: Convert the query into a tag
         addTag(query.trim());
@@ -279,16 +323,18 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (suggestions.length > 0) {
-        setSelectedSuggestionIndex(prev => 
-          prev < suggestions.length - 1 ? prev + 1 : 0
+      const list = isPersonMention ? personSuggestions : suggestions;
+      if (list.length > 0) {
+        setSelectedSuggestionIndex(prev =>
+          prev < list.length - 1 ? prev + 1 : 0
         );
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      if (suggestions.length > 0) {
-        setSelectedSuggestionIndex(prev => 
-          prev > 0 ? prev - 1 : suggestions.length - 1
+      const list = isPersonMention ? personSuggestions : suggestions;
+      if (list.length > 0) {
+        setSelectedSuggestionIndex(prev =>
+          prev > 0 ? prev - 1 : list.length - 1
         );
       }
     } else if (e.key === 'Escape') {
@@ -299,6 +345,15 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   };
 
   // Añadir tag como incluida (desde sugerencias o input)
+  const addPerson = (personId: string) => {
+    if (!onAddPerson) return;
+    onAddPerson(personId);
+    setQuery('');
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
+    setTimeout(() => { inputRef.current?.focus(); }, 50);
+  };
+
   const addTag = (tag: string) => {
     if (!allActiveTags.includes(tag)) {
       const newIncluded = [...localIncludedTags, tag];
@@ -421,6 +476,43 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               Siempre visibles, también en modo Natural: las tags activas siguen
               filtrando AND sobre los resultados aunque la búsqueda sea LLM. */}
           <div className="flex flex-wrap items-center gap-2 flex-1">
+            {/* Personas activas — chips con avatar. Permiten quitar con la X. */}
+            {selectedPersonIds.map(pid => {
+              const person = persons.find(p => p.person_id === pid);
+              const display = person?.display_name || pid;
+              const avatarUrl = person?.avatar_url ? `${config.apiUrl}${person.avatar_url}` : null;
+              return (
+                <span
+                  key={`person-${pid}`}
+                  className="inline-flex items-center pl-1 pr-3 py-1 rounded-full text-sm bg-lavanda text-noche font-medium select-none"
+                  title={`Filtrando por ${display}`}
+                >
+                  <span className="w-6 h-6 rounded-full bg-pizarra overflow-hidden flex items-center justify-center mr-2 flex-shrink-0">
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt={display}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <User className="w-3.5 h-3.5 text-lavanda-archivo" />
+                    )}
+                  </span>
+                  <span className="truncate max-w-[140px]">{display}</span>
+                  {onRemovePerson && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRemovePerson(pid); }}
+                      className="ml-2 hover:text-estado-error transition-colors"
+                      title="Quitar filtro de persona"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+
             {localIncludedTags.map((tag) => (
               <span
                 key={`inc-${tag}`}
@@ -617,8 +709,8 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         </div>
       )}
 
-      {/* Suggestions dropdown — solo en modo Tags */}
-      {!isNatural && showSuggestions && suggestions.length > 0 && (
+      {/* Suggestions dropdown — modo Tags */}
+      {!isNatural && !isPersonMention && showSuggestions && suggestions.length > 0 && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-tinta rounded-xl shadow-lg border border-borde-sutil z-10">
           <div className="p-2">
             <div className="text-sm text-humo px-3 py-2">Etiquetas sugeridas</div>
@@ -640,6 +732,62 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
                 }`}>{tag}</span>
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Suggestions dropdown — modo @persona */}
+      {!isNatural && isPersonMention && showSuggestions && (
+        <div className="absolute top-full left-0 right-0 mt-2 bg-tinta rounded-xl shadow-lg border border-borde-sutil z-10">
+          <div className="p-2">
+            <div className="text-sm text-humo px-3 py-2 flex items-center gap-1">
+              <AtSign className="w-3.5 h-3.5" />
+              Personas {personMentionQuery && <span className="text-bruma">· filtrando por "{personMentionQuery}"</span>}
+            </div>
+            {personSuggestions.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-bruma">
+                {persons.length === 0
+                  ? 'No hay personas entrenadas todavia'
+                  : 'Ninguna persona coincide con esa busqueda'}
+              </div>
+            ) : (
+              personSuggestions.map((person, index) => (
+                <button
+                  key={person.person_id}
+                  onClick={() => addPerson(person.person_id)}
+                  className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
+                    index === selectedSuggestionIndex
+                      ? 'bg-lavanda text-white'
+                      : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                  }`}
+                >
+                  <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
+                    {person.avatar_url ? (
+                      <img
+                        src={`${config.apiUrl}${person.avatar_url}`}
+                        alt={person.display_name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <User className="w-4 h-4 text-lavanda-archivo" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className={`block truncate ${
+                      index === selectedSuggestionIndex ? "text-noche font-medium" : "text-marfil"
+                    }`}>
+                      {person.display_name}
+                    </span>
+                    <span className={`text-xs ${
+                      index === selectedSuggestionIndex ? "text-noche/70" : "text-bruma"
+                    }`}>
+                      {person.count} {person.count === 1 ? 'aparicion' : 'apariciones'}
+                    </span>
+                  </div>
+                </button>
+              ))
+            )}
           </div>
         </div>
       )}

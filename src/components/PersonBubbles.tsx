@@ -35,12 +35,20 @@ function avatarFullUrl(relativePath: string): string {
   return `${config.apiUrl}${relativePath}`;
 }
 
+// Umbrales de visualizacion para que la barra no se sature cuando hay muchas
+// personas entrenadas. Con > MAX se oculta totalmente y se invita a usar la
+// busqueda @nombre. Entre MIN y MAX se muestran MIN colapsadas con un "+".
+const MIN_BUBBLES = 10;
+const MAX_BUBBLES = 30;
+
 export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: PersonBubblesProps) {
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   // Tracking de imágenes que han fallado al cargar para forzar fallback
   const [brokenAvatars, setBrokenAvatars] = useState<Set<string>>(new Set());
+  // Expand/colapse cuando persons.length esta entre MIN y MAX
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,9 +118,30 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: 
     );
   }
 
+  // Logica de renderizado por umbrales:
+  //  - <= MIN_BUBBLES: muestra todas
+  //  - MIN < N <= MAX: top MIN colapsado, "+N" expande hasta MAX
+  //  - > MAX: top MIN colapsado, "+ ver MAX" expande hasta MAX. El resto solo
+  //    se filtra desde la barra @nombre (hint discreto al final).
+  // En modo colapsado, las personas seleccionadas que caen fuera del top se
+  // muestran igual para no perder visibilidad del filtro activo.
+  const tooManyToShowAll = persons.length > MAX_BUBBLES;
+  const visibleLimit = expanded ? MAX_BUBBLES : MIN_BUBBLES;
+  let visiblePersons: Person[];
+  if (persons.length <= MIN_BUBBLES) {
+    visiblePersons = persons;
+  } else {
+    const topSlice = persons.slice(0, visibleLimit);
+    const topIds = new Set(topSlice.map(p => p.person_id));
+    const extraSelected = persons.filter(p => selectedPersonIds.includes(p.person_id) && !topIds.has(p.person_id));
+    visiblePersons = [...topSlice, ...extraSelected];
+  }
+  const hiddenInBubblesCount = Math.max(0, Math.min(persons.length, MAX_BUBBLES) - visibleLimit);
+  const hiddenBeyondMaxCount = tooManyToShowAll ? persons.length - MAX_BUBBLES : 0;
+
   return (
-    <div className="flex flex-wrap gap-3">
-      {persons.map(person => {
+    <div className="flex flex-wrap gap-3 items-center">
+      {visiblePersons.map(person => {
         const isSelected = selectedPersonIds.includes(person.person_id);
         const showFallback = !person.avatar_url || brokenAvatars.has(person.person_id);
         const bgColor = lavendaColor(person.person_id);
@@ -124,13 +153,17 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: 
             key={person.person_id}
             onClick={() => togglePerson(person.person_id)}
             title={tooltip}
-            className={`relative group rounded-full transition-all duration-200 hover:brightness-110 ${
+            className={`relative group peer rounded-full transition-all duration-200 ease-out hover:brightness-110 hover:scale-125 hover:z-10 peer-hover:scale-110 peer-hover:translate-x-2 has-[+button:hover]:scale-110 has-[+button:hover]:-translate-x-2 ${
               isSelected
                 ? 'ring-2 ring-lavanda ring-offset-2 ring-offset-noche scale-105'
-                : 'hover:scale-105'
+                : ''
             }`}
           >
-            <div className="relative w-12 h-12 rounded-full overflow-hidden">
+            <div
+              className={`relative w-12 h-12 rounded-full overflow-hidden transition-[filter] duration-200 ${
+                isSelected ? '' : 'grayscale group-hover:grayscale-0'
+              }`}
+            >
               {showFallback ? (
                 <div
                   className="w-full h-full flex items-center justify-center text-noche font-semibold text-sm"
@@ -156,6 +189,20 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: 
           </button>
         );
       })}
+      {(hiddenInBubblesCount > 0 || expanded) && persons.length > MIN_BUBBLES && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          title={expanded ? 'Ver menos personas' : `Ver ${hiddenInBubblesCount} ${hiddenInBubblesCount === 1 ? 'persona mas' : 'personas mas'}`}
+          className="w-12 h-12 rounded-full bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors flex items-center justify-center text-sm font-semibold"
+        >
+          {expanded ? '−' : `+${hiddenInBubblesCount}`}
+        </button>
+      )}
+      {hiddenBeyondMaxCount > 0 && (
+        <span className="text-xs text-humo italic ml-1">
+          +{hiddenBeyondMaxCount} mas · busca con <span className="font-mono text-lavanda-archivo not-italic">@nombre</span>
+        </span>
+      )}
     </div>
   );
 }

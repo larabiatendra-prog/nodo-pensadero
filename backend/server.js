@@ -894,6 +894,7 @@ const personsManageRoutes = createPersonsManageRoutes({
   recomputePersonsAggregate,
   broadcastProgress,
   getScanPaths: loadScanPaths,
+  syncFiles, // necesario para que promote refresque mediaFiles tras escribir _pensadero.json
 });
 app.use('/api', personsManageRoutes);
 
@@ -1026,12 +1027,11 @@ async function initialize() {
   await clipIndex.load();
 
   await loadCache();
-  await syncFiles();
 
-  setTimeout(() => cleanOrphanedThumbnails(), 5000);
-
-  watchFileSystem();
-
+  // Arrancamos el listen ANTES de la sincronizacion inicial para que el
+  // frontend pueda conectarse de inmediato. La sync (que puede tardar varios
+  // minutos en bibliotecas grandes) corre en background; el watcher y la
+  // limpieza de thumbnails se enganchan cuando la primera pasada termina.
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`🚀 Pensadero backend en http://127.0.0.1:${PORT}`);
     console.log(`📡 WebSocket en ws://127.0.0.1:${PORT}/ws`);
@@ -1039,6 +1039,16 @@ async function initialize() {
     console.log(`💾 Cache: ${fileCache.size} archivos`);
     console.log(`👥 Personas: ${personsAggregate.length} con apariciones`);
   });
+
+  syncFiles()
+    .then(() => {
+      console.log(`✅ Sync inicial completado: ${fileCache.size} archivos`);
+      setTimeout(() => cleanOrphanedThumbnails(), 5000);
+      watchFileSystem();
+    })
+    .catch(err => {
+      console.error('❌ Error en sync inicial:', err);
+    });
 }
 
 /**

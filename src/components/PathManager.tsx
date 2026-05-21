@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap } from 'lucide-react';
+import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square } from 'lucide-react';
 import { api } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
@@ -428,6 +428,22 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
+  /**
+   * Cancela el escaneo IA de UNA ruta concreta. El backend hace break del
+   * bucle en cuanto procesa el archivo actual y escribe a disco los
+   * _pensadero.json con todo lo procesado hasta el cancel.
+   */
+  const handleCancelScan = async (pathId: string) => {
+    const scan = aiScansByPath.get(pathId);
+    if (!scan || !scan.jobId || scan.status !== 'running') return;
+    if (!confirm('¿Detener el escaneo de esta ruta? Lo procesado hasta ahora se guardara en disco.')) return;
+    try {
+      await api.cancelScan(scan.jobId);
+    } catch (err: any) {
+      alert('Error cancelando: ' + (err.message || 'desconocido'));
+    }
+  };
+
   const handleRemovePath = async (pathId: string) => {
     if (!confirm('¿Estás seguro de que quieres eliminar esta ruta?')) return;
 
@@ -790,10 +806,22 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                           {scan.status === 'cancelled' && 'Escaneo cancelado'}
                         </span>
                       </div>
-                      <span className="text-xs text-lavanda-archivo">
-                        {scan.total > 0 ? `${scan.done}/${scan.total}` : 'preparando...'}
-                        {scan.errors > 0 && ` · ${scan.errors} errores`}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-lavanda-archivo">
+                          {scan.total > 0 ? `${scan.done}/${scan.total}` : 'preparando...'}
+                          {scan.errors > 0 && ` · ${scan.errors} errores`}
+                        </span>
+                        {scan.status === 'running' && scan.jobId && (
+                          <button
+                            onClick={() => handleCancelScan(path.id)}
+                            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-melocoton/20 text-melocoton hover:bg-melocoton hover:text-noche transition-colors"
+                            title="Detener este escaneo (guarda lo procesado hasta ahora en disco)"
+                          >
+                            <Square className="w-3 h-3" fill="currentColor" />
+                            Detener
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {scan.total > 0 && (
                       <div className="w-full bg-grafito rounded-full h-2 overflow-hidden">

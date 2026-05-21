@@ -8,6 +8,7 @@ import {
   Users,
   MapPin,
   Languages,
+  Image as ImageIcon,
   X
 } from 'lucide-react';
 
@@ -16,23 +17,40 @@ import {
 interface MoreOptionsMenuProps {
   activeView: string;
   onViewChange: (view: string) => void;
+  /**
+   * Callback opcional: cuando el usuario elige una imagen via "Buscar por
+   * imagen similar". Si no se pasa, la entrada no aparece en el menu.
+   */
+  onImageSearch?: (file: File) => void;
 }
 
-export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuProps) {
+export function MoreOptionsMenu({ activeView, onViewChange, onImageSearch }: MoreOptionsMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
-  // "Buscar por Imagen" está desactivado: depende de un índice vectorial
-  // (ChromaDB / embeddings) que no se distribuye en Pensadero personal.
-  // Reactivar requiere reintroducir el pipeline vectorial.
-  const menuItems = [
-    { id: 'collections', icon: FolderOpen, label: 'Colecciones',          description: 'Colecciones manuales y Smart Folders con reglas' },
-    { id: 'tags',        icon: Tag,        label: 'Gestión de Etiquetas', description: 'Administrar etiquetas del sistema' },
-    { id: 'synonyms',    icon: Languages,  label: 'Sinónimos',            description: 'Agrupar palabras parecidas para la búsqueda' },
-    { id: 'persons',     icon: Users,      label: 'Personas',             description: 'Registrar caras y entrenar identidades' },
-    { id: 'spaces',      icon: MapPin,     label: 'Espacios',             description: 'Lugares físicos identificables con CLIP' },
-    { id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
-    { id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
+  // Items del menu. `kind: 'view'` cambia la vista activa via onViewChange;
+  // `kind: 'action'` ejecuta una accion puntual sin cambiar de vista.
+  type ViewItem = { kind: 'view'; id: string; icon: any; label: string; description: string };
+  type ActionItem = { kind: 'action'; id: string; icon: any; label: string; description: string; onClick: () => void };
+  type MenuItem = ViewItem | ActionItem;
+
+  const menuItems: MenuItem[] = [
+    { kind: 'view', id: 'collections', icon: FolderOpen, label: 'Colecciones',          description: 'Colecciones manuales y Smart Folders con reglas' },
+    { kind: 'view', id: 'tags',        icon: Tag,        label: 'Gestión de Etiquetas', description: 'Administrar etiquetas del sistema' },
+    { kind: 'view', id: 'synonyms',    icon: Languages,  label: 'Sinónimos',            description: 'Agrupar palabras parecidas para la búsqueda' },
+    { kind: 'view', id: 'persons',     icon: Users,      label: 'Personas',             description: 'Registrar caras y entrenar identidades' },
+    { kind: 'view', id: 'spaces',      icon: MapPin,     label: 'Espacios',             description: 'Lugares físicos identificables con CLIP' },
+    { kind: 'view', id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
+    ...(onImageSearch ? [{
+      kind: 'action' as const,
+      id: 'image-search',
+      icon: ImageIcon,
+      label: 'Buscar por imagen similar',
+      description: 'Sube una foto y encuentra las más parecidas visualmente',
+      onClick: () => imageInputRef.current?.click(),
+    }] : []),
+    { kind: 'view', id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
   ];
 
   // Cerrar menú al hacer clic fuera
@@ -72,13 +90,35 @@ export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuPro
   // Siempre mostrar el botón pero con contenido diferente según rol
   // Si el usuario no tiene permisos, mostrar un mensaje
 
-  const handleItemClick = (viewId: string) => {
-    onViewChange(viewId);
+  const handleItemClick = (item: MenuItem) => {
+    if (item.kind === 'action') {
+      item.onClick();
+      // No cerrar aun: el file picker es asincrono. Se cerrara en el onChange
+      // del input file (cuando el usuario seleccione foto o cancele).
+      return;
+    }
+    onViewChange(item.id);
     setIsOpen(false);
+  };
+
+  const handleImageFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset para permitir re-seleccionar la misma foto
+    setIsOpen(false);
+    if (file && onImageSearch) onImageSearch(file);
   };
 
   return (
     <div className="relative" ref={menuRef}>
+      {/* Input file oculto para "Buscar por imagen similar" */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleImageFileSelected}
+      />
+
       {/* Botón del menú */}
       <button
         onClick={() => setIsOpen(!isOpen)}
@@ -122,17 +162,17 @@ export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuPro
             <div className="py-2">
               {menuItems.map((item, index) => {
                 const Icon = item.icon;
-                const isActive = activeView === item.id;
+                const isActive = item.kind === 'view' && activeView === item.id;
 
                 return (
                   <React.Fragment key={item.id}>
-                    {/* Separador antes de "Administrar Rutas" */}
-                    {item.id === 'paths' && index > 0 && (
+                    {/* Separador antes de "Administrar Rutas" o de cualquier accion */}
+                    {(item.id === 'paths' || item.kind === 'action') && index > 0 && (
                       <div className="mx-3 my-2 border-t border-pizarra" />
                     )}
 
                     <button
-                      onClick={() => handleItemClick(item.id)}
+                      onClick={() => handleItemClick(item)}
                       className={`
                         w-full px-4 py-3 flex items-start gap-3
                         transition-all duration-200 group

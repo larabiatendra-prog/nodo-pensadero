@@ -97,12 +97,10 @@ function App() {
   // contra el endpoint /api/search/by-color y el hex objetivo para mostrarlo en UI.
   const [colorFilterFileIds, setColorFilterFileIds] = useState<Set<string> | null>(null);
   const [colorFilterHex, setColorFilterHex] = useState<string | null>(null);
-  // Busqueda por imagen (CLIP): fileIds que matchearon + dataURL para preview
+  // Busqueda por imagen similar: fileIds que matchearon + dataURL para indicador.
+  // Se dispara desde el menu de tres puntos (utilidad oculta, no filtro principal).
   const [imageSearchFileIds, setImageSearchFileIds] = useState<Set<string> | null>(null);
   const [imageSearchPreview, setImageSearchPreview] = useState<string | null>(null);
-  // Busqueda por texto (SigLIP-2): fileIds que matchearon + query para preview
-  const [textSearchFileIds, setTextSearchFileIds] = useState<Set<string> | null>(null);
-  const [textSearchQuery, setTextSearchQuery] = useState<string | null>(null);
 
   // Búsqueda natural — fileIds devueltos por el LLM, ordenados por score.
   // Cuando es null no hay búsqueda natural activa. Cuando es array, restringe la grid a esos IDs.
@@ -245,11 +243,10 @@ function App() {
       skipDedup?: boolean;
       colorFileIds?: Set<string> | null;
       imageSearchIds?: Set<string> | null;
-      textSearchIds?: Set<string> | null;
     } = {}
   ) => {
     let filtered = [...baseFiles];
-    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds, textSearchIds = textSearchFileIds } = options;
+    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
 
     // 1. Aplicar búsqueda de texto si existe
     if (searchQuery && searchQuery.trim()) {
@@ -345,10 +342,6 @@ function App() {
       filtered = filtered.filter(file => imageSearchIds.has(file.id));
     }
 
-    // 5d. Busqueda por descripcion (SigLIP-2 multilingue) — /api/search/by-text
-    if (textSearchIds && textSearchIds.size > 0) {
-      filtered = filtered.filter(file => textSearchIds.has(file.id));
-    }
 
     // 6. Búsqueda natural — restringe a los IDs devueltos por el LLM
     // y ordena según el ranking de score que vino del backend.
@@ -417,7 +410,7 @@ function App() {
       resetInfiniteScroll();
       console.log(`📜 Scroll reseteado por cambio de filtros: ${currentCount} -> ${newCount} archivos`);
     }
-  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, textSearchFileIds]);
+  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds]);
 
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
@@ -1879,8 +1872,6 @@ function App() {
     setColorFilterHex(null);
     setImageSearchFileIds(null);
     setImageSearchPreview(null);
-    setTextSearchFileIds(null);
-    setTextSearchQuery(null);
 
     resetInfiniteScroll();
   };
@@ -2554,16 +2545,6 @@ function App() {
                       setColorFilterHex(hex);
                     }}
                     colorFilterHex={colorFilterHex}
-                    onImageSearchChange={(fileIds, preview) => {
-                      setImageSearchFileIds(fileIds);
-                      setImageSearchPreview(preview);
-                    }}
-                    imageSearchPreview={imageSearchPreview}
-                    onTextSearchChange={(fileIds, query) => {
-                      setTextSearchFileIds(fileIds);
-                      setTextSearchQuery(query);
-                    }}
-                    textSearchQuery={textSearchQuery}
                   />
                   {hasActiveFilters && (
                     <button
@@ -2575,6 +2556,22 @@ function App() {
                       <span className="hidden sm:inline">Limpiar</span>
                     </button>
                   )}
+                </div>
+              )}
+
+              {/* Indicador "Búsqueda por imagen similar activa" — visible solo
+                  en home cuando se ha disparado desde el menú de tres puntos. */}
+              {activeView === 'home' && imageSearchPreview && (
+                <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-full bg-lavanda/10 border border-lavanda/30 w-fit">
+                  <img src={imageSearchPreview} alt="" className="w-8 h-8 rounded object-cover border border-lavanda/40" />
+                  <span className="text-sm text-marfil">Mostrando imágenes similares</span>
+                  <button
+                    onClick={() => { setImageSearchFileIds(null); setImageSearchPreview(null); }}
+                    className="ml-1 p-1 rounded-full text-lavanda-archivo hover:text-marfil hover:bg-lavanda/20"
+                    title="Limpiar búsqueda por imagen"
+                  >
+                    <span className="text-base leading-none">&times;</span>
+                  </button>
                 </div>
               )}
 
@@ -2920,8 +2917,7 @@ function App() {
     naturalSearchIds !== null ||
     showFavoritesOnly ||
     colorFilterHex !== null ||
-    imageSearchPreview !== null ||
-    textSearchQuery !== null
+    imageSearchPreview !== null
   );
   hasActiveFiltersRef.current = hasActiveFilters;
 
@@ -3010,6 +3006,27 @@ function App() {
               setShowFavoritesOnly(false);
               setSelectedCollectionId(null);
               setActiveView(view);
+            }}
+            onImageSearch={async (file) => {
+              // Buscar imagenes similares — utilidad oculta accesible desde
+              // el menu de tres puntos. Vuelve a home y aplica el filtro.
+              try {
+                const r = await api.searchByImage(file);
+                if (r.success && Array.isArray(r.data)) {
+                  const ids = new Set(r.data.map((x: any) => x.fileId));
+                  const reader = new FileReader();
+                  reader.onload = (evt) => {
+                    setImageSearchPreview(evt.target?.result as string);
+                  };
+                  reader.readAsDataURL(file);
+                  setImageSearchFileIds(ids);
+                  setActiveView('home'); // volver a home para ver resultados
+                } else {
+                  alert('No se han encontrado imágenes similares.');
+                }
+              } catch (err: any) {
+                alert('Error buscando imágenes similares: ' + (err.message || 'desconocido'));
+              }
             }}
           />
         </div>

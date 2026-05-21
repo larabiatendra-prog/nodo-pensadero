@@ -14,11 +14,14 @@ import {
   Scissors,
   Loader2,
   Eye,
-  EyeOff
+  EyeOff,
+  UserPlus,
+  Search
 } from 'lucide-react';
 import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
 import { config } from '../config';
+import { slugifyPersonId } from '../utils/persons';
 
 interface MediaModalProps {
   file: MediaFile | null;
@@ -86,6 +89,93 @@ export default function MediaModal({
   const [hoveredFaceKey, setHoveredFaceKey] = useState<string | null>(null);
   // Resetear hover al cambiar de archivo
   useEffect(() => { setHoveredFaceKey(null); }, [file?.id]);
+
+  // Flujo "crear persona desde cara desconocida": click en bbox sin person_id
+  // dispara una busqueda de caras similares en toda la biblioteca, luego abre
+  // un modal donde el usuario nombra y crea la persona.
+  interface SeedCluster {
+    cluster_id: string;
+    face_count: number;
+    avg_score: number;
+    dominant_age: string | null;
+    dominant_gender: string | null;
+    sample_count: number;
+    samples_meta?: Array<{ folder: string; basename: string; det_score: number }>;
+  }
+  const [seedingLoading, setSeedingLoading] = useState(false);
+  const [seedingError, setSeedingError] = useState<string | null>(null);
+  const [seedingCluster, setSeedingCluster] = useState<SeedCluster | null>(null);
+  const [seedingDisplayName, setSeedingDisplayName] = useState('');
+  const [seedingSubmitting, setSeedingSubmitting] = useState(false);
+
+  // Resetear estado del seed al cerrar / cambiar archivo
+  useEffect(() => {
+    setSeedingCluster(null);
+    setSeedingError(null);
+    setSeedingDisplayName('');
+  }, [file?.id]);
+
+  async function handleSeedFromUnknownFace(faceIndex: number) {
+    if (!file || !file.fullPath) {
+      setSeedingError('No se puede determinar la ruta del archivo');
+      return;
+    }
+    const fp = file.fullPath;
+    const idx = Math.max(fp.lastIndexOf('\\'), fp.lastIndexOf('/'));
+    if (idx < 0) {
+      setSeedingError('Ruta del archivo no valida');
+      return;
+    }
+    const folder = fp.slice(0, idx);
+    const basename = fp.slice(idx + 1);
+
+    setSeedingLoading(true);
+    setSeedingError(null);
+    setSeedingCluster(null);
+    setSeedingDisplayName('');
+    try {
+      const r: any = await api.seedFaceCluster({ folder, basename, face_index: faceIndex });
+      if (!r.success || !r.data) {
+        setSeedingError(r.error || 'No se encontraron caras similares');
+        return;
+      }
+      setSeedingCluster(r.data);
+    } catch (err: any) {
+      setSeedingError(err.message || 'Error buscando similares');
+    } finally {
+      setSeedingLoading(false);
+    }
+  }
+
+  async function handleSeedPromote() {
+    if (!seedingCluster) return;
+    const display = seedingDisplayName.trim();
+    if (!display) {
+      setSeedingError('Escribe un nombre');
+      return;
+    }
+    const id = slugifyPersonId(display);
+    if (!id) {
+      setSeedingError('El nombre debe tener al menos una letra o numero');
+      return;
+    }
+    setSeedingSubmitting(true);
+    setSeedingError(null);
+    try {
+      const r: any = await api.promoteFaceCluster(seedingCluster.cluster_id, {
+        person_id: id,
+        display_name: display,
+      });
+      if (!r.success) throw new Error(r.error || 'Error creando persona');
+      // Exito — cerrar modal y limpiar
+      setSeedingCluster(null);
+      setSeedingDisplayName('');
+    } catch (err: any) {
+      setSeedingError(err.message || 'Error creando persona');
+    } finally {
+      setSeedingSubmitting(false);
+    }
+  }
 
 
   // Calcular índice actual del archivo en allFiles - ANTES de los useEffect
@@ -310,6 +400,7 @@ export default function MediaModal({
                   naturalWidth={videoNatural!.w}
                   naturalHeight={videoNatural!.h}
                   onPersonFilter={onPersonFilter}
+                  onSeedUnknown={handleSeedFromUnknownFace}
                   onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
@@ -394,6 +485,7 @@ export default function MediaModal({
                   naturalWidth={imgNatural.w}
                   naturalHeight={imgNatural.h}
                   onPersonFilter={onPersonFilter}
+                  onSeedUnknown={handleSeedFromUnknownFace}
                   onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
@@ -693,6 +785,118 @@ export default function MediaModal({
         </div>
       </div>
     )}
+
+    {/* Toast: cargando busqueda de caras similares */}
+    {seedingLoading && (
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-melocoton/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+        <Search className="w-4 h-4 text-melocoton animate-pulse" />
+        <span className="text-sm text-marfil">Buscando caras similares en tu archivo...</span>
+      </div>
+    )}
+
+    {/* Toast de error en seed */}
+    {seedingError && !seedingCluster && !seedingLoading && (
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-red-400/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+        <span className="text-sm text-red-300">{seedingError}</span>
+        <button onClick={() => setSeedingError(null)} className="text-red-300 hover:text-red-200">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    )}
+
+    {/* Modal: crear persona desde caras similares */}
+    {seedingCluster && (
+      <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4 overflow-y-auto">
+        <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-3xl my-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-marfil flex items-center gap-2">
+              <UserPlus className="w-5 h-5 text-melocoton" />
+              Crear persona desde esta cara
+            </h2>
+            <button
+              onClick={() => { setSeedingCluster(null); setSeedingError(null); }}
+              className="text-lavanda-archivo hover:text-marfil"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="mb-4">
+            <p className="text-marfil font-medium text-sm">
+              {seedingCluster.face_count} {seedingCluster.face_count === 1 ? 'cara similar encontrada' : 'caras similares encontradas'} en tu archivo
+            </p>
+            <p className="text-lavanda-archivo text-xs mt-0.5">
+              {[seedingCluster.dominant_gender, seedingCluster.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
+              {seedingCluster.sample_count > 0 && (
+                <> · mostrando hasta {seedingCluster.sample_count} muestras representativas</>
+              )}
+            </p>
+            <p className="text-xs text-bruma mt-1">
+              Verifica que todas las caras sean la misma persona antes de crearla. Si hay errores, mejor usa "Descubrir caras" en la pestaña Personas.
+            </p>
+          </div>
+          {seedingCluster.sample_count > 0 && (
+            <div className="mb-5 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+              {Array.from({ length: seedingCluster.sample_count }).map((_, i) => (
+                <div key={i} className="aspect-square rounded-xl bg-pizarra overflow-hidden border border-grafito">
+                  <img
+                    src={api.faceClusterSampleUrl(seedingCluster.cluster_id, i)}
+                    alt={`Muestra ${i + 1}`}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="space-y-2">
+            <div>
+              <label className="block text-xs font-medium text-lavanda-archivo mb-1">
+                Nombre <span className="text-bruma">*</span>
+              </label>
+              <input
+                type="text"
+                value={seedingDisplayName}
+                onChange={e => setSeedingDisplayName(e.target.value)}
+                placeholder="Ester Garcia, Jose Carlos..."
+                className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                autoFocus
+              />
+              {seedingDisplayName.trim() && (
+                <p className="text-xs text-bruma mt-1">
+                  ID interno: <span className="font-mono text-lavanda-archivo">{slugifyPersonId(seedingDisplayName) || '(invalido)'}</span>
+                </p>
+              )}
+            </div>
+          </div>
+          {seedingError && (
+            <div className="mt-3 p-2 bg-red-500/10 border border-red-400/30 rounded-xl text-xs text-red-300">
+              {seedingError}
+            </div>
+          )}
+          <div className="mt-6 flex justify-end gap-2">
+            <button
+              onClick={() => { setSeedingCluster(null); setSeedingError(null); }}
+              disabled={seedingSubmitting}
+              className="px-4 py-2 text-lavanda-archivo hover:text-marfil"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleSeedPromote}
+              disabled={seedingSubmitting || !seedingDisplayName.trim() || !slugifyPersonId(seedingDisplayName)}
+              className={`px-4 py-2 rounded-full font-medium ${
+                seedingSubmitting || !seedingDisplayName.trim() || !slugifyPersonId(seedingDisplayName)
+                  ? 'bg-lavanda/30 text-marfil/50 cursor-not-allowed'
+                  : 'bg-lavanda text-white hover:bg-lavanda-claro'
+              }`}
+            >
+              {seedingSubmitting ? 'Creando...' : 'Crear persona'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   );
 }
@@ -711,6 +915,7 @@ function FaceBoxesOverlay({
   naturalWidth,
   naturalHeight,
   onPersonFilter,
+  onSeedUnknown,
   onClosePreview,
   hoveredFaceKey,
   setHoveredFaceKey,
@@ -719,6 +924,7 @@ function FaceBoxesOverlay({
   naturalWidth: number;
   naturalHeight: number;
   onPersonFilter?: (personId: string) => void;
+  onSeedUnknown?: (faceIndex: number) => void;
   onClosePreview?: () => void;
   hoveredFaceKey: string | null;
   setHoveredFaceKey: (key: string | null) => void;
@@ -741,13 +947,17 @@ function FaceBoxesOverlay({
         // Si la cara esta cerca del borde superior (<15%), colocar label DEBAJO
         const labelBelow = top < 15;
         const label = b.display_name || 'desconocido';
-        const clickable = isKnown && !!onPersonFilter;
+        const faceIdx = typeof b.face_index === 'number' ? b.face_index : i;
+        const seedable = !isKnown && !!onSeedUnknown;
+        const clickable = (isKnown && !!onPersonFilter) || seedable;
         const handleClick = (e: React.MouseEvent) => {
           // Evitar que el click llegue a la <img> (que abre fullscreen)
           e.stopPropagation();
-          if (clickable && b.person_id && onPersonFilter) {
+          if (isKnown && b.person_id && onPersonFilter) {
             onPersonFilter(b.person_id);
             onClosePreview?.();
+          } else if (seedable && onSeedUnknown) {
+            onSeedUnknown(faceIdx);
           }
         };
         return (
@@ -758,23 +968,30 @@ function FaceBoxesOverlay({
             onClick={handleClick}
             onMouseEnter={() => setHoveredFaceKey(myKey)}
             onMouseLeave={() => setHoveredFaceKey(null)}
-            title={clickable ? `Filtrar galeria por ${label}` : undefined}
+            title={
+              isKnown
+                ? `Filtrar galeria por ${label}`
+                : seedable
+                  ? 'Buscar caras similares y crear persona'
+                  : undefined
+            }
           >
             <div
               className={`absolute inset-0 rounded-md border-2 transition-colors ${
                 isKnown
                   ? 'border-lavanda shadow-[0_0_0_1px_rgba(15,17,26,0.6)] group-hover/face:border-lavanda-claro group-hover/face:shadow-[0_0_0_2px_rgba(200,182,255,0.5)]'
-                  : 'border-bruma/70 border-dashed'
+                  : `border-bruma/70 border-dashed ${seedable ? 'group-hover/face:border-melocoton group-hover/face:border-solid' : ''}`
               }`}
             />
             <div
               className={`absolute whitespace-nowrap text-xs px-1.5 py-0.5 rounded-md backdrop-blur-sm transition-opacity ${
                 isKnown
                   ? 'bg-lavanda/90 text-white group-hover/face:bg-lavanda'
-                  : 'bg-noche/70 text-lavanda-archivo'
-              } ${labelBelow ? 'top-full mt-1' : 'bottom-full mb-1'} left-0`}
+                  : `bg-noche/70 text-lavanda-archivo ${seedable ? 'group-hover/face:bg-melocoton group-hover/face:text-noche' : ''}`
+              } ${labelBelow ? 'top-full mt-1' : 'bottom-full mb-1'} left-0 flex items-center gap-1`}
               style={{ fontSize: '11px' }}
             >
+              {seedable && <UserPlus className="w-3 h-3" />}
               {label}
             </div>
           </div>

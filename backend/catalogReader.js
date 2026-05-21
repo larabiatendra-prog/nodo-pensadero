@@ -398,9 +398,14 @@ function mergeClipIntoFile(fileData, clip, catalog) {
     // dibujar rectangulos + etiquetas. Strip de embeddings (no los necesita
     // el cliente y serian ~3KB extra por cara en el payload).
     if (Array.isArray(clip.identity.detections) && clip.identity.detections.length > 0) {
+      // Mantener face_index = posicion original en identity.detections[] para
+      // que el frontend pueda enviarlo de vuelta (e.g. seed-from-face). El
+      // filter posterior elimina detecciones sin bbox, asi que el indice del
+      // face_box NO coincide con su posicion en este array sin face_index.
       result.face_boxes = clip.identity.detections
-        .filter(d => d && Array.isArray(d.bbox) && d.bbox.length === 4)
-        .map(d => {
+        .map((d, i) => ({ d, originalIndex: i }))
+        .filter(({ d }) => d && Array.isArray(d.bbox) && d.bbox.length === 4)
+        .map(({ d, originalIndex }) => {
           const personId = (typeof d.person_id === 'string' && d.person_id.trim()) ? d.person_id.trim() : null;
           const displayName = personId
             ? (peopleRegistry.getDisplayName(personId) || d.display_name || personId)
@@ -413,6 +418,7 @@ function mergeClipIntoFile(fileData, clip, catalog) {
             confidence: typeof d.confidence === 'number' ? d.confidence : null,
             age: typeof d.age === 'number' ? d.age : null,
             gender: typeof d.gender === 'number' ? d.gender : null,
+            face_index: originalIndex,
           };
         });
     }

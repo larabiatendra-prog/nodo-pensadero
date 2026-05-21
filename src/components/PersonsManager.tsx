@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { slugifyPersonId } from '../utils/persons';
 
 interface Person {
   person_id: string;
@@ -74,6 +75,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     dominant_age: string | null;
     dominant_gender: string | null;
     sample_count: number;
+    samples_meta?: Array<{ folder: string; basename: string; det_score: number }>;
   }
   const [clusters, setClusters] = useState<FaceCluster[] | null>(null);
   const [clusterJob, setClusterJob] = useState<{
@@ -88,6 +90,25 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   const [promotingCluster, setPromotingCluster] = useState<FaceCluster | null>(null);
   const [promoteForm, setPromoteForm] = useState({ person_id: '', display_name: '', aliases: '' });
   const [promoting, setPromoting] = useState(false);
+  // Indices de samples que el usuario marca como "no es esta persona". El backend
+  // recalcula el centroide solo con las muestras incluidas.
+  const [excludedIndices, setExcludedIndices] = useState<Set<number>>(new Set());
+
+  // Modo seleccion multiple para fusionar clusters duplicados (misma persona
+  // dividida en varios clusters por diferencias de iluminacion/angulo/edad).
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedClusterIds, setSelectedClusterIds] = useState<Set<string>>(new Set());
+  const [merging, setMerging] = useState(false);
+
+  // Orden del grid de clusters: por numero de apariciones (default) o por
+  // similitud entre centroides (clusters parecidos quedan agrupados).
+  type ClusterOrderMode = 'count' | 'similarity';
+  const [clusterOrderMode, setClusterOrderMode] = useState<ClusterOrderMode>('count');
+  const [similarityGroups, setSimilarityGroups] = useState<{
+    groups: Array<{ group_id: string; cluster_ids: string[]; max_similarity: number }>;
+    ungrouped: string[];
+  } | null>(null);
+  const [loadingSimilarity, setLoadingSimilarity] = useState(false);
 
   // Form state
   const [newPersonId, setNewPersonId] = useState('');
@@ -95,6 +116,30 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   const [newAliases, setNewAliases] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Numero de archivos en los que aparece cada persona, calculado client-side
+  // desde mediaFiles. Una persona con varias caras en un mismo archivo cuenta 1.
+  const filesPerPerson = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!mediaFiles) return counts;
+    for (const f of mediaFiles) {
+      if (!f.faces) continue;
+      const ids = new Set(f.faces.map(face => face.person_id).filter(Boolean) as string[]);
+      for (const id of ids) {
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+    }
+    return counts;
+  }, [mediaFiles]);
+
+  // Top personas por numero de apariciones (para el panel de resumen)
+  const topPersonsByCount = useMemo(() => {
+    return [...persons]
+      .map(p => ({ person: p, count: filesPerPerson.get(p.person_id) || 0 }))
+      .sort((a, b) => b.count - a.count)
+      .filter(x => x.count > 0)
+      .slice(0, 6);
+  }, [persons, filesPerPerson]);
 
   useEffect(() => {
     loadPersons();
@@ -201,6 +246,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
   async function handleRefreshClusters() {
     setClusters(null);
+    setSimilarityGroups(null); // se recalcula cuando vuelvan los nuevos clusters
     setClusterJob({ status: 'running', processed: 0, unknown: 0, clustersFound: 0 });
     try {
       await api.refreshFaceClusters();
@@ -212,13 +258,54 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   function openPromote(cluster: FaceCluster) {
     setPromotingCluster(cluster);
     setPromoteForm({ person_id: '', display_name: '', aliases: '' });
+    setExcludedIndices(new Set());
+  }
+
+  function toggleSampleExclusion(index: number) {
+    setExcludedIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
+
+  // Normaliza una ruta (Windows o POSIX) para comparacion case-insensitive
+  function normalizePath(p: string): string {
+    return p.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+  }
+
+  function openSampleFile(meta: { folder: string; basename: string }) {
+    if (!mediaFiles || !onSelectFile) {
+      setError('no se puede abrir el archivo desde aqui');
+      return;
+    }
+    const expected = normalizePath(`${meta.folder}/${meta.basename}`);
+    const target = mediaFiles.find(f => {
+      const fp = f.fullPath ? normalizePath(f.fullPath) : '';
+      return fp === expected;
+    });
+    if (target) {
+      onSelectFile(target);
+    } else {
+      setError(`archivo "${meta.basename}" no encontrado en la biblioteca cargada`);
+    }
   }
 
   async function handlePromote() {
     if (!promotingCluster) return;
-    const id = promoteForm.person_id.trim();
-    if (!id || !/^[a-zA-Z0-9_\-]+$/.test(id)) {
-      setError('person_id alfanumerico (a-z, 0-9, _, -)');
+    const display = promoteForm.display_name.trim();
+    if (!display) {
+      setError('Escribe un nombre para la persona');
+      return;
+    }
+    const id = slugifyPersonId(display);
+    if (!id) {
+      setError('El nombre debe tener al menos una letra o numero');
+      return;
+    }
+    if (promotingCluster.sample_count > 0 && excludedIndices.size >= promotingCluster.sample_count) {
+      setError('no puedes excluir todas las muestras');
       return;
     }
     setPromoting(true);
@@ -227,8 +314,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       const aliases = promoteForm.aliases.split(',').map(a => a.trim()).filter(Boolean);
       const r: any = await api.promoteFaceCluster(promotingCluster.cluster_id, {
         person_id: id,
-        display_name: promoteForm.display_name.trim() || id,
+        display_name: display,
         aliases,
+        excluded_sample_indices: Array.from(excludedIndices).sort((a, b) => a - b),
       });
       if (!r.success) throw new Error(r.error || 'Error promoviendo cluster');
       setPromotingCluster(null);
@@ -236,6 +324,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       setClusters(prev => prev ? prev.filter(c => c.cluster_id !== promotingCluster.cluster_id) : prev);
       await loadPersons();
       await loadFaceStatus();
+      // Si la vista por similitud esta activa, recalcular grupos (el promovido
+      // ya no existe en el cache; los grupos que lo contenian se reorganizan)
+      if (similarityGroups) await loadSimilarityGroups();
     } catch (err: any) {
       setError(err.message || 'Error promoviendo cluster');
     } finally {
@@ -246,6 +337,92 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   function clusterSampleUrl(clusterId: string, sampleIndex: number): string {
     // faceClusterSampleUrl ya devuelve la URL completa (base + /api/persons/...).
     return api.faceClusterSampleUrl(clusterId, sampleIndex);
+  }
+
+  function toggleSelectMode() {
+    setSelectMode(prev => {
+      if (prev) setSelectedClusterIds(new Set());
+      return !prev;
+    });
+  }
+
+  function toggleClusterSelection(clusterId: string) {
+    setSelectedClusterIds(prev => {
+      const next = new Set(prev);
+      if (next.has(clusterId)) next.delete(clusterId);
+      else next.add(clusterId);
+      return next;
+    });
+  }
+
+  async function loadSimilarityGroups() {
+    setLoadingSimilarity(true);
+    try {
+      const r: any = await api.listClusterSimilarityGroups();
+      if (r.success && r.data) {
+        setSimilarityGroups(r.data);
+      } else {
+        setSimilarityGroups({ groups: [], ungrouped: [] });
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error cargando similitud');
+      setSimilarityGroups({ groups: [], ungrouped: [] });
+    } finally {
+      setLoadingSimilarity(false);
+    }
+  }
+
+  async function handleQuickMergeGroup(clusterIds: string[]) {
+    if (clusterIds.length < 2) return;
+    if (!confirm(`¿Fusionar estos ${clusterIds.length} clusters en uno solo? Despues podras nombrar la persona.`)) return;
+    setMerging(true);
+    setError(null);
+    try {
+      const r: any = await api.mergeFaceClusters(clusterIds);
+      if (!r.success || !r.data) throw new Error(r.error || 'Error fusionando');
+      setClusters(prev => {
+        if (!prev) return prev;
+        const filtered = prev.filter(c => !clusterIds.includes(c.cluster_id));
+        return [r.data, ...filtered];
+      });
+      // Refrescar grupos de similitud tras el merge (el merged es nuevo cluster)
+      await loadSimilarityGroups();
+      openPromote(r.data);
+    } catch (err: any) {
+      setError(err.message || 'Error fusionando grupo');
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  async function handleMerge() {
+    const ids = Array.from(selectedClusterIds);
+    if (ids.length < 2) {
+      setError('selecciona al menos 2 clusters');
+      return;
+    }
+    setMerging(true);
+    setError(null);
+    try {
+      const r: any = await api.mergeFaceClusters(ids);
+      if (!r.success || !r.data) throw new Error(r.error || 'Error fusionando clusters');
+      // Actualizar lista local: quitar originales, anteponer merged
+      setClusters(prev => {
+        if (!prev) return prev;
+        const filtered = prev.filter(c => !ids.includes(c.cluster_id));
+        return [r.data, ...filtered];
+      });
+      setSelectedClusterIds(new Set());
+      setSelectMode(false);
+      // Invalidar grupos de similitud: el merged cambia el panorama
+      if (similarityGroups) await loadSimilarityGroups();
+      // Abrir promote directamente sobre el merged para flujo continuo
+      openPromote(r.data);
+    } catch (err: any) {
+      setError(err.message || 'Error fusionando clusters');
+    } finally {
+      setMerging(false);
+    }
   }
 
   async function loadFaceStatus() {
@@ -297,14 +474,14 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
   async function handleCreate() {
     setError(null);
-    const id = newPersonId.trim();
     const display = newDisplayName.trim();
-    if (!id) {
-      setError('person_id es requerido');
+    if (!display) {
+      setError('Escribe un nombre');
       return;
     }
-    if (!/^[a-zA-Z0-9_\-]+$/.test(id)) {
-      setError('person_id sólo puede contener letras, números, _ y -');
+    const id = slugifyPersonId(display);
+    if (!id) {
+      setError('El nombre debe tener al menos una letra o numero');
       return;
     }
     const aliases = newAliases.split(',').map(a => a.trim()).filter(Boolean);
@@ -312,7 +489,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     try {
       const res = await api.upsertPerson({
         person_id: id,
-        display_name: display || id,
+        display_name: display,
         aliases,
       });
       if (!res.success) throw new Error(res.error || 'Error creando persona');
@@ -336,6 +513,20 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       }
     } catch (err: any) {
       setError(err.message || 'Error actualizando');
+    }
+  }
+
+  async function handleUpdateDisplayName(person: Person, newName: string) {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === person.display_name) return;
+    try {
+      await api.upsertPerson({ person_id: person.person_id, display_name: trimmed });
+      await loadPersons();
+      if (selectedPerson?.person_id === person.person_id) {
+        setSelectedPerson({ ...selectedPerson, display_name: trimmed });
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error actualizando nombre');
     }
   }
 
@@ -492,13 +683,28 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               Añadir persona
             </button>
           )}
+          {view === 'clusters' && clusters && clusters.length >= 2 && (
+            <button
+              onClick={toggleSelectMode}
+              disabled={merging}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
+                selectMode
+                  ? 'bg-melocoton text-noche hover:bg-melocoton/90'
+                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
+              }`}
+              title={selectMode ? 'Salir del modo seleccion' : 'Seleccionar varios clusters para fusionarlos'}
+            >
+              <Users className="w-4 h-4" />
+              {selectMode ? 'Cancelar' : 'Fusionar similares'}
+            </button>
+          )}
           {view === 'clusters' && (
             <button
               onClick={handleRefreshClusters}
-              disabled={clusterJob.status === 'running'}
+              disabled={clusterJob.status === 'running' || selectMode}
               className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
-                clusterJob.status === 'running'
-                  ? 'bg-lavanda/20 text-lavanda cursor-wait'
+                clusterJob.status === 'running' || selectMode
+                  ? 'bg-lavanda/20 text-lavanda cursor-not-allowed'
                   : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
               }`}
               title="Recalcular clusters desde cero (descarta cache)"
@@ -617,27 +823,21 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-lavanda-archivo mb-1">
-                  ID interno <span className="text-bruma">*</span>
+                  Nombre <span className="text-bruma">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={newPersonId}
-                  onChange={e => setNewPersonId(e.target.value)}
-                  placeholder="ester, carlos99, sara_g..."
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
-                  autoFocus
-                />
-                <p className="text-xs text-lavanda-archivo mt-1">Sólo letras, números, _ y -. Es lo que usa el sistema internamente.</p>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-lavanda-archivo mb-1">Nombre a mostrar</label>
                 <input
                   type="text"
                   value={newDisplayName}
                   onChange={e => setNewDisplayName(e.target.value)}
-                  placeholder="Ester García"
+                  placeholder="Ester Garcia, Jose Carlos..."
                   className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  autoFocus
                 />
+                {newDisplayName.trim() && (
+                  <p className="text-xs text-bruma mt-1">
+                    ID interno: <span className="font-mono text-lavanda-archivo">{slugifyPersonId(newDisplayName) || '(invalido)'}</span>
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-lavanda-archivo mb-1">Aliases (separados por coma)</label>
@@ -648,7 +848,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   placeholder="Ester, Esti"
                   className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
                 />
-                <p className="text-xs text-lavanda-archivo mt-1">Otros nombres con los que se le conoce. Ayuda al LLM en búsquedas.</p>
+                <p className="text-xs text-lavanda-archivo mt-1">Otros nombres con los que se le conoce. Ayuda al LLM en busquedas.</p>
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-2">
@@ -700,91 +900,285 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               </p>
             </div>
           )}
-          {clusters && clusters.length > 0 && (
-            <>
-              <p className="mb-4 text-sm text-lavanda-archivo">
-                {clusters.length} {clusters.length === 1 ? 'persona desconocida frecuente' : 'personas desconocidas frecuentes'} en tu archivo.
-                Pulsa una para asignarle un nombre y añadirla al registry.
-              </p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {clusters.map(c => (
-                  <button
-                    key={c.cluster_id}
-                    onClick={() => openPromote(c)}
-                    className="group bg-tinta rounded-3xl border border-pizarra overflow-hidden hover:border-lavanda transition-colors text-left"
-                  >
-                    <div className="aspect-square bg-pizarra overflow-hidden">
-                      <img
-                        src={clusterSampleUrl(c.cluster_id, 0)}
-                        alt={`Cluster ${c.cluster_id}`}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                        loading="lazy"
-                        onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-                      />
+          {clusters && clusters.length > 0 && (() => {
+            const renderClusterCard = (c: FaceCluster) => {
+              const selected = selectedClusterIds.has(c.cluster_id);
+              const onClick = selectMode
+                ? () => toggleClusterSelection(c.cluster_id)
+                : () => openPromote(c);
+              return (
+                <button
+                  key={c.cluster_id}
+                  onClick={onClick}
+                  className={`group bg-tinta rounded-3xl border-2 overflow-hidden transition-colors text-left ${
+                    selectMode
+                      ? selected
+                        ? 'border-melocoton'
+                        : 'border-pizarra hover:border-melocoton/50'
+                      : 'border-pizarra hover:border-lavanda'
+                  }`}
+                >
+                  <div className="relative aspect-square bg-pizarra overflow-hidden">
+                    <img
+                      src={clusterSampleUrl(c.cluster_id, 0)}
+                      alt={`Cluster ${c.cluster_id}`}
+                      className={`w-full h-full object-cover transition-transform ${!selectMode && 'group-hover:scale-105'}`}
+                      loading="lazy"
+                      onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                    />
+                    {selectMode && (
+                      <div className={`absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center border-2 ${
+                        selected ? 'bg-melocoton border-melocoton' : 'bg-noche/60 border-marfil/60 backdrop-blur-sm'
+                      }`}>
+                        {selected && <CheckCircle className="w-5 h-5 text-noche" />}
+                      </div>
+                    )}
+                    {c.cluster_id.startsWith('merged_') && !selectMode && (
+                      <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-melocoton/90 text-noche text-xs font-medium">
+                        fusionado
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-3">
+                    <p className="text-marfil font-medium text-sm">
+                      {c.face_count} {c.face_count === 1 ? 'aparicion' : 'apariciones'}
+                    </p>
+                    <p className="text-xs text-lavanda-archivo mt-0.5">
+                      {[c.dominant_gender, c.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
+                    </p>
+                  </div>
+                </button>
+              );
+            };
+
+            const showSimilarity = clusterOrderMode === 'similarity' && !selectMode;
+
+            return (
+              <>
+                {selectMode ? (
+                  <div className="mb-4 p-3 bg-pizarra border border-melocoton/40 rounded-2xl flex items-center justify-between gap-3 sticky top-0 z-10">
+                    <p className="text-sm text-marfil">
+                      <span className="text-melocoton font-medium">{selectedClusterIds.size} {selectedClusterIds.size === 1 ? 'cluster seleccionado' : 'clusters seleccionados'}</span>
+                      {selectedClusterIds.size < 2 && <span className="text-bruma"> · selecciona al menos 2 para fusionar</span>}
+                    </p>
+                    <button
+                      onClick={handleMerge}
+                      disabled={selectedClusterIds.size < 2 || merging}
+                      className={`px-4 py-1.5 rounded-full text-sm font-medium ${
+                        selectedClusterIds.size < 2 || merging
+                          ? 'bg-melocoton/30 text-noche/50 cursor-not-allowed'
+                          : 'bg-melocoton text-noche hover:bg-melocoton/90'
+                      }`}
+                    >
+                      {merging ? 'Fusionando...' : `Fusionar ${selectedClusterIds.size}`}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <p className="mb-3 text-sm text-lavanda-archivo">
+                      {clusters.length} {clusters.length === 1 ? 'persona desconocida frecuente' : 'personas desconocidas frecuentes'} en tu archivo.
+                      Pulsa una para asignarle un nombre y añadirla al registry.
+                    </p>
+                    <div className="mb-4 flex items-center gap-2 text-sm flex-wrap">
+                      <span className="text-lavanda-archivo">Ordenar por:</span>
+                      <button
+                        onClick={() => setClusterOrderMode('count')}
+                        className={`px-3 py-1 rounded-full font-medium transition-colors ${
+                          clusterOrderMode === 'count'
+                            ? 'bg-lavanda text-white'
+                            : 'bg-pizarra text-lavanda hover:bg-lavanda/30'
+                        }`}
+                      >
+                        Apariciones
+                      </button>
+                      <button
+                        onClick={() => {
+                          setClusterOrderMode('similarity');
+                          if (!similarityGroups) loadSimilarityGroups();
+                        }}
+                        className={`px-3 py-1 rounded-full font-medium transition-colors ${
+                          clusterOrderMode === 'similarity'
+                            ? 'bg-lavanda text-white'
+                            : 'bg-pizarra text-lavanda hover:bg-lavanda/30'
+                        }`}
+                      >
+                        Similitud
+                      </button>
+                      {clusterOrderMode === 'similarity' && (
+                        <span className="text-xs text-bruma">
+                          · clusters parecidos aparecen juntos. Posibles duplicados de la misma persona.
+                        </span>
+                      )}
                     </div>
-                    <div className="p-3">
-                      <p className="text-marfil font-medium text-sm">
-                        {c.face_count} {c.face_count === 1 ? 'aparicion' : 'apariciones'}
-                      </p>
-                      <p className="text-xs text-lavanda-archivo mt-0.5">
-                        {[c.dominant_gender, c.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
-                      </p>
+                  </>
+                )}
+
+                {showSimilarity ? (
+                  loadingSimilarity ? (
+                    <div className="p-8 text-center text-lavanda-archivo text-sm">
+                      <RefreshCw className="w-5 h-5 animate-spin inline mr-2" />
+                      Calculando similitudes...
                     </div>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+                  ) : similarityGroups ? (
+                    <>
+                      {similarityGroups.groups.length === 0 && (
+                        <div className="mb-6 p-4 bg-pizarra/40 border border-pizarra rounded-2xl text-sm text-lavanda-archivo">
+                          No se han detectado grupos de clusters parecidos. Cada cluster parece una persona distinta.
+                        </div>
+                      )}
+                      {similarityGroups.groups.map(g => {
+                        const groupClusters = g.cluster_ids
+                          .map(id => clusters.find(c => c.cluster_id === id))
+                          .filter(Boolean) as FaceCluster[];
+                        if (groupClusters.length === 0) return null;
+                        return (
+                          <div key={g.group_id} className="mb-6 pb-6 border-b border-pizarra">
+                            <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
+                              <h3 className="text-sm font-semibold text-marfil">
+                                Grupo similar
+                                <span className="text-lavanda-archivo font-normal ml-2">
+                                  ({groupClusters.length} clusters · similitud {(g.max_similarity * 100).toFixed(0)}%)
+                                </span>
+                              </h3>
+                              <button
+                                onClick={() => handleQuickMergeGroup(g.cluster_ids)}
+                                disabled={merging}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                                  merging
+                                    ? 'bg-melocoton/20 text-melocoton/50 cursor-wait'
+                                    : 'bg-melocoton text-noche hover:bg-melocoton/90'
+                                }`}
+                                title="Fusionar todos los clusters de este grupo en uno solo"
+                              >
+                                <Users className="w-3.5 h-3.5" />
+                                Fusionar este grupo
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                              {groupClusters.map(renderClusterCard)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {similarityGroups.ungrouped.length > 0 && (
+                        <div>
+                          <h3 className="mb-3 text-sm font-semibold text-marfil">
+                            Sin grupo similar
+                            <span className="text-lavanda-archivo font-normal ml-2">
+                              ({similarityGroups.ungrouped.length})
+                            </span>
+                          </h3>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                            {similarityGroups.ungrouped
+                              .map(id => clusters.find(c => c.cluster_id === id))
+                              .filter(Boolean)
+                              .map(c => renderClusterCard(c as FaceCluster))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : null
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {clusters.map(renderClusterCard)}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
       {/* Modal: promote cluster a persona */}
       {promotingCluster && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-lg">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-3xl my-8">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">Convertir en persona</h2>
               <button onClick={() => { setPromotingCluster(null); setError(null); }} className="text-lavanda-archivo hover:text-marfil">
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex items-center gap-4 mb-5">
-              <div className="w-20 h-20 rounded-2xl bg-pizarra overflow-hidden flex-shrink-0">
-                <img src={clusterSampleUrl(promotingCluster.cluster_id, 0)} alt="" className="w-full h-full object-cover" />
-              </div>
-              <div className="text-sm">
-                <p className="text-marfil font-medium">{promotingCluster.face_count} apariciones en tu archivo</p>
-                <p className="text-lavanda-archivo text-xs mt-0.5">
-                  {[promotingCluster.dominant_gender, promotingCluster.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
-                </p>
-                <p className="text-xs text-bruma mt-1">
-                  El centroide del cluster sera el embedding inicial de la persona. Podras subir fotos extra despues.
-                </p>
-              </div>
+            <div className="mb-4">
+              <p className="text-marfil font-medium text-sm">{promotingCluster.face_count} apariciones en tu archivo</p>
+              <p className="text-lavanda-archivo text-xs mt-0.5">
+                {[promotingCluster.dominant_gender, promotingCluster.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
+                {promotingCluster.sample_count > 0 && (
+                  <>
+                    {' · '}
+                    {promotingCluster.sample_count - excludedIndices.size} de {promotingCluster.sample_count} muestras incluidas
+                  </>
+                )}
+              </p>
+              <p className="text-xs text-bruma mt-1">
+                Pulsa una muestra para excluirla si no es la misma persona. El centroide se calcula con las muestras incluidas.
+              </p>
             </div>
+            {promotingCluster.sample_count > 0 && (
+              <div className="mb-5 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+                {Array.from({ length: promotingCluster.sample_count }).map((_, i) => {
+                  const excluded = excludedIndices.has(i);
+                  const meta = promotingCluster.samples_meta?.[i];
+                  const canOpen = !!meta && !!mediaFiles && !!onSelectFile;
+                  return (
+                    <div
+                      key={i}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => toggleSampleExclusion(i)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSampleExclusion(i); } }}
+                      title={meta ? `${meta.basename} · score ${meta.det_score.toFixed(2)} · ${excluded ? 'pulsa para incluir' : 'pulsa para excluir'}` : (excluded ? 'pulsa para incluir' : 'pulsa para excluir')}
+                      className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all cursor-pointer ${
+                        excluded
+                          ? 'border-red-400/70 bg-pizarra opacity-50'
+                          : 'border-grafito bg-pizarra hover:border-lavanda'
+                      }`}
+                    >
+                      <img
+                        src={clusterSampleUrl(promotingCluster.cluster_id, i)}
+                        alt={`Muestra ${i + 1}`}
+                        className={`w-full h-full object-cover ${excluded ? 'grayscale' : ''}`}
+                        loading="lazy"
+                        onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                      />
+                      {excluded && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-noche/40 pointer-events-none">
+                          <X className="w-8 h-8 text-red-300 drop-shadow-[0_0_4px_rgba(0,0,0,0.8)]" strokeWidth={3} />
+                        </div>
+                      )}
+                      {canOpen && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openSampleFile(meta!); }}
+                          title={`Abrir ${meta!.basename} en la galeria`}
+                          className="absolute top-1 right-1 p-1 rounded-md bg-noche/70 hover:bg-lavanda text-marfil hover:text-noche backdrop-blur-sm transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-lavanda-archivo mb-1">
-                  ID interno <span className="text-bruma">*</span>
+                  Nombre <span className="text-bruma">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={promoteForm.person_id}
-                  onChange={e => setPromoteForm(f => ({ ...f, person_id: e.target.value }))}
-                  placeholder="ester, carlos99..."
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-lavanda-archivo mb-1">Nombre a mostrar</label>
                 <input
                   type="text"
                   value={promoteForm.display_name}
                   onChange={e => setPromoteForm(f => ({ ...f, display_name: e.target.value }))}
-                  placeholder="Ester Garcia"
+                  placeholder="Ester Garcia, Jose Carlos..."
                   className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  autoFocus
                 />
+                {promoteForm.display_name.trim() && (
+                  <p className="text-xs text-bruma mt-1">
+                    ID interno: <span className="font-mono text-lavanda-archivo">{slugifyPersonId(promoteForm.display_name) || '(invalido)'}</span>
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-lavanda-archivo mb-1">Aliases (separados por coma)</label>
@@ -805,17 +1199,24 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               >
                 Cancelar
               </button>
-              <button
-                onClick={handlePromote}
-                disabled={promoting || !promoteForm.person_id.trim()}
-                className={`px-4 py-2 rounded-full font-medium ${
-                  promoting || !promoteForm.person_id.trim()
-                    ? 'bg-lavanda/30 text-marfil/50 cursor-not-allowed'
-                    : 'bg-lavanda text-white hover:bg-lavanda-claro'
-                }`}
-              >
-                {promoting ? 'Creando...' : 'Crear persona'}
-              </button>
+              {(() => {
+                const allExcluded = promotingCluster.sample_count > 0 && excludedIndices.size >= promotingCluster.sample_count;
+                const validName = !!slugifyPersonId(promoteForm.display_name);
+                const disabled = promoting || !validName || allExcluded;
+                return (
+                  <button
+                    onClick={handlePromote}
+                    disabled={disabled}
+                    className={`px-4 py-2 rounded-full font-medium ${
+                      disabled
+                        ? 'bg-lavanda/30 text-marfil/50 cursor-not-allowed'
+                        : 'bg-lavanda text-white hover:bg-lavanda-claro'
+                    }`}
+                  >
+                    {promoting ? 'Creando...' : allExcluded ? 'Incluye al menos una muestra' : 'Crear persona'}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -838,30 +1239,35 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               <p className="text-sm text-lavanda-archivo">Pulsa "Añadir persona" para empezar tu registry.</p>
             </div>
           ) : (
-            <div className="space-y-2">
-              {persons.map(person => (
-                <button
-                  key={person.person_id}
-                  onClick={() => setSelectedPerson(person)}
-                  className={`w-full text-left p-3 rounded-2xl border transition-colors flex items-center gap-3 ${
-                    selectedPerson?.person_id === person.person_id
-                      ? 'bg-lavanda/10 border-lavanda'
-                      : 'bg-tinta border-pizarra hover:border-lavanda-archivo'
-                  }`}
-                >
-                  <div className="w-10 h-10 rounded-full bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
-                    {avatarSrc(person) ? (
-                      <img src={avatarSrc(person)!} alt={person.display_name} className="w-full h-full object-cover" />
-                    ) : (
-                      <User className="w-5 h-5 text-lavanda-archivo" />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-marfil font-medium truncate">{person.display_name}</p>
-                    <p className="text-xs text-lavanda-archivo truncate font-mono">{person.person_id}</p>
-                  </div>
-                </button>
-              ))}
+            <div className="grid grid-cols-3 gap-3">
+              {persons.map(person => {
+                const selected = selectedPerson?.person_id === person.person_id;
+                return (
+                  <button
+                    key={person.person_id}
+                    onClick={() => setSelectedPerson(person)}
+                    title={person.display_name}
+                    className="flex flex-col items-center gap-1.5 p-2 rounded-2xl hover:bg-pizarra/50 transition-colors"
+                  >
+                    <div className={`w-16 h-16 rounded-full overflow-hidden flex items-center justify-center transition-all ${
+                      selected
+                        ? 'ring-2 ring-lavanda ring-offset-2 ring-offset-noche bg-pizarra'
+                        : 'bg-pizarra hover:ring-2 hover:ring-lavanda-archivo hover:ring-offset-2 hover:ring-offset-noche'
+                    }`}>
+                      {avatarSrc(person) ? (
+                        <img src={avatarSrc(person)!} alt={person.display_name} className="w-full h-full object-cover" />
+                      ) : (
+                        <User className="w-7 h-7 text-lavanda-archivo" />
+                      )}
+                    </div>
+                    <p className={`text-xs font-medium truncate w-full text-center ${
+                      selected ? 'text-lavanda' : 'text-marfil'
+                    }`}>
+                      {person.display_name}
+                    </p>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -880,7 +1286,11 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                     )}
                   </div>
                   <div>
-                    <h2 className="text-xl font-bold text-marfil">{selectedPerson.display_name}</h2>
+                    <DisplayNameEditor
+                      key={selectedPerson.person_id}
+                      initial={selectedPerson.display_name}
+                      onSave={(name) => handleUpdateDisplayName(selectedPerson, name)}
+                    />
                     <p className="text-sm text-lavanda-archivo font-mono">{selectedPerson.person_id}</p>
                   </div>
                 </div>
@@ -1061,11 +1471,103 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               })()}
             </div>
           ) : (
-            <div className="bg-tinta rounded-3xl border border-pizarra p-12 text-center">
-              <User className="w-12 h-12 text-lavanda-archivo mx-auto mb-3" />
-              <p className="text-marfil font-medium mb-1">Selecciona una persona</p>
-              <p className="text-sm text-lavanda-archivo">O añade una nueva con el botón de arriba a la derecha.</p>
-            </div>
+            (() => {
+              const totalPersons = persons.length;
+              const withAppearances = persons.filter(p => (filesPerPerson.get(p.person_id) || 0) > 0).length;
+              const withoutAvatar = persons.filter(p => !p.avatar_url).length;
+
+              return (
+                <div className="bg-tinta rounded-3xl border border-pizarra p-6">
+                  {/* Header con stats */}
+                  <div className="mb-6">
+                    <h2 className="text-xl font-bold text-marfil mb-2">Resumen</h2>
+                    <div className="flex flex-wrap gap-4 text-sm">
+                      <span className="text-lavanda-archivo">
+                        <span className="text-marfil font-semibold">{totalPersons}</span> {totalPersons === 1 ? 'persona' : 'personas'} en total
+                      </span>
+                      {withAppearances > 0 && (
+                        <span className="text-lavanda-archivo">
+                          <span className="text-marfil font-semibold">{withAppearances}</span> con apariciones
+                        </span>
+                      )}
+                      {withoutAvatar > 0 && (
+                        <span className="text-lavanda-archivo">
+                          <span className="text-marfil font-semibold">{withoutAvatar}</span> sin avatar
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Top personas por apariciones */}
+                  {topPersonsByCount.length > 0 ? (
+                    <div className="mb-6">
+                      <h3 className="text-sm font-semibold text-marfil mb-3">Mas apariciones en tu archivo</h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {topPersonsByCount.map(({ person, count }) => (
+                          <button
+                            key={person.person_id}
+                            onClick={() => setSelectedPerson(person)}
+                            className="group bg-pizarra rounded-2xl p-3 border border-pizarra hover:border-lavanda transition-colors text-left"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-12 h-12 rounded-full bg-grafito overflow-hidden flex-shrink-0 flex items-center justify-center">
+                                {avatarSrc(person) ? (
+                                  <img src={avatarSrc(person)!} alt={person.display_name} className="w-full h-full object-cover" />
+                                ) : (
+                                  <User className="w-5 h-5 text-lavanda-archivo" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-marfil font-medium text-sm truncate">{person.display_name}</p>
+                                <p className="text-xs text-lavanda-archivo">
+                                  {count} {count === 1 ? 'aparicion' : 'apariciones'}
+                                </p>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mb-6 p-4 bg-pizarra/40 border border-pizarra rounded-2xl">
+                      <p className="text-sm text-marfil font-medium mb-1">Aun no hay apariciones detectadas</p>
+                      <p className="text-xs text-lavanda-archivo">
+                        Tras escanear con IA o re-identificar la biblioteca, las personas con caras emparejadas apareceran aqui.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Atajos */}
+                  <div className="pt-4 border-t border-pizarra">
+                    <p className="text-xs text-lavanda-archivo mb-3">Atajos</p>
+                    <div className="flex flex-wrap gap-2">
+                      {faceStatus?.ready && (
+                        <button
+                          onClick={() => {
+                            setView('clusters');
+                            if (!clusters) loadClusters();
+                          }}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors"
+                        >
+                          <Search className="w-3.5 h-3.5" />
+                          Descubrir caras desconocidas
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setShowCreate(true)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Añadir persona manualmente
+                      </button>
+                    </div>
+                    <p className="text-xs text-bruma mt-4">
+                      Selecciona una persona en la lista de la izquierda para ver sus fotos y apariciones.
+                    </p>
+                  </div>
+                </div>
+              );
+            })()
           )}
         </div>
       </div>
@@ -1119,5 +1621,60 @@ function AliasesEditor({ initialAliases, onSave }: { initialAliases: string[]; o
       placeholder="Ester, Esti, mi prima"
       className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda text-sm"
     />
+  );
+}
+
+/**
+ * Editor inline para el display_name. Se ve como un titulo h2 hasta que el
+ * usuario pulsa el icono de lapiz; entonces se transforma en input. Enter
+ * guarda, Esc cancela, blur tambien guarda.
+ */
+function DisplayNameEditor({ initial, onSave }: { initial: string; onSave: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(initial);
+
+  useEffect(() => { setValue(initial); }, [initial]);
+
+  const commit = () => {
+    const trimmed = value.trim();
+    setEditing(false);
+    if (trimmed && trimmed !== initial) onSave(trimmed);
+    else setValue(initial);
+  };
+
+  const cancel = () => {
+    setValue(initial);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        type="text"
+        autoFocus
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+        }}
+        className="text-xl font-bold bg-pizarra text-marfil border border-lavanda rounded-xl px-2 py-1 focus:outline-none focus:ring-2 focus:ring-lavanda min-w-0 w-full max-w-xs"
+      />
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <h2 className="text-xl font-bold text-marfil">{initial}</h2>
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Editar nombre"
+        className="p-1 rounded-md text-lavanda-archivo hover:text-marfil hover:bg-pizarra transition-colors"
+      >
+        <Pencil className="w-3.5 h-3.5" />
+      </button>
+    </div>
   );
 }

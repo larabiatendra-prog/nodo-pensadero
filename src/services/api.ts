@@ -900,12 +900,58 @@ class ApiService {
     return `${API_BASE_URL}/persons/clusters/${encodeURIComponent(clusterId)}/sample/${index}`;
   }
 
-  async promoteFaceCluster(clusterId: string, payload: { person_id: string; display_name?: string; aliases?: string[] }) {
+  async promoteFaceCluster(clusterId: string, payload: { person_id: string; display_name?: string; aliases?: string[]; excluded_sample_indices?: number[] }) {
     return this.fetchWithErrorHandling<ApiResponse<{ person_id: string; display_name: string; face_count: number; avatar_path: string | null }>>(
       `${API_BASE_URL}/persons/clusters/${encodeURIComponent(clusterId)}/promote`,
       {
         method: 'POST',
         body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async seedFaceCluster(payload: { folder: string; basename: string; face_index: number; threshold?: number }) {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      cluster_id: string;
+      face_count: number;
+      avg_score: number;
+      dominant_age: string | null;
+      dominant_gender: string | null;
+      sample_count: number;
+      samples_meta?: Array<{ folder: string; basename: string; det_score: number }>;
+    }>>(
+      `${API_BASE_URL}/persons/clusters/seed-from-face`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async listClusterSimilarityGroups(threshold?: number) {
+    const qs = typeof threshold === 'number' ? `?threshold=${threshold}` : '';
+    return this.fetchWithErrorHandling<ApiResponse<{
+      groups: Array<{ group_id: string; cluster_ids: string[]; max_similarity: number }>;
+      ungrouped: string[];
+    }>>(
+      `${API_BASE_URL}/persons/clusters/similarity${qs}`,
+      { method: 'GET' }
+    );
+  }
+
+  async mergeFaceClusters(clusterIds: string[]) {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      cluster_id: string;
+      face_count: number;
+      avg_score: number;
+      dominant_age: string | null;
+      dominant_gender: string | null;
+      sample_count: number;
+    }>>(
+      `${API_BASE_URL}/persons/clusters/merge`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ cluster_ids: clusterIds }),
       }
     );
   }

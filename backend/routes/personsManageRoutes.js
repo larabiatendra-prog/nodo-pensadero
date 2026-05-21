@@ -47,8 +47,112 @@ const upload = multer({
 });
 
 module.exports = function createPersonsManageRoutes(deps) {
-  const { recomputePersonsAggregate, broadcastProgress, getScanPaths } = deps || {};
+  const { recomputePersonsAggregate, broadcastProgress, getScanPaths, syncFiles } = deps || {};
   const router = express.Router();
+
+  /**
+   * Tras promote, escribe el `person_id` en las detecciones de los _pensadero.json
+   * que pertenecen al cluster. Asi la persona aparece de inmediato en home y en
+   * la galeria, sin necesidad de "Re-identificar biblioteca" completo.
+   *
+   * Sin esta funcion, las caras del cluster siguen en disco como "desconocidas"
+   * hasta que se haga re-id global (lento para bibliotecas grandes).
+   */
+  async function applyPromoteToCatalogs(clusterFaces, personId) {
+    if (!Array.isArray(clusterFaces) || clusterFaces.length === 0) {
+      return { catalogsWritten: 0, facesUpdated: 0 };
+    }
+    const faceSvc = getFaceService();
+    const displayName = peopleRegistry.getDisplayName(personId) || personId;
+
+    // Agrupar caras por catalogo (folder/_pensadero.json)
+    const byFolder = new Map();
+    for (const f of clusterFaces) {
+      if (!f || !f.folder || !f.basename || typeof f.face_index !== 'number') continue;
+      if (!byFolder.has(f.folder)) byFolder.set(f.folder, []);
+      byFolder.get(f.folder).push(f);
+    }
+
+    let catalogsWritten = 0;
+    let facesUpdated = 0;
+
+    for (const [folder, faces] of byFolder) {
+      const catalogPath = path.join(folder, '_pensadero.json');
+      let catalog;
+      try {
+        const raw = await fsp.readFile(catalogPath, 'utf-8');
+        catalog = JSON.parse(raw);
+      } catch (err) {
+        console.warn(`[promote] no se pudo leer ${catalogPath}: ${err.message}`);
+        continue;
+      }
+      const photos = catalog.photos || catalog.clips || {};
+
+      // Agrupar refs por basename para tocar cada entry una sola vez
+      const byBasename = new Map();
+      for (const f of faces) {
+        if (!byBasename.has(f.basename)) byBasename.set(f.basename, []);
+        byBasename.get(f.basename).push(f.face_index);
+      }
+
+      let dirty = false;
+      for (const [basename, faceIndices] of byBasename) {
+        const entry = photos[basename];
+        if (!entry || !entry.identity || !Array.isArray(entry.identity.detections)) continue;
+
+        // Re-identificar SOLO las caras del cluster contra el faceService
+        // (que ya tiene cargados los embeddings de la persona promovida).
+        // Aceptamos el match solo si coincide con personId — proteccion contra
+        // que el daemon devuelva otro person_id mas cercano.
+        const detsRefs = faceIndices.map(idx => entry.identity.detections[idx]).filter(Boolean);
+        if (detsRefs.length === 0) continue;
+        const identified = faceSvc.identifyFaces(detsRefs);
+
+        let entryChanged = false;
+        for (let i = 0; i < detsRefs.length; i++) {
+          const det = detsRefs[i];
+          const match = identified[i];
+          if (match && match.person_id === personId) {
+            det.person_id = personId;
+            det.display_name = displayName;
+            det.confidence = match.similarity;
+            entryChanged = true;
+            facesUpdated++;
+          }
+        }
+
+        if (entryChanged) {
+          // Recalcular faces[] del entry deduplicado por mayor confidence
+          const byId = new Map();
+          for (const d of entry.identity.detections) {
+            if (!d.person_id) continue;
+            const prev = byId.get(d.person_id);
+            if (!prev || (d.confidence || 0) > prev.confidence) {
+              byId.set(d.person_id, {
+                person_id: d.person_id,
+                display_name: d.display_name || peopleRegistry.getDisplayName(d.person_id) || d.person_id,
+                confidence: d.confidence || 0,
+              });
+            }
+          }
+          entry.identity.faces = Array.from(byId.values());
+          entry.identity.face_count = entry.identity.detections.length;
+          dirty = true;
+        }
+      }
+
+      if (dirty) {
+        try {
+          await fsp.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
+          catalogsWritten++;
+        } catch (err) {
+          console.warn(`[promote] no se pudo escribir ${catalogPath}: ${err.message}`);
+        }
+      }
+    }
+
+    return { catalogsWritten, facesUpdated };
+  }
 
   function getPersonDir(personId) {
     const state = peopleRegistry.getState();
@@ -273,6 +377,8 @@ module.exports = function createPersonsManageRoutes(deps) {
 
   function publicCluster(c) {
     // No exponemos el centroide ni los embeddings — son grandes y no los necesita el frontend.
+    // samples_meta: info ligera por muestra (folder + basename + score) para que
+    // el frontend pueda resolver cada cara a su archivo en la biblioteca y abrirlo.
     return {
       cluster_id: c.cluster_id,
       face_count: c.face_count,
@@ -280,6 +386,11 @@ module.exports = function createPersonsManageRoutes(deps) {
       dominant_age: c.dominant_age,
       dominant_gender: c.dominant_gender,
       sample_count: c.samples.length,
+      samples_meta: c.samples.map(s => ({
+        folder: s.folder,
+        basename: s.basename,
+        det_score: s.det_score || 0,
+      })),
     };
   }
 
@@ -331,6 +442,55 @@ module.exports = function createPersonsManageRoutes(deps) {
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }
+  });
+
+  // POST — crea un cluster "ad-hoc" a partir de una cara concreta (folder +
+  // basename + face_index). Permite que el usuario, al ver una cara desconocida
+  // en el visor, busque similares en toda la biblioteca y promueva como persona.
+  router.post('/persons/clusters/seed-from-face', async (req, res) => {
+    const { folder, basename, face_index, threshold } = req.body || {};
+    if (!folder || !basename || typeof face_index !== 'number') {
+      return res.status(400).json({ success: false, error: 'folder, basename y face_index requeridos' });
+    }
+    try {
+      const rootDirs = (typeof getScanPaths === 'function') ? await getActiveRoots() : [];
+      const cluster = await faceClusterer.seedClusterFromFace({
+        folder, basename, face_index, threshold,
+        rootDirs,
+      });
+      if (!cluster) {
+        return res.status(404).json({ success: false, error: 'no se encontraron caras similares (o la cara seed no tiene embedding persistido)' });
+      }
+      res.json({ success: true, data: publicCluster(cluster) });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET — devuelve grupos de clusters similares entre si (Union-Find sobre
+  // cosine sim >= threshold). Sirve para sugerir al usuario que probablemente
+  // sean la misma persona y deberian fusionarse antes de promover.
+  router.get('/persons/clusters/similarity', (req, res) => {
+    const t = parseFloat(req.query.threshold);
+    const threshold = Number.isFinite(t) ? t : undefined;
+    const data = faceClusterer.computeSimilarityGroups(threshold);
+    if (!data) return res.status(404).json({ success: false, error: 'no hay cache de clusters' });
+    res.json({ success: true, data });
+  });
+
+  // POST — fusiona N clusters del cache en uno solo. Devuelve el cluster merged.
+  // Los originales se reemplazan en cache; el merged hereda samples top-9 por
+  // score y un centroide ponderado por face_count.
+  router.post('/persons/clusters/merge', (req, res) => {
+    const { cluster_ids } = req.body || {};
+    if (!Array.isArray(cluster_ids) || cluster_ids.length < 2) {
+      return res.status(400).json({ success: false, error: 'cluster_ids requeridos (minimo 2)' });
+    }
+    const merged = faceClusterer.mergeClusters(cluster_ids);
+    if (!merged) {
+      return res.status(404).json({ success: false, error: 'cluster(s) no encontrado(s) o cache expirado' });
+    }
+    res.json({ success: true, data: publicCluster(merged) });
   });
 
   const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg']);
@@ -420,12 +580,24 @@ module.exports = function createPersonsManageRoutes(deps) {
   router.post('/persons/clusters/:cluster_id/promote', async (req, res) => {
     const cluster = faceClusterer.getCluster(req.params.cluster_id);
     if (!cluster) return res.status(404).json({ success: false, error: 'cluster no encontrado (cache expirado?)' });
-    const { person_id, display_name, aliases } = req.body || {};
+    const { person_id, display_name, aliases, excluded_sample_indices } = req.body || {};
     if (!person_id || typeof person_id !== 'string') {
       return res.status(400).json({ success: false, error: 'person_id requerido' });
     }
     if (!/^[a-zA-Z0-9_\-]+$/.test(person_id)) {
       return res.status(400).json({ success: false, error: 'person_id alfanumerico (a-z, 0-9, _, -)' });
+    }
+
+    // Set de indices de samples a excluir. El centroide se recalcula desde las
+    // samples no excluidas leyendo embeddings.b64 del _pensadero.json original.
+    const excluded = new Set(
+      Array.isArray(excluded_sample_indices)
+        ? excluded_sample_indices.filter(n => Number.isInteger(n) && n >= 0 && n < cluster.samples.length)
+        : []
+    );
+    const includedSamples = cluster.samples.filter((_, i) => !excluded.has(i));
+    if (cluster.samples.length > 0 && includedSamples.length === 0) {
+      return res.status(400).json({ success: false, error: 'no puede excluir todas las muestras' });
     }
 
     const state = peopleRegistry.getState();
@@ -440,21 +612,66 @@ module.exports = function createPersonsManageRoutes(deps) {
     const personDir = path.join(state.avatarsBase, 'people', person_id);
     await fsp.mkdir(personDir, { recursive: true });
 
-    // 1) Crear embeddings.json directamente desde el centroid del cluster.
-    //    Formato compatible con faceService.loadAllEmbeddings.
-    const centroid = decodeEmbedding(cluster.centroid_b64);
-    if (!centroid) return res.status(500).json({ success: false, error: 'centroid no decodificable' });
+    // 1) Calcular centroide. Si no hay exclusiones, usamos el centroide del
+    //    cluster (entrenado con todas las caras). Si hay exclusiones, lo
+    //    recalculamos promediando solo los embeddings de las samples incluidas
+    //    (leemos cada _pensadero.json y extraemos embedding_b64 por face_index).
+    let centroid = null;
+    let centroidSource = 'cluster_promote';
+    let storedCount = cluster.face_count;
+    let storedAvgScore = cluster.avg_score;
+
+    if (excluded.size === 0) {
+      centroid = decodeEmbedding(cluster.centroid_b64);
+      if (!centroid) return res.status(500).json({ success: false, error: 'centroid no decodificable' });
+    } else {
+      const sum = new Float32Array(512);
+      let used = 0;
+      let scoreSum = 0;
+      for (const s of includedSamples) {
+        try {
+          const catalogPath = path.join(s.folder, '_pensadero.json');
+          const raw = await fsp.readFile(catalogPath, 'utf-8');
+          const cat = JSON.parse(raw);
+          const photos = cat.photos || cat.clips || {};
+          const entry = photos[s.basename];
+          const det = entry?.identity?.detections?.[s.face_index];
+          if (!det || !det.embedding_b64) continue;
+          const emb = decodeEmbedding(det.embedding_b64);
+          if (!emb || emb.length !== 512) continue;
+          for (let i = 0; i < 512; i++) sum[i] += emb[i];
+          used++;
+          scoreSum += (det.det_score || 0);
+        } catch (err) {
+          console.warn('[cluster-promote] no se pudo leer embedding de sample:', err.message);
+        }
+      }
+      if (used === 0) {
+        return res.status(500).json({ success: false, error: 'no se pudieron leer embeddings de las muestras incluidas' });
+      }
+      for (let i = 0; i < 512; i++) sum[i] /= used;
+      let norm = 0;
+      for (let i = 0; i < 512; i++) norm += sum[i] * sum[i];
+      norm = Math.sqrt(norm);
+      if (norm > 0) for (let i = 0; i < 512; i++) sum[i] /= norm;
+      centroid = sum;
+      centroidSource = 'cluster_promote_filtered';
+      storedCount = used;
+      storedAvgScore = scoreSum / used;
+    }
+
     const embJson = {
       person_id,
       version: 1,
-      count: cluster.face_count,
+      count: storedCount,
       photos_used: [],
-      mean_similarity_to_centroid: cluster.avg_score,
+      mean_similarity_to_centroid: storedAvgScore,
       min_similarity_to_centroid: null,
       centroid: Array.from(centroid),
       trained_at: new Date().toISOString(),
-      source: 'cluster_promote',
+      source: centroidSource,
       cluster_face_count: cluster.face_count,
+      cluster_excluded_indices: Array.from(excluded).sort((a, b) => a - b),
     };
     try {
       await fsp.writeFile(path.join(personDir, 'embeddings.json'), JSON.stringify(embJson), 'utf-8');
@@ -462,9 +679,9 @@ module.exports = function createPersonsManageRoutes(deps) {
       return res.status(500).json({ success: false, error: `no se pudo escribir embeddings.json: ${err.message}` });
     }
 
-    // 2) Recortar el sample con mejor score como avatar visual
+    // 2) Recortar el sample con mejor score (no excluido) como avatar visual
     let avatarRelPath = null;
-    const bestSample = cluster.samples[0]; // ya ordenados desc por score
+    const bestSample = includedSamples[0] || cluster.samples[0]; // ya ordenados desc por score
     if (bestSample) {
       const srcPath = path.join(bestSample.folder, bestSample.basename);
       const ext = path.extname(bestSample.basename).toLowerCase();
@@ -510,10 +727,31 @@ module.exports = function createPersonsManageRoutes(deps) {
       console.warn('[cluster-promote] loadAllEmbeddings:', err.message);
     }
 
-    // 5) Invalidar cache de clusters (el cluster promovido ya no es desconocido)
-    faceClusterer.invalidateCache();
+    // 5) Escribir person_id directamente en las detecciones del _pensadero.json
+    //    de cada cara del cluster. Mucho mas rapido que re-id global y suficiente:
+    //    solo las caras del cluster son seguras, las demas se identificaran al
+    //    proximo re-id manual o scan.
+    let promoteUpdate = { catalogsWritten: 0, facesUpdated: 0 };
+    try {
+      promoteUpdate = await applyPromoteToCatalogs(cluster.faces || [], person_id);
+    } catch (err) {
+      console.warn('[cluster-promote] applyPromoteToCatalogs:', err.message);
+    }
 
-    if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+    // 6) Quitar SOLO el cluster promovido del cache. Antes invalidabamos todo
+    //    el cache, lo que rompia operaciones siguientes (promote/merge) en la
+    //    misma sesion: el frontend conservaba la lista pero el backend ya no
+    //    tenia los clusters → 404 "cluster no encontrado". Los demas clusters
+    //    siguen siendo desconocidos hasta que el usuario re-clusterice.
+    faceClusterer.removeClusterFromCache(cluster.cluster_id);
+
+    // 7) Refrescar mediaFiles en memoria para que las nuevas asociaciones
+    //    aparezcan en home/galeria sin tener que reiniciar. Best-effort.
+    if (promoteUpdate.catalogsWritten > 0 && typeof syncFiles === 'function') {
+      syncFiles().catch(err => console.warn('[cluster-promote] post-sync:', err.message));
+    } else if (typeof recomputePersonsAggregate === 'function') {
+      recomputePersonsAggregate();
+    }
 
     res.json({
       success: true,
@@ -522,6 +760,8 @@ module.exports = function createPersonsManageRoutes(deps) {
         display_name: display_name || person_id,
         face_count: cluster.face_count,
         avatar_path: avatarRelPath,
+        catalogs_written: promoteUpdate.catalogsWritten,
+        faces_updated: promoteUpdate.facesUpdated,
       },
     });
   });

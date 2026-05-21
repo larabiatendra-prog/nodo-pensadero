@@ -24,6 +24,7 @@ export interface FaceBox {
   confidence: number | null;
   age: number | null;
   gender: number | null;
+  face_index?: number; // posicion original en identity.detections[] del catalog
 }
 
 // Persona agregada devuelta por GET /api/persons

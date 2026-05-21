@@ -11,7 +11,7 @@ Guía para futuras sesiones de Claude Code dentro de este repositorio.
 - Destino final en NODO (PC fisico): `C:\DEV\pensadero` (desarrollo) -> `C:\TOOLS\Pensadero` (cuando estable)
 - Repo GitHub: `larabiatendra-prog/nodo-pensadero` (privado)
 
-**Direccion arquitectonica (Vision B):** Pensadero debe absorber progresivamente las capacidades de procesamiento (hoy en "Marina Video Batch personal"). La implementacion actual es de solo lectura de sidecars JSON; esto es transitorio. No añadir mas dependencias externas de generacion de metadata: el camino es traerlas aqui dentro cuando se desarrollen.
+**Direccion arquitectonica (Vision B):** Pensadero absorbe progresivamente las capacidades de procesamiento del ecosistema (originalmente en "Marina Video Batch personal"). Face recognition ya esta integrado dentro de Pensadero (ver regla 2). Space recognition y otras capacidades pendientes siguen el mismo camino: traerlas aqui dentro en vez de depender de generadores externos.
 
 **Nombrar archivos brutos:** los archivos de camara (`P1246646.mp4`, `IMG_3421.JPG`) NO se renombran nunca. En Pensadero, cada archivo hereda el display name y los tags de su carpeta contenedora. La carpeta es la unidad atomica de significado.
 
@@ -39,7 +39,16 @@ Guía para futuras sesiones de Claude Code dentro de este repositorio.
 ## Reglas no negociables
 
 1. **Single-user, sin auth.** No introducir login, sesiones, ni Supabase. Cualquier referencia a `@supabase/supabase-js` es legado pendiente de borrar.
-2. **Sin face/space recognition dentro de Pensadero por ahora.** La implementacion actual solo *lee* resultados desde sidecar JSON generados externamente. A futuro esto se absorbera (Vision B). No reintroducir `face-api.js` ni UI de entrenamiento de versiones anteriores; si se añade reconocimiento, sera una implementacion nueva y deliberada.
+2. **Face recognition integrado, space recognition todavia no.**
+   - **Caras:** InsightFace via daemon Python (ArcFace, embeddings 512-dim L2-normalizados). Stack:
+     - `backend/services/faceService.js` — wrapper del daemon, detection + identificacion por cosine similarity.
+     - `backend/services/faceReidentifier.js` — re-id retroactiva sobre catalogos ya escaneados.
+     - `backend/services/faceClusterer.js` — descubrimiento de caras frecuentes desconocidas via greedy clustering.
+     - `backend/routes/personsManageRoutes.js` — CRUD registry + clustering + promote + merge.
+     - `src/components/PersonsManager.tsx` — UI completa (registry, fotos, entrenamiento, re-id, discovery, merge).
+   - **Persistencia:** `<avatarsBase>/people/<id>/embeddings.json` (centroid + meta) + `people_registry.json`. Embeddings de detecciones se guardan en `_pensadero.json` por carpeta (campo `identity.detections[].embedding_b64`).
+   - **No reintroducir** `face-api.js` (legacy de Marina Finder). Cualquier UI nueva de personas/caras debe integrarse con el daemon InsightFace existente.
+   - **Spaces (lugares):** todavia se *leen* desde sidecar; siguen el camino de absorcion (Vision B) cuando se aborde.
 3. **Comments en español.** Los nombres de tokens semánticos (colores, espaciados, roles) también van en español.
 4. **README y CLAUDE.md sin emojis.**
 5. **Pensadero_Start.bat sin acentos en su contenido** (compatibilidad con cmd antigua).

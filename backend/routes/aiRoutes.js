@@ -172,7 +172,7 @@ module.exports = function createAiRoutes(deps) {
 
   router.post('/ai/search', async (req, res) => {
     try {
-      const { query } = req.body;
+      const { query, person_ids } = req.body;
 
       if (!query || typeof query !== 'string' || query.trim().length === 0) {
         return res.status(400).json({
@@ -181,11 +181,18 @@ module.exports = function createAiRoutes(deps) {
         });
       }
 
-      console.log(`🤖 AI Search: "${query}"`);
+      // person_ids: menciones @ resueltas client-side. Se hace union con
+      // los person_ids que extraiga el LLM del texto natural. Sanitizamos a
+      // array de strings; el servicio se encarga de validar contra registry.
+      const mentionedPersonIds = Array.isArray(person_ids)
+        ? person_ids.filter(p => typeof p === 'string' && p.trim())
+        : [];
+
+      console.log(`🤖 AI Search: "${query}"${mentionedPersonIds.length > 0 ? ` (mentions: ${mentionedPersonIds.join(',')})` : ''}`);
 
       const mediaFiles = getMediaFiles();
       const peopleHints = safePeopleHints();
-      const result = await aiSearchService.parseNaturalQuery(query, mediaFiles, peopleHints);
+      const result = await aiSearchService.parseNaturalQuery(query, mediaFiles, peopleHints, mentionedPersonIds);
 
       // Contrato del frontend: results con { fileId, score, matchedIn }
       // (sin el `file` completo embebido — el frontend ya tiene los archivos

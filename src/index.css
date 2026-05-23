@@ -200,3 +200,38 @@
   font-size: 12px;
   font-weight: 500;
 }
+
+/* ============================================
+   react-mentions (modo Natural en SearchBar)
+   - El input transparente está superpuesto al highlighter, así que el
+     placeholder hereda color transparente. Lo forzamos aquí porque
+     ::placeholder no es soportado en inline styles.
+   - La pill inline gana padding y bordes redondeados — el cursor puede
+     desplazarse un poco al cruzar la pill (tradeoff del lib).
+   ============================================ */
+.pensadero-mentions__input::placeholder {
+  color: #6B6F8E !important;
+  opacity: 1 !important;
+}
+.pensadero-mentions__input:disabled {
+  cursor: not-allowed;
+}
+/* La lib wrapea cada mention en <strong> dentro del highlighter. Sin
+   padding ni border: cualquier desviación de ancho descoloca el strong
+   respecto al texto del input subyacente y produce doble pintada. Solo
+   bg + color + radius leve + bold. */
+.pensadero-mentions__highlighter strong {
+  background-color: #C8B6FF;          /* lavanda */
+  color: #0F111A;                     /* noche */
+  border-radius: 4px;
+  font-weight: 600;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.pensadero-mentions__suggestions {
+  background: transparent;
+}
+.pensadero-mentions__suggestions__item--focused {
+  background-color: #C8B6FF !important;
+  color: #0F111A !important;
+}

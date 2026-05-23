@@ -223,13 +223,14 @@ module.exports = function createMediaRoutes(deps) {
       let favoriteMetadata = null;
 
       if (updates.hasOwnProperty('isFavorite')) {
-        const filePath = file.path || file.name;
+        // Clave canonica para favoritos = fullPath normalizado (alineado con frontend).
+        const favoriteKey = file.fullPath || file.path || file.name;
 
         if (updates.isFavorite) {
-          await favoritesManager.addFavorite(fileId, filePath);
+          await favoritesManager.addFavorite(favoriteKey, favoriteKey);
           console.log(`❤️ Archivo ${fileId} marcado como favorito persistentemente`);
 
-          const favoriteData = favoritesManager.getAllFavorites().find(f => f.fileId === fileId);
+          const favoriteData = favoritesManager.getFavorite(favoriteKey);
           if (favoriteData) {
             favoriteMetadata = {
               addedAt: favoriteData.addedAt,
@@ -237,7 +238,7 @@ module.exports = function createMediaRoutes(deps) {
             };
           }
         } else {
-          await favoritesManager.removeFavorite(fileId);
+          await favoritesManager.removeFavorite(favoriteKey);
           console.log(`💔 Archivo ${fileId} eliminado de favoritos persistentemente`);
         }
       }

@@ -16,7 +16,8 @@ import {
   Eye,
   EyeOff,
   UserPlus,
-  Search
+  Search,
+  Pencil
 } from 'lucide-react';
 import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
@@ -89,6 +90,11 @@ export default function MediaModal({
   const [hoveredFaceKey, setHoveredFaceKey] = useState<string | null>(null);
   // Resetear hover al cambiar de archivo
   useEffect(() => { setHoveredFaceKey(null); }, [file?.id]);
+
+  // Overlay de descripcion encima de la imagen/video. Se abre con el boton
+  // del lapiz; se cierra clicando fuera o con la X.
+  const [showDescription, setShowDescription] = useState(false);
+  useEffect(() => { setShowDescription(false); }, [file?.id]);
 
   // Flujo "crear persona desde cara desconocida": click en bbox sin person_id
   // dispara una busqueda de caras similares en toda la biblioteca, luego abre
@@ -364,6 +370,8 @@ export default function MediaModal({
     }
   };
 
+  const hasDescription = fileHasVisualAnalysis(file);
+
   const renderMediaPreview = () => {
     switch (file.type) {
       case 'video':
@@ -406,6 +414,9 @@ export default function MediaModal({
                   setHoveredFaceKey={setHoveredFaceKey}
                 />
               )}
+              {showDescription && (
+                <DescriptionOverlay file={file} onClose={() => setShowDescription(false)} />
+              )}
             </div>
             {boxes.length > 0 && (
               <button
@@ -414,6 +425,16 @@ export default function MediaModal({
                 title={showFaceBoxes ? `Caras detectadas a los ${detTime?.toFixed(1)}s — salta ahi para verlas` : 'Mostrar caras detectadas'}
               >
                 {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              </button>
+            )}
+            {hasDescription && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowDescription(v => !v); }}
+                className={`absolute top-2 ${boxes.length > 0 ? 'right-14' : 'right-2'} z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors`}
+                title={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
+                aria-label={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
+              >
+                <Pencil className="w-4 h-4" />
               </button>
             )}
             {/* Indicador sutil sobre cuando aparecen los bboxes */}
@@ -491,9 +512,12 @@ export default function MediaModal({
                   setHoveredFaceKey={setHoveredFaceKey}
                 />
               )}
+              {showDescription && (
+                <DescriptionOverlay file={file} onClose={() => setShowDescription(false)} />
+              )}
               {/* Hint hover de fullscreen — se oculta cuando hay bboxes visibles
-                  para no tapar las caras. */}
-              {!(showFaceBoxes && boxes.length > 0) && (
+                  o overlay de descripcion abierto para no tapar el contenido. */}
+              {!(showFaceBoxes && boxes.length > 0) && !showDescription && (
                 <div className="absolute inset-0 bg-noche bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
                   <span className="text-white text-sm font-medium px-4 py-2 bg-noche bg-opacity-50 rounded-lg">
                     Pincha para pantalla completa
@@ -509,6 +533,16 @@ export default function MediaModal({
                 title={showFaceBoxes ? 'Ocultar caras' : 'Mostrar caras detectadas'}
               >
                 {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              </button>
+            )}
+            {hasDescription && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowDescription(v => !v); }}
+                className={`absolute top-2 ${boxes.length > 0 ? 'right-14' : 'right-2'} z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors`}
+                title={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
+                aria-label={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
+              >
+                <Pencil className="w-4 h-4" />
               </button>
             )}
           </div>
@@ -1041,6 +1075,131 @@ function TagsList({ tags, onTagClick }: { tags: string[]; onTagClick: (t: string
           mostrar menos
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Overlay con el analisis visual del VLM: descripcion, composicion, atmosfera
+ * y texto detectado (OCR). Se renderiza encima de la imagen/video con un
+ * fondo oscuro para legibilidad. Se controla desde fuera con el boton lapiz.
+ */
+const COMPOSITION_LABELS: Record<string, string> = {
+  shot_type: 'Plano',
+  camera_angle: 'Angulo',
+  camera_movement: 'Movimiento',
+  people_framing: 'Personas',
+};
+
+const ATMOSPHERE_LABELS: Record<string, string> = {
+  mood: 'Ambiente',
+  lighting: 'Iluminacion',
+  space_type: 'Espacio',
+  time_of_day: 'Momento',
+  style: 'Estilo',
+};
+
+function humanizeValue(v: unknown): string {
+  if (v == null) return '';
+  return String(v).replace(/_/g, ' ');
+}
+
+function objectToChips(
+  obj: Record<string, unknown> | undefined,
+  labels: Record<string, string>
+): Array<{ label: string; value: string }> {
+  if (!obj || typeof obj !== 'object') return [];
+  const out: Array<{ label: string; value: string }> = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null || v === '' || v === 'ninguno') continue;
+    const value = humanizeValue(v);
+    if (!value) continue;
+    out.push({ label: labels[k] || k.replace(/_/g, ' '), value });
+  }
+  return out;
+}
+
+function fileHasVisualAnalysis(file: MediaFile): boolean {
+  const visualDesc = file.visual_description?.trim() || '';
+  const ocr = file.ocr_text?.trim() || '';
+  const compChips = objectToChips(file.composition, COMPOSITION_LABELS);
+  const atmoChips = objectToChips(file.atmosphere, ATMOSPHERE_LABELS);
+  return visualDesc.length > 0 || ocr.length > 0 || compChips.length > 0 || atmoChips.length > 0;
+}
+
+function DescriptionOverlay({ file, onClose }: { file: MediaFile; onClose: () => void }) {
+  const visualDesc = file.visual_description?.trim() || '';
+  const ocr = file.ocr_text?.trim() || '';
+  const compChips = objectToChips(file.composition, COMPOSITION_LABELS);
+  const atmoChips = objectToChips(file.atmosphere, ATMOSPHERE_LABELS);
+
+  return (
+    <div
+      className="absolute inset-0 z-20 bg-noche/85 backdrop-blur-sm overflow-auto cursor-default"
+      onClick={(e) => { e.stopPropagation(); onClose(); }}
+    >
+      <div
+        className="p-4 md:p-5 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={(e) => { e.stopPropagation(); onClose(); }}
+          className="absolute top-2 right-2 p-1.5 rounded-full bg-noche/70 hover:bg-noche/90 text-marfil"
+          title="Cerrar"
+          aria-label="Cerrar descripcion"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
+        {visualDesc && (
+          <p className="text-sm text-marfil leading-relaxed whitespace-pre-line pr-8">
+            {visualDesc}
+          </p>
+        )}
+
+        {compChips.length > 0 && (
+          <div>
+            <h4 className="text-[10px] uppercase tracking-wide text-lavanda-archivo mb-1.5">Composicion</h4>
+            <div className="flex flex-wrap gap-1.5">
+              {compChips.map(c => (
+                <span
+                  key={c.label}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-pizarra/80 text-marfil"
+                >
+                  <span className="text-lavanda-archivo">{c.label}:</span>
+                  <span>{c.value}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {atmoChips.length > 0 && (
+          <div>
+            <h4 className="text-[10px] uppercase tracking-wide text-lavanda-archivo mb-1.5">Atmosfera</h4>
+            <div className="flex flex-wrap gap-1.5">
+              {atmoChips.map(c => (
+                <span
+                  key={c.label}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-pizarra/80 text-marfil"
+                >
+                  <span className="text-lavanda-archivo">{c.label}:</span>
+                  <span>{c.value}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {ocr && (
+          <div>
+            <h4 className="text-[10px] uppercase tracking-wide text-lavanda-archivo mb-1.5">Texto detectado</h4>
+            <p className="text-xs text-niebla leading-relaxed font-mono whitespace-pre-line">
+              {ocr}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -2588,12 +2588,15 @@ function App() {
                         onTagsChange={handleTagsChange}
                         selectedPersonIds={selectedPersonIds}
                         onAddPerson={(pid) => {
-                          if (!selectedPersonIds.includes(pid)) {
-                            setSelectedPersonIds([...selectedPersonIds, pid]);
-                          }
+                          // Functional setState: si runNaturalSearch llama dos
+                          // veces seguidas (dos @mentions), la versión por copia
+                          // capturaba `selectedPersonIds` stale y el segundo set
+                          // sobreescribía al primero. Con prev=>... ambos se
+                          // acumulan.
+                          setSelectedPersonIds(prev => prev.includes(pid) ? prev : [...prev, pid]);
                         }}
                         onRemovePerson={(pid) => {
-                          setSelectedPersonIds(selectedPersonIds.filter(id => id !== pid));
+                          setSelectedPersonIds(prev => prev.filter(id => id !== pid));
                         }}
                         onNaturalSearch={(fileIds, _intent, primaryCount) => {
                           setNaturalSearchIds(fileIds);
@@ -3315,8 +3318,8 @@ function App() {
             }}
           /> */}
 
-        {/* Scroll to Top Button */}
-        {/* <ScrollToTopButton /> */}
+        {/* Scroll to Top Button — solo en home */}
+        {activeView === 'home' && <ScrollToTopButton />}
 
         {/* User FAB eliminado: uso personal sin auth */}
       </div>

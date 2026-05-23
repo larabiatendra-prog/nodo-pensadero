@@ -51,6 +51,20 @@ if not exist "%ROOT%dist" (
     if %ERRORLEVEL% NEQ 0 ( pause & exit /b 1 )
 )
 
+REM Asegurar que Ollama corre (si esta instalado). Sin Ollama, la IA local no funciona.
+where ollama >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri http://localhost:11434/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+    if %ERRORLEVEL% NEQ 0 (
+        echo Arrancando servicio Ollama...
+        start "" /B ollama serve >nul 2>&1
+        timeout /t 3 /nobreak >nul
+    )
+) else (
+    echo [AVISO] Ollama no instalado. Busqueda natural y escaneo visual no funcionaran.
+    echo         Ejecuta Pensadero_Doctor.bat para diagnostico.
+)
+
 echo Arrancando backend en puerto 5000...
 start "Pensadero Backend" /min cmd /c "cd /d %ROOT%backend && node server.js"
 

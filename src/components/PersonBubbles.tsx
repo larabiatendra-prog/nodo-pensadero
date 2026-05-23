@@ -112,8 +112,8 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: 
 
   if (persons.length === 0) {
     return (
-      <div className="text-humo font-mono italic text-xs">
-        Procesa material con Marina Video Batch para identificar personas
+      <div className="text-humo italic text-xs">
+        Sin personas detectadas todavia. Anade una en Personas con fotos de referencia,<br/>o usa "Descubrir caras" para identificar las que ya aparecen en la biblioteca.
       </div>
     );
   }

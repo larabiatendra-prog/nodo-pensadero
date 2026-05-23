@@ -40,6 +40,12 @@ const os = require('os');
 
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
+// Guard contra path traversal: el :id se concatena con path.join al avatarsBase,
+// asi que filtramos cualquier valor que no sea alfanumerico/_/- (mismo regex que upsertPerson).
+function assertValidPersonId(id) {
+  return typeof id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(id);
+}
+
 // Multer en memoria; escribimos a disco a mano para tener control del nombre.
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -178,6 +184,9 @@ module.exports = function createPersonsManageRoutes(deps) {
 
   // DELETE — eliminar persona y todas sus fotos
   router.delete('/persons/registry/:id', async (req, res) => {
+    if (!assertValidPersonId(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'person_id inválido' });
+    }
     const personId = req.params.id;
     const dir = getPersonDir(personId);
     const existed = peopleRegistry.deletePerson(personId);
@@ -195,6 +204,9 @@ module.exports = function createPersonsManageRoutes(deps) {
 
   // GET — fotos de referencia
   router.get('/persons/registry/:id/photos', async (req, res) => {
+    if (!assertValidPersonId(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'person_id inválido' });
+    }
     const dir = getPersonDir(req.params.id);
     if (!dir) return res.json({ success: true, data: [] });
     let files = [];
@@ -219,6 +231,9 @@ module.exports = function createPersonsManageRoutes(deps) {
   router.post('/persons/registry/:id/photos', upload.single('photo'), async (req, res) => {
     try {
       const personId = req.params.id;
+      if (!assertValidPersonId(personId)) {
+        return res.status(400).json({ success: false, error: 'person_id inválido' });
+      }
       if (!req.file) return res.status(400).json({ success: false, error: 'falta archivo (field "photo")' });
 
       // Validar extensión por nombre original
@@ -282,6 +297,9 @@ module.exports = function createPersonsManageRoutes(deps) {
   // POST — entrenar manualmente (recalcula embeddings desde las fotos actuales)
   router.post('/persons/registry/:id/train', async (req, res) => {
     const personId = req.params.id;
+    if (!assertValidPersonId(personId)) {
+      return res.status(400).json({ success: false, error: 'person_id inválido' });
+    }
     const dir = getPersonDir(personId);
     if (!dir) return res.status(500).json({ success: false, error: 'avatarsBase no configurado' });
     if (!fs.existsSync(dir)) return res.status(404).json({ success: false, error: 'sin fotos para esta persona' });
@@ -768,6 +786,9 @@ module.exports = function createPersonsManageRoutes(deps) {
 
   // DELETE — borrar una foto concreta
   router.delete('/persons/registry/:id/photos/:filename', async (req, res) => {
+    if (!assertValidPersonId(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'person_id inválido' });
+    }
     const dir = getPersonDir(req.params.id);
     if (!dir) return res.status(500).json({ success: false, error: 'avatarsBase no configurado' });
     // Validar que el filename no escape de su carpeta
@@ -801,6 +822,9 @@ module.exports = function createPersonsManageRoutes(deps) {
 
   // POST — marcar foto como avatar principal
   router.post('/persons/registry/:id/avatar', (req, res) => {
+    if (!assertValidPersonId(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'person_id inválido' });
+    }
     const { filename } = req.body || {};
     if (!filename) return res.status(400).json({ success: false, error: 'filename requerido' });
     const safe = path.basename(filename);

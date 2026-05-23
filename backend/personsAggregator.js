@@ -32,6 +32,12 @@ function recomputePersons(mediaFiles) {
   for (const file of mediaFiles) {
     if (!file || !Array.isArray(file.faces) || file.faces.length === 0) continue;
 
+    // Clave canónica del archivo: fullPath es lo único único globalmente.
+    // file.name no sirve como fallback porque dos basenames iguales en
+    // carpetas distintas colapsarían en el mismo Set y falsearían el count.
+    const fileKey = file.fullPath || file.id;
+    if (!fileKey) continue;
+
     // Set local de person_ids del archivo (un clip con 3 detecciones del
     // mismo person_id cuenta 1).
     const seenInFile = new Set();
@@ -44,7 +50,7 @@ function recomputePersons(mediaFiles) {
 
     for (const pid of seenInFile) {
       if (!presence.has(pid)) presence.set(pid, new Set());
-      presence.get(pid).add(file.id || file.fullPath || file.name);
+      presence.get(pid).add(fileKey);
     }
   }
 

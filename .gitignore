@@ -45,6 +45,7 @@ backend/collections_persistent.json
 backend/scan_paths.json
 backend/embeddings_index.json
 backend/visual_search_data/
+backend/clip_index.json
 backend/temp/
 backend/reports/
 # Datos del registry de personas (fotos personales, identidades)

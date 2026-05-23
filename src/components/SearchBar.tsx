@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, X, Tag, Calendar, MinusCircle, Sparkles, Hash, Loader2, AtSign, User } from 'lucide-react';
+import { MentionsInput, Mention } from 'react-mentions';
 import { SearchFilters, Person } from '../types';
 import { buildApiUrl, API_CONFIG } from '../config';
 import { api } from '../services/api';
@@ -90,6 +91,23 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     processingTime?: number;
   } | null>(null);
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Estado del input rich del modo natural — react-mentions.
+  //
+  // El input mantiene una versión "markup" (`@[Display Name](person_id)`)
+  // que es lo que controlamos vía la prop `value` del MentionsInput. La lib
+  // expone también el `plainText` (lo que ve el usuario, con las @mentions
+  // ya sustituidas por `@<display_name>`) y el array `mentions` (objetos
+  // estructurados con id y display de cada @persona en la frase).
+  //
+  // En `runNaturalSearch` derivamos:
+  //   - person_ids: mentions.map(m => m.id) ∪ selectedPersonIds
+  //   - queryForLLM: markup con los tokens `@[...](...)` strippeados
+  // ─────────────────────────────────────────────────────────────────────
+  const [naturalMarkup, setNaturalMarkup] = useState('');
+  const [naturalPlainText, setNaturalPlainText] = useState('');
+  const [naturalMentions, setNaturalMentions] = useState<Array<{ id: string; display: string }>>([]);
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem('pensadero.searchMode', searchMode);
@@ -131,9 +149,12 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     return () => { cancelled = true; };
   }, []);
 
-  // Detectar modo @persona: query empieza con "@" → buscar personas en lugar
-  // de tags. Permite combinar @nombre con tags ya activos (AND con filtros).
-  const isPersonMention = query.startsWith('@');
+  const isNatural = searchMode === 'natural';
+
+  // Detección de mention @ — sólo modo tags (la query es íntegramente la
+  // mention y al seleccionar se borra todo). En modo natural el rich-input
+  // de react-mentions lleva su propio autocompletado interno.
+  const isPersonMention = !isNatural && query.startsWith('@');
   const personMentionQuery = isPersonMention ? query.slice(1).trim() : '';
 
   const personSuggestions: Person[] = isPersonMention
@@ -146,6 +167,18 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         })
         .slice(0, 8)
     : [];
+
+  // Datos para el MentionsInput (modo natural). El campo `display` es lo
+  // que la lib filtra y muestra; `avatar_url` y `count` los usamos en
+  // renderSuggestion. Excluimos las ya seleccionadas para no duplicar.
+  const personsMentionsData = persons
+    .filter(p => !selectedPersonIds.includes(p.person_id))
+    .map(p => ({
+      id: p.person_id,
+      display: p.display_name,
+      avatar_url: p.avatar_url,
+      count: p.count,
+    }));
 
   // Filter suggestions based on query from real backend data (accent-insensitive)
   const suggestions = isPersonMention ? [] : (tagsData?.allTags || []).filter(tag =>
@@ -215,8 +248,37 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   // Lanza búsqueda en lenguaje natural contra Ollama (vía /api/ai/search).
   // Si Ollama no está disponible, cae con elegancia a búsqueda textual normal.
   const runNaturalSearch = async () => {
-    const q = query.trim();
-    if (!q) return;
+    // Las @mentions vienen ya estructuradas desde MentionsInput. El markup
+    // interno tiene formato `@[Display Name](person_id)`; basta con striparlo
+    // para obtener la query "limpia" que enviamos al LLM.
+    const markup = naturalMarkup;
+    const fallbackPlain = naturalPlainText.trim();
+    if (!markup.trim() && !fallbackPlain) return;
+
+    const queryStripped = markup
+      .replace(/@\[[^\]]+\]\([^)]+\)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const queryForLLM = queryStripped || fallbackPlain;
+
+    // Promover cada mention a chip (selectedPersonIds) si no existe. Eso
+    // hace que el filtro AND del padre (App.tsx applyAllFilters) aplique
+    // y mantiene coherencia con el modo tags.
+    const newIds: string[] = [];
+    for (const m of naturalMentions) {
+      if (!selectedPersonIds.includes(m.id) && !newIds.includes(m.id)) {
+        newIds.push(m.id);
+        onAddPerson?.(m.id);
+      }
+    }
+    const personIdsForRequest = Array.from(new Set([
+      ...(selectedPersonIds || []),
+      ...newIds,
+    ]));
+
+    console.log(
+      `[SearchBar] natural mentions: markup="${markup}" cleaned="${queryStripped}" ids=[${newIds.join(',')}] selected=[${(selectedPersonIds || []).join(',')}]`
+    );
 
     setNaturalLoading(true);
     setNaturalNotice(null);
@@ -226,7 +288,10 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       const res = await fetch(`${API_CONFIG.apiUrl}/ai/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q })
+        body: JSON.stringify({
+          query: queryForLLM,
+          person_ids: personIdsForRequest,
+        })
       });
 
       if (res.status === 503) {
@@ -234,7 +299,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         // CONSERVAR los filtros activos (tags, etc.), no destruirlos.
         setNaturalNotice('Búsqueda inteligente no disponible. He buscado como texto.');
         onNaturalSearch?.(null, null);
-        onSearch(q, {
+        onSearch(queryForLLM, {
           ...filters,
           tags: localIncludedTags.length > 0 ? localIncludedTags : undefined
         });
@@ -260,7 +325,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       console.warn('[SearchBar] Búsqueda natural falló:', err);
       setNaturalNotice('No he podido procesar la consulta. Buscando como texto.');
       onNaturalSearch?.(null, null);
-      onSearch(q, {
+      onSearch(queryForLLM, {
         ...filters,
         tags: localIncludedTags.length > 0 ? localIncludedTags : undefined
       });
@@ -286,6 +351,35 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     }
     setSearchMode(next);
     setQuery('');
+    // Resetear también el estado del MentionsInput al cambiar de modo
+    setNaturalMarkup('');
+    setNaturalPlainText('');
+    setNaturalMentions([]);
+  };
+
+  // Handler de teclas para el MentionsInput. Cuando el dropdown de
+  // sugerencias está abierto, la lib intercepta Up/Down/Enter/Tab y llama
+  // a preventDefault, por lo que sólo lanzamos la búsqueda si el evento
+  // no fue ya consumido por la lib.
+  const handleNaturalKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    if (naturalPlainText.trim() || naturalMarkup.trim()) runNaturalSearch();
+  };
+
+  // onChange del MentionsInput — actualiza los tres estados sincronizados.
+  // `newValue`: markup `@[Display](id)`; `newPlainText`: lo que ve el usuario;
+  // `mentions`: array estructurado de personas referenciadas.
+  const handleNaturalChange = (
+    _event: { target: { value: string } },
+    newValue: string,
+    newPlainText: string,
+    mentions: Array<{ id: string; display: string }>
+  ) => {
+    setNaturalMarkup(newValue);
+    setNaturalPlainText(newPlainText);
+    setNaturalMentions(mentions);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -295,16 +389,15 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     setShowSuggestions(e.target.value.length > 0);
   };
 
+  // handleKeyPress queda solo para el <input> plain del modo tags. En modo
+  // natural el MentionsInput tiene su propio onKeyDown que delega en
+  // handleNaturalKeyDown.
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (searchMode === 'natural') {
-        // En modo natural Enter siempre lanza búsqueda LLM (sin Shift+Enter ni autocompletado).
-        if (query.trim()) runNaturalSearch();
-        return;
-      }
-      // Modo @persona: Enter selecciona la persona resaltada o la primera
-      if (isPersonMention && personSuggestions.length > 0) {
+      // Modo @persona (tags): Enter selecciona la sugerencia resaltada o
+      // la primera y promueve a chip.
+      if (isPersonMention && showSuggestions && personSuggestions.length > 0) {
         const idx = selectedSuggestionIndex >= 0 && selectedSuggestionIndex < personSuggestions.length
           ? selectedSuggestionIndex
           : 0;
@@ -344,7 +437,8 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     }
   };
 
-  // Añadir tag como incluida (desde sugerencias o input)
+  // Añadir persona desde el dropdown @ (modo tags). En natural lo gestiona
+  // el `MentionsInput` de react-mentions, que pinta la chip inline en sitio.
   const addPerson = (personId: string) => {
     if (!onAddPerson) return;
     onAddPerson(personId);
@@ -440,6 +534,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     // Limpieza también del estado de búsqueda natural — evita resultados zombie
     setNaturalIntent(null);
     setNaturalNotice(null);
+    setNaturalMarkup('');
+    setNaturalPlainText('');
+    setNaturalMentions([]);
     onNaturalSearch?.(null, null);
     // Reset search to show all files
     onSearch('', { type: 'all' });
@@ -451,6 +548,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     return localIncludedTags.length > 0 ||
            localExcludedTags.length > 0 ||
            query ||
+           naturalMarkup ||
            filters.type !== 'all' ||
            filters.favorites ||
            filters.dateFrom ||
@@ -459,8 +557,6 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
            filters.month;
   };
 
-
-  const isNatural = searchMode === 'natural';
 
   return (
     <div ref={searchRef} className="relative w-full">
@@ -552,23 +648,71 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               </span>
             ))}
 
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyPress}
-              onFocus={() => !isNatural && query.length > 0 && setShowSuggestions(true)}
-              placeholder={
-                isNatural
-                  ? "Pregunta lo que quieras: 'Videos de Alumni con seriedad de 2023'"
-                  : (allActiveTags.length === 0
+            {isNatural ? (
+              <MentionsInput
+                value={naturalMarkup}
+                onChange={handleNaturalChange as any}
+                onKeyDown={handleNaturalKeyDown}
+                placeholder="Pregunta lo que quieras. Usa @nombre para filtrar por persona."
+                singleLine
+                allowSpaceInQuery
+                forceSuggestionsAboveCursor={false}
+                className="pensadero-mentions flex-1 min-w-0"
+                style={mentionsInputStyle as any}
+                a11ySuggestionsListLabel="Personas sugeridas"
+                disabled={naturalLoading}
+                inputRef={inputRef as React.RefObject<HTMLInputElement>}
+              >
+                <Mention
+                  trigger="@"
+                  data={personsMentionsData}
+                  appendSpaceOnAdd
+                  displayTransform={(_id: string, display: string) => `@${display}`}
+                  markup="@[__display__](__id__)"
+                  style={mentionPillStyle as any}
+                  renderSuggestion={(suggestion: any, _search: string, highlightedDisplay: React.ReactNode, _index: number, focused: boolean) => (
+                    <div className="flex items-center gap-2 px-2 py-1">
+                      <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
+                        {suggestion.avatar_url ? (
+                          <img
+                            src={`${config.apiUrl}${suggestion.avatar_url}`}
+                            alt=""
+                            className="w-full h-full object-cover"
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        ) : (
+                          <User className="w-4 h-4 text-lavanda-archivo" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className={`truncate ${focused ? 'text-noche font-medium' : 'text-marfil'}`}>
+                          {highlightedDisplay}
+                        </div>
+                        <div className={`text-xs ${focused ? 'text-noche/70' : 'text-bruma'}`}>
+                          {suggestion.count} {suggestion.count === 1 ? 'aparición' : 'apariciones'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                />
+              </MentionsInput>
+            ) : (
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyPress}
+                onFocus={() => query.length > 0 && setShowSuggestions(true)}
+                placeholder={
+                  allActiveTags.length === 0
                     ? "Escribe para autocompletar etiquetas · Enter busca texto · Shift+Enter crea etiqueta nueva"
-                    : "Añade más etiquetas o texto libre…")
-              }
-              className="flex-1 min-w-0 bg-transparent outline-none text-marfil placeholder-humo transition-all"
-              disabled={naturalLoading}
-            />
+                    : "Añade más etiquetas o texto libre…"
+                }
+                className="flex-1 min-w-0 bg-transparent outline-none text-marfil placeholder-humo transition-all"
+                disabled={naturalLoading}
+              />
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
@@ -633,7 +777,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
 
             <button
               onClick={isNatural ? runNaturalSearch : handleSearch}
-              disabled={naturalLoading || (isNatural && !query.trim())}
+              disabled={naturalLoading || (isNatural && !naturalMarkup.trim() && !naturalPlainText.trim())}
               className="px-4 py-2 md:px-6 rounded-full transition-all duration-300 font-medium bg-lavanda text-noche hover:bg-lavanda-claro hover:shadow-lg text-sm md:text-base disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {naturalLoading
@@ -736,8 +880,8 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         </div>
       )}
 
-      {/* Suggestions dropdown — modo @persona */}
-      {!isNatural && isPersonMention && showSuggestions && (
+      {/* Suggestions dropdown — modo @persona (activo en tags y natural) */}
+      {isPersonMention && showSuggestions && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-tinta rounded-xl shadow-lg border border-borde-sutil z-10">
           <div className="p-2">
             <div className="text-sm text-humo px-3 py-2 flex items-center gap-1">
@@ -923,3 +1067,75 @@ function Chip({ children }: { children: React.ReactNode }) {
     </span>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Estilos para react-mentions (modo natural).
+//
+// La lib usa una capa <input> "real" superpuesta a un <div highlighter> que
+// pinta los chips inline. Mantenemos input transparente y dejamos al
+// highlighter pintar el texto + chips. `control` rige el wrapper externo;
+// `input` el campo invisible; `highlighter` la capa visible.
+// ─────────────────────────────────────────────────────────────────────────
+// Estilos para react-mentions. Patrón estándar de la lib:
+//   - El input lleva el texto visible (color marfil).
+//   - El highlighter está SUPERPUESTO con su texto regular en transparente
+//     (default); solo los `<strong>` de las mentions se pintan, lo que
+//     produce el efecto pill encima del texto subyacente.
+// Métricas idénticas en input y highlighter para que el cursor y la pill
+// caigan sobre los mismos caracteres.
+const MENTIONS_FONT_FAMILY = "'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+
+const mentionsInputStyle: any = {
+  control: {
+    backgroundColor: 'transparent',
+    fontSize: '14px',
+    lineHeight: '1.5',
+    fontFamily: MENTIONS_FONT_FAMILY,
+    fontWeight: 'normal',
+    minHeight: '1.5em',
+  },
+  input: {
+    margin: 0,
+    padding: 0,
+    border: 0,
+    outline: 0,
+    color: '#f4eee8',               // marfil — texto VISIBLE aquí
+    caretColor: '#C8B6FF',          // lavanda
+    backgroundColor: 'transparent',
+    fontSize: '14px',
+    lineHeight: '1.5',
+    fontFamily: MENTIONS_FONT_FAMILY,
+  },
+  highlighter: {
+    margin: 0,
+    padding: 0,
+    border: 0,
+    color: 'transparent',           // texto regular del highlighter no se ve
+    fontSize: '14px',
+    lineHeight: '1.5',
+    fontFamily: MENTIONS_FONT_FAMILY,
+    overflow: 'hidden',
+  },
+  suggestions: {
+    zIndex: 50,
+    list: {
+      backgroundColor: '#151927',                  // tinta
+      border: '1px solid #252A42',                 // pizarra
+      borderRadius: '12px',
+      maxHeight: '320px',
+      overflow: 'auto',
+      padding: '6px',
+      marginTop: '8px',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+      minWidth: '280px',
+    },
+    item: {
+      borderRadius: '8px',
+      cursor: 'pointer',
+    },
+  },
+};
+
+// Mantenemos el style prop del <Mention> vacío para que el CSS global
+// (.pensadero-mentions__highlighter strong) gane y aplique padding+rounded.
+const mentionPillStyle: any = {};

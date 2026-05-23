@@ -58,6 +58,16 @@ export interface MediaFile {
     people_framing?: string;
     [key: string]: unknown;
   };
+  atmosphere?: {
+    mood?: string;
+    lighting?: string;
+    space_type?: string;
+    time_of_day?: string;
+    style?: string;
+    [key: string]: unknown;
+  };
+  demographics?: Record<string, unknown>;
+  technical?: Record<string, unknown>;
   faces?: MediaFace[];
   face_boxes?: FaceBox[];
   // Solo en videos: segundo del video donde se hizo la deteccion facial.

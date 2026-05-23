@@ -254,9 +254,12 @@ function upsertPerson(data) {
     aliases: Array.isArray(data.aliases)
       ? data.aliases.filter(a => typeof a === 'string' && a.trim()).map(a => a.trim())
       : (existing.aliases || []),
-    avatar_path: typeof data.avatar_path === 'string' && data.avatar_path.trim()
-      ? data.avatar_path.trim()
-      : (existing.avatar_path || null),
+    // undefined => conservar; '' o null => limpiar explícitamente; string no vacío => fijar
+    avatar_path: data.avatar_path === undefined
+      ? (existing.avatar_path || null)
+      : (typeof data.avatar_path === 'string' && data.avatar_path.trim()
+          ? data.avatar_path.trim()
+          : null),
   };
   peopleById.set(personId, entry);
   saveToDisk();

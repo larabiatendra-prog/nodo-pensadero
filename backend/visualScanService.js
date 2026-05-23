@@ -20,11 +20,17 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const { Ollama } = require('ollama');
+const sharp = require('sharp');
 
 const DEFAULT_VLM_MODEL = 'qwen2.5vl:7b';
-const PER_IMAGE_TIMEOUT_MS = 90_000; // 90s por imagen (cold-start de modelo grande puede tardar)
+const PER_IMAGE_TIMEOUT_MS = parseInt(process.env.VLM_TIMEOUT_MS || '180000', 10); // 180s por imagen (margen para fotos grandes + modelos grandes en cold-start)
 const VIDEO_FRAMES_PER_SCAN = parseInt(process.env.VLM_VIDEO_FRAMES || '3', 10); // 3 frames es buen balance calidad/coste
 const VIDEO_MAX_FRAMES = 6;
+// Lado mayor objetivo al pre-redimensionar la imagen antes de enviarla al VLM.
+// La mayoria de encoders de vision aceptan hasta ~1568px y reescalan internamente
+// con perdida si reciben mas. Controlandolo nosotros con sharp (Lanczos) preservamos
+// detalle de forma mas predecible que dejarselo al pipeline del modelo.
+const VLM_IMAGE_MAX_SIDE = parseInt(process.env.VLM_IMAGE_MAX_SIDE || '1568', 10);
 
 class VisualScanService {
   constructor() {
@@ -45,15 +51,34 @@ class VisualScanService {
    *   para acotar el dominio (qué es la carpeta, quién aparece, etc.).
    */
   async scanImage(filePath, opts = {}) {
-    let buffer;
+    // Pre-resize con sharp: encoders de vision esperan ~1024-1568px lado mayor.
+    // Mejor controlar el resize nosotros (Lanczos) que dejar al modelo aplicar
+    // un downscale agresivo que pierde detalle. Si falla (formato raro), caemos
+    // al buffer original para no abortar el archivo.
+    let base64;
     try {
-      buffer = await fs.readFile(filePath);
+      const resized = await sharp(filePath, { failOn: 'none' })
+        .rotate() // respetar orientacion EXIF
+        .resize({
+          width: VLM_IMAGE_MAX_SIDE,
+          height: VLM_IMAGE_MAX_SIDE,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 88, mozjpeg: true })
+        .toBuffer();
+      base64 = resized.toString('base64');
     } catch (err) {
-      throw new Error(`No se pudo leer ${filePath}: ${err.message}`);
+      try {
+        const buffer = await fs.readFile(filePath);
+        base64 = buffer.toString('base64');
+      } catch (err2) {
+        throw new Error(`No se pudo leer ${filePath}: ${err2.message}`);
+      }
     }
 
-    const base64 = buffer.toString('base64');
-    const prompt = this._buildPrompt(opts.folderContext);
+    const systemPrompt = this._buildSystemPrompt();
+    const userPrompt = this._buildUserPrompt(opts.folderContext);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PER_IMAGE_TIMEOUT_MS);
@@ -62,17 +87,25 @@ class VisualScanService {
     try {
       response = await this.ollama.chat({
         model: this.model,
+        // format:'json' fuerza al modelo a emitir JSON sintacticamente valido
+        // via constrained decoding. Elimina la mayoria de errores de parsing
+        // y libera al modelo de "preocuparse por el formato", invirtiendo mas
+        // capacidad en el contenido. _extractJson queda como red de seguridad.
+        format: 'json',
         messages: [
+          { role: 'system', content: systemPrompt },
           {
             role: 'user',
-            content: prompt,
+            content: userPrompt,
             images: [base64],
           },
         ],
         stream: false,
         options: {
           temperature: 0.2,
-          num_predict: 600,
+          // 900 da margen al few-shot + descripciones ricas + todos los enums.
+          // Con 600 el modelo a veces truncaba el JSON antes de cerrar.
+          num_predict: 900,
         },
         signal: controller.signal,
       });
@@ -200,6 +233,7 @@ class VisualScanService {
    *   - moondream
    *   - minicpm-v (y variantes)
    *   - llama3.2-vision, mllama
+   *   - internvl3, internvl (familia InternVL — fuerte en NODO con 14B en 16GB VRAM)
    *
    * Evita modelos de solo texto (llama3.1:8b, qwen2.5:14b-instruct,
    * dolphin-llama3...) y embedders (nomic-embed-text...) que en el scan
@@ -212,26 +246,25 @@ class VisualScanService {
   async listVisionModels() {
     const list = await this.ollama.list();
     const all = (list.models || []).map(m => m.name).filter(Boolean);
-    const visionNameRegex = /(qwen.*vl|gemma3(:|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama)/i;
+    const visionNameRegex = /(qwen.*vl|gemma3(:|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama|internvl)/i;
     return all.filter(name => visionNameRegex.test(name));
   }
 
-  _buildPrompt(folderContext) {
-    const ctx = typeof folderContext === 'string' ? folderContext.trim() : '';
-    const contextSection = ctx
-      ? `CONTEXTO DE LA CARPETA (úsalo para acotar y precisar; NO inventes nada que no veas en la imagen):
-${ctx}
+  /**
+   * Prompt de sistema: identidad, schema, reglas y un ejemplo few-shot.
+   * Se envia una sola vez por turno y el modelo lo "absorbe" mejor en system
+   * que en user. Incluye definiciones operativas de los enums mas confusos
+   * (shot_type) y un ejemplo concreto input->output esperado para subir
+   * cobertura en modelos pequenos (gemma3:4b, qwen2.5vl:7b).
+   */
+  _buildSystemPrompt() {
+    return `Eres un asistente experto en describir fotografias y frames de video para un archivo personal indexable y buscable en lenguaje natural espanol. Tu trabajo es extraer metadata RICA, ESPECIFICA y FIEL a lo que ves — nunca generica.
 
-`
-      : '';
-
-    return `Eres un asistente experto en describir fotografias y videos para un archivo personal indexable y buscable en lenguaje natural. Devuelve SOLO un JSON sin explicaciones ni markdown.
-
-${contextSection}ESQUEMA EXACTO:
+ESQUEMA EXACTO (debes rellenar TODOS los campos; usa null en los enums solo si realmente no aplica):
 {
-  "description_what": "frase en ESPAÑOL describiendo QUE se ve (sujetos, verbos, objetos, lugar) — concisa pero rica en sustantivos y verbos",
-  "description_mood": "frase en ESPAÑOL describiendo el AMBIENTE (luz, atmosfera, estilo) — concisa",
-  "shot_type": "plano_general" | "plano_conjunto" | "plano_americano" | "plano_medio" | "plano_medio_corto" | "primer_plano" | "plano_detalle" | null,
+  "description_what": "frase en ESPAÑOL describiendo QUE se ve (sujetos concretos, verbos, objetos, lugar). Rica en sustantivos y verbos. Evita palabras vacias como 'imagen', 'foto', 'escena'.",
+  "description_mood": "frase en ESPAÑOL describiendo el AMBIENTE (luz, atmosfera, sensacion). Concisa pero evocadora.",
+  "shot_type": uno de los valores listados abajo o null,
   "camera_angle": "normal" | "picado" | "contrapicado" | "cenital" | "nadir" | null,
   "camera_movement": "fijo" | "panoramica" | "travelling" | "dolly" | "zoom_in" | "zoom_out" | "handheld" | "steady" | null,
   "people_framing": "ninguno" | "individual" | "pareja" | "grupo" | "multitud",
@@ -240,20 +273,64 @@ ${contextSection}ESQUEMA EXACTO:
   "space_type": "interior" | "exterior" | "urbano" | "naturaleza" | "oficina" | "escenario" | "hogar" | "transito" | null,
   "time_of_day": "amanecer" | "manana" | "mediodia" | "tarde" | "atardecer" | "noche" | "indeterminado" | null,
   "style": "documental" | "retrato" | "paisaje" | "accion" | "producto" | "ambiente" | "abstracto" | null,
-  "objects": ["objeto1","objeto2",...] (max 10, sustantivos simples en español),
-  "actions": ["accion1",...] (max 5, verbos en infinitivo o sustantivos en español),
-  "expressions": ["sonrisa","serio","neutro","sorpresa",...] (max 5, vacio si nadie),
-  "ocr_text": ["texto visible",...] (max 10 fragmentos legibles, vacio si nada)
+  "objects": ["sustantivos simples en español", max 10],
+  "actions": ["verbos en infinitivo o sustantivos en español", max 5],
+  "expressions": ["sonrisa","serio","neutro","sorpresa",...], max 5, vacio si nadie,
+  "ocr_text": ["texto visible legible",...], max 10, vacio si nada
 }
 
+DEFINICIONES de shot_type (siempre intentar rellenar — solo null si es imposible decidir):
+- plano_general: encuadre muy amplio, sujeto pequeno respecto al entorno (paisaje, multitud)
+- plano_conjunto: varias personas o sujeto entero con su entorno cercano
+- plano_americano: persona de las rodillas para arriba
+- plano_medio: persona de la cintura para arriba
+- plano_medio_corto: persona del pecho para arriba
+- primer_plano: cara y hombros (la cara llena el encuadre)
+- plano_detalle: parte concreta de un objeto o cuerpo (mano, ojo, textura)
+
 REGLAS:
-1. description_what y description_mood: 2 frases concisas en español. NO inventes lo que no veas en la imagen.
-2. NO inferir edad ni genero de las personas — eso lo hace otro modulo con mas precision. Solo people_framing como conteo aproximado.
+1. description_what y description_mood: 2 frases concisas en español. Cada una rica en informacion concreta y NO redundante con la otra. NO inventes lo que no veas.
+2. NO inferir edad ni genero de las personas — otro modulo lo hace con mas precision. Solo people_framing como conteo aproximado.
 3. camera_movement: solo si es un VIDEO (frame de video); en fotos devuelve null.
-4. ocr_text: solo si hay texto legible. NO inventes texto.
-5. Los colores dominantes los extrae otro modulo (analisis perceptual de pixeles), tu NO los pongas.
-6. Si hay CONTEXTO DE LA CARPETA, usalo para precisar — incluyendo nombres de personas mencionadas si aparecen claramente en la imagen. NUNCA inventes nombres que el contexto no proporcione.
-7. Devuelve SOLO el JSON, sin texto antes ni despues.`;
+4. ocr_text: solo si hay texto legible visible. NO inventes texto.
+5. NO incluyas el campo palette/dominant_colors — el color lo extrae otro modulo.
+6. Si recibes CONTEXTO DE LA CARPETA en el mensaje del usuario, usalo para precisar (lugar, evento, personas que pueden aparecer). NUNCA inventes nombres que el contexto no proporcione.
+7. NO empieces description_what con "Una imagen de" / "Una foto que muestra" / "Se ve". Ve directo al sujeto y verbo.
+8. Devuelve UNICAMENTE el JSON valido, sin texto antes ni despues, sin markdown.
+
+EJEMPLO de salida bien hecha (input: foto de un grupo de amigos brindando en la terraza de un bar al atardecer):
+{
+  "description_what": "Cuatro amigos brindan con copas de cerveza sentados alrededor de una mesa de madera en la terraza de un bar urbano",
+  "description_mood": "Atmosfera relajada y festiva con luz calida de atardecer que tine las caras de naranja",
+  "shot_type": "plano_conjunto",
+  "camera_angle": "normal",
+  "camera_movement": null,
+  "people_framing": "grupo",
+  "mood": "festivo",
+  "lighting": "luz_dorada",
+  "space_type": "urbano",
+  "time_of_day": "atardecer",
+  "style": "documental",
+  "objects": ["copas de cerveza","mesa de madera","sillas","farolas","plantas"],
+  "actions": ["brindar","reir","conversar"],
+  "expressions": ["sonrisa","risa"],
+  "ocr_text": []
+}`;
+  }
+
+  /**
+   * Prompt de usuario: instruccion concreta + contexto opcional de la carpeta.
+   * Corto a proposito — el "que" (schema, reglas, ejemplo) vive en el system.
+   */
+  _buildUserPrompt(folderContext) {
+    const ctx = typeof folderContext === 'string' ? folderContext.trim() : '';
+    if (!ctx) {
+      return 'Describe esta imagen siguiendo el esquema. Devuelve solo el JSON.';
+    }
+    return `CONTEXTO DE LA CARPETA (usalo para acotar y precisar; NO inventes nada que no veas):
+${ctx}
+
+Describe esta imagen siguiendo el esquema. Devuelve solo el JSON.`;
   }
 
   /**
@@ -503,12 +580,27 @@ async function extractFrame(filePath, timestampSec, outPath) {
 function aggregateFrameEntries(frames, probe) {
   if (!Array.isArray(frames) || frames.length === 0) return null;
 
-  // description_what y description_mood: la más larga de cada uno
+  // description_what: del frame con mas senal semantica (mas entidades unicas
+  // entre objects+actions+expressions). Longitud sola enganaba: una frase
+  // larga llena de muletillas perdia frente a una corta y densa. En empate
+  // de senal, desempata por longitud (mas detalle).
+  // description_mood: la mas larga (no tiene contadores de entidades asociados).
+  const signalOf = (f) => {
+    const s = new Set();
+    for (const arr of [f?.semantics?.objects, f?.semantics?.actions, f?.semantics?.expressions]) {
+      if (Array.isArray(arr)) for (const v of arr) if (typeof v === 'string' && v.trim()) s.add(v.trim().toLowerCase());
+    }
+    return s.size;
+  };
+  const bestByDensity = (arr) => arr
+    .filter(f => typeof f?.description_what === 'string' && f.description_what.trim())
+    .sort((a, b) => (signalOf(b) - signalOf(a)) || (b.description_what.length - a.description_what.length))[0];
   const longest = (arr) => arr
     .map(v => v || '')
     .sort((a, b) => b.length - a.length)[0] || '';
-  const descWhat = longest(frames.map(f => f.description_what));
-  const descMood = longest(frames.map(f => f.description_mood));
+  const best = bestByDensity(frames);
+  const descWhat = best ? best.description_what : longest(frames.map(f => f?.description_what));
+  const descMood = longest(frames.map(f => f?.description_mood));
 
   // Moda (entrada mas frecuente, ignora nulls/vacios)
   const mode = (arr) => {

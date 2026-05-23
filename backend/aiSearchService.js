@@ -761,13 +761,32 @@ Respuesta JSON:`;
    * @param {string} query
    * @param {Array} mediaFiles
    * @param {Array} peopleHints - lista del registry/aggregate
+   * @param {Array<string>} mentionedPersonIds - person_ids resueltos
+   *   client-side desde menciones @ (modo natural). Se hace union con los
+   *   person_ids que extraiga el LLM y se aplica el mismo filtro estricto
+   *   en `scoreMediaFiles`. Las menciones explícitas son deterministas: si
+   *   están en `peopleHints`, sobreviven al filtro; si no, se descartan.
    */
-  async parseNaturalQuery(query, mediaFiles = [], peopleHints = []) {
+  async parseNaturalQuery(query, mediaFiles = [], peopleHints = [], mentionedPersonIds = []) {
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
       throw new Error('Query vacía o inválida');
     }
     const startTime = Date.now();
     const intent = await this.extractSearchIntent(query, peopleHints);
+
+    // Union de menciones explícitas (@persona resuelta en frontend) con los
+    // person_ids que el LLM haya extraído del texto natural. Mismo filtro
+    // contra `knownIds` que `normalizeIntent` aplica a los del LLM.
+    if (Array.isArray(mentionedPersonIds) && mentionedPersonIds.length > 0) {
+      const knownIds = new Set((peopleHints || []).map(p => p.person_id));
+      const validMentions = knownIds.size > 0
+        ? mentionedPersonIds.filter(id => typeof id === 'string' && knownIds.has(id))
+        : mentionedPersonIds.filter(id => typeof id === 'string' && id.trim());
+      if (validMentions.length > 0) {
+        const merged = new Set([...(intent.person_ids || []), ...validMentions]);
+        intent.person_ids = Array.from(merged);
+      }
+    }
 
     // === STAGE 1 ===
     const stage1Results = this.scoreMediaFiles(intent, mediaFiles);

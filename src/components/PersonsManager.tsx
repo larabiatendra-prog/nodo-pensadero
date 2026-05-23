@@ -150,10 +150,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   // loadFaceStatus dispara init() en background en el backend, asi que basta
   // con consultar el status periodicamente. Se detiene en cuanto ready=true.
   useEffect(() => {
-    if (faceStatus?.ready) return;
+    if (faceStatus?.ready || faceStatus?.unavailable) return;
     const interval = setInterval(() => { loadFaceStatus(); }, 3000);
     return () => clearInterval(interval);
-  }, [faceStatus?.ready]);
+  }, [faceStatus?.ready, faceStatus?.unavailable]);
 
   // Escuchar eventos de re-identificacion para actualizar la barra de progreso
   useEffect(() => {
@@ -442,18 +442,21 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     }
   }, [selectedPerson]);
 
-  async function loadPersons() {
+  async function loadPersons(): Promise<Person[]> {
     setLoading(true);
     setError(null);
     try {
       const res = await api.listPersonsRegistry();
       if (res.success && Array.isArray(res.data)) {
         setPersons(res.data);
+        return res.data;
       } else {
         setPersons([]);
+        return [];
       }
     } catch (err: any) {
       setError(err.message || 'Error cargando personas');
+      return [];
     } finally {
       setLoading(false);
     }
@@ -506,9 +509,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   async function handleUpdateAliases(person: Person, aliases: string[]) {
     try {
       await api.upsertPerson({ person_id: person.person_id, aliases });
-      await loadPersons();
+      const fresh = await loadPersons();
       if (selectedPerson?.person_id === person.person_id) {
-        const updated = (await api.listPersonsRegistry()).data?.find((p: Person) => p.person_id === person.person_id);
+        const updated = fresh.find(p => p.person_id === person.person_id);
         if (updated) setSelectedPerson(updated);
       }
     } catch (err: any) {
@@ -732,8 +735,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         }`}>
           {faceStatus.ready ? (
             <Brain className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5" />
-          ) : (
+          ) : faceStatus.unavailable ? (
             <AlertTriangle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+          ) : (
+            <Brain className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5 animate-pulse" />
           )}
           <div className="flex-1 text-sm">
             {faceStatus.ready ? (
@@ -748,11 +753,18 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   Al subir fotos, el sistema entrena automáticamente. Umbral de similitud: {faceStatus.threshold}.
                 </p>
               </>
-            ) : (
+            ) : faceStatus.unavailable ? (
               <>
                 <p className="font-medium text-marfil mb-0.5">Reconocimiento facial no disponible</p>
                 <p className="text-xs text-lavanda-archivo">
                   {faceStatus.lastError || 'Servicio Python (InsightFace) no responde. Puedes seguir registrando personas; el reconocimiento automático en los escaneos se activará cuando arregles el servicio.'}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium text-marfil mb-0.5">Cargando reconocimiento facial</p>
+                <p className="text-xs text-lavanda-archivo">
+                  Iniciando el servicio InsightFace. Tardará unos segundos.
                 </p>
               </>
             )}

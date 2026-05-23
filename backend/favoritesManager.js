@@ -6,10 +6,17 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+// Identificador canonico: path normalizado (lowercase + colapsar separadores).
+// Debe coincidir con src/utils/formatData.ts en el frontend.
+function normalizePath(p) {
+  if (!p) return '';
+  return String(p).replace(/\\+/g, '\\').trim().toLowerCase();
+}
+
 class FavoritesManager {
   constructor() {
     this.favoritesFile = path.join(__dirname, 'favorites_persistent.json');
-    this.favorites = new Map(); // fileId -> { fileId, filePath, addedAt, lastModified }
+    this.favorites = new Map(); // pathKey -> { fileId, filePath, addedAt, lastModified }
   }
 
   /**
@@ -22,10 +29,20 @@ class FavoritesManager {
         const data = await fs.readFile(this.favoritesFile, 'utf-8');
         const favoritesArray = JSON.parse(data);
 
-        // Convertir array a Map para mejor rendimiento
-        this.favorites = new Map(
-          favoritesArray.map(fav => [fav.fileId, fav])
-        );
+        // Convertir array a Map para mejor rendimiento.
+        // Clave canonica = path normalizado. Entradas legacy (md5 hex de 32 chars)
+        // se descartan en carga: el frontend reintroducira los favoritos con path.
+        this.favorites = new Map();
+        for (const fav of favoritesArray) {
+          const key = normalizePath(fav.fileId);
+          if (!key) continue;
+          const isLegacyMd5 = /^[a-f0-9]{32}$/i.test(fav.fileId) && !fav.fileId.includes('\\') && !fav.fileId.includes('/');
+          if (isLegacyMd5) {
+            console.log(`⚠️ Descartando favorito legacy md5: ${fav.fileId}`);
+            continue;
+          }
+          this.favorites.set(key, { ...fav, fileId: key });
+        }
 
         console.log(`✅ Favoritos cargados: ${this.favorites.size} archivos marcados como favoritos`);
         return this.favorites;
@@ -64,17 +81,20 @@ class FavoritesManager {
    */
   async addFavorite(fileId, filePath = null) {
     try {
+      const key = normalizePath(fileId);
+      if (!key) return false;
+
       const favoriteData = {
-        fileId,
-        filePath: filePath || 'unknown',
+        fileId: key,
+        filePath: filePath || fileId,
         addedAt: new Date().toISOString(),
         lastModified: new Date().toISOString()
       };
 
-      this.favorites.set(fileId, favoriteData);
+      this.favorites.set(key, favoriteData);
       await this.saveFavorites();
 
-      console.log(`❤️ Archivo marcado como favorito: ${fileId}`);
+      console.log(`❤️ Archivo marcado como favorito: ${key}`);
       return true;
     } catch (error) {
       console.error(`❌ Error añadiendo favorito ${fileId}:`, error);
@@ -87,13 +107,14 @@ class FavoritesManager {
    */
   async removeFavorite(fileId) {
     try {
-      const existed = this.favorites.delete(fileId);
+      const key = normalizePath(fileId);
+      const existed = this.favorites.delete(key);
       if (existed) {
         await this.saveFavorites();
-        console.log(`💔 Archivo eliminado de favoritos: ${fileId}`);
+        console.log(`💔 Archivo eliminado de favoritos: ${key}`);
         return true;
       } else {
-        console.log(`⚠️ Archivo no estaba en favoritos: ${fileId}`);
+        console.log(`⚠️ Archivo no estaba en favoritos: ${key}`);
         return false;
       }
     } catch (error) {
@@ -106,7 +127,14 @@ class FavoritesManager {
    * Verificar si un archivo es favorito
    */
   isFavorite(fileId) {
-    return this.favorites.has(fileId);
+    return this.favorites.has(normalizePath(fileId));
+  }
+
+  /**
+   * Obtener entrada de favorito (o null) por path
+   */
+  getFavorite(fileId) {
+    return this.favorites.get(normalizePath(fileId)) || null;
   }
 
   /**
@@ -170,13 +198,14 @@ class FavoritesManager {
   /**
    * Limpiar favoritos huérfanos (archivos que ya no existen)
    */
-  async cleanupOrphanedFavorites(existingFileIds) {
+  async cleanupOrphanedFavorites(existingPaths) {
     try {
+      const existingSet = new Set(existingPaths.map(p => normalizePath(p)));
       const orphanedIds = [];
 
-      for (const fileId of this.favorites.keys()) {
-        if (!existingFileIds.includes(fileId)) {
-          orphanedIds.push(fileId);
+      for (const key of this.favorites.keys()) {
+        if (!existingSet.has(key)) {
+          orphanedIds.push(key);
         }
       }
 
@@ -204,7 +233,7 @@ class FavoritesManager {
   applyFavoritesToFiles(mediaFiles) {
     const updatedFiles = mediaFiles.map(file => ({
       ...file,
-      isFavorite: this.isFavorite(file.id)
+      isFavorite: this.isFavorite(file.fullPath || file.path || '')
     }));
 
     const favoritesCount = updatedFiles.filter(f => f.isFavorite).length;

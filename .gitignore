@@ -51,6 +51,10 @@ backend/reports/
 # Datos del registry de personas (fotos personales, identidades)
 backend/data/
 
+# Backup estatico local de los archivos clave (copias de consulta, no codigo
+# activo). Se refresca a mano desde backend/ y src/; NO se versiona.
+Archivos más importantes/
+
 # Patrones genericos heredados
 embeddings_index.json
 media_cache.json

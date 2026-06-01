@@ -44,6 +44,17 @@ if not exist "%ROOT%backend\node_modules" (
     if %ERRORLEVEL% NEQ 0 exit /b 1
 )
 
+REM Guard defensivo: si backend\.env no existe, crearlo desde la plantilla NODO.
+REM Nunca pisa un .env existente. Si tampoco hay .env.nodo, avisa sin inventar valores.
+if not exist "%ROOT%backend\.env" (
+    if exist "%ROOT%backend\.env.nodo" (
+        copy /Y "%ROOT%backend\.env.nodo" "%ROOT%backend\.env" >nul
+        echo [OK] backend\.env creado desde .env.nodo
+    ) else (
+        echo [AVISO] Falta backend\.env y backend\.env.nodo. Pensadero usara defaults de codigo.
+    )
+)
+
 REM Reconstruir SIEMPRE antes de arrancar. Garantiza que se sirve el codigo
 REM actual y no un dist/ viejo. El coste (unos segundos) es preferible a servir
 REM una build obsoleta sin darse cuenta.

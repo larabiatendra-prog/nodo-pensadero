@@ -238,6 +238,19 @@ if %ERRORLEVEL% NEQ 0 (
 :models
 cd /d "%ROOT%"
 
+REM Crear backend\.env desde la plantilla NODO si no existe (plug-and-play).
+REM Nunca pisa un backend\.env existente.
+if not exist "%ROOT%backend\.env" (
+    if exist "%ROOT%backend\.env.nodo" (
+        copy /Y "%ROOT%backend\.env.nodo" "%ROOT%backend\.env" >nul
+        echo [OK] backend\.env creado desde .env.nodo
+    ) else (
+        echo [WARN] No existe backend\.env ni backend\.env.nodo. Pensadero usara defaults de codigo.
+    )
+) else (
+    echo [OK] backend\.env ya existe, no se toca.
+)
+
 REM ================================================================
 REM  [9/9] Modelos Ollama (config objetivo NODO)
 REM    - gemma3:12b        VLM principal de escaneo (calidad)

@@ -54,6 +54,8 @@ backend/data/
 # Backup estatico local de los archivos clave (copias de consulta, no codigo
 # activo). Se refresca a mano desde backend/ y src/; NO se versiona.
 Archivos más importantes/
+# Carpeta de contexto para iterar en ChatGPT (copia plana refrescable). Local.
+contexto-chatgpt/
 
 # Patrones genericos heredados
 embeddings_index.json

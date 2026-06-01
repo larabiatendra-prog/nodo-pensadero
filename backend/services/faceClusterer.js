@@ -269,6 +269,10 @@ async function clusterAll(opts = {}) {
           face_index: faceIdx,
           bbox: det.bbox,
           det_score: det.det_score || 0,
+          // frame_time: segundo del video donde se detecto esta cara. Necesario
+          // para recortar el frame correcto al generar thumbnails (en video las
+          // caras vienen de varios frames distintos, no de uno fijo al 30%).
+          frame_time: typeof det.frame_time === 'number' ? det.frame_time : null,
         };
 
         if (bestIdx >= 0 && bestSim >= threshold) {
@@ -646,6 +650,8 @@ async function seedClusterFromFace({ folder, basename, face_index, threshold, ro
           face_index: fIdx,
           bbox: det.bbox,
           det_score: score,
+          // frame_time: segundo del video de esta deteccion (ver clusterAll).
+          frame_time: typeof det.frame_time === 'number' ? det.frame_time : null,
         };
         facesList.push({ folder: catFolder, basename: bname, face_index: fIdx });
         count++;

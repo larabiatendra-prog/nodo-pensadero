@@ -49,10 +49,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
 
-  // Modal de contexto previo al escaneo. Cuando se abre, contiene el id de
-  // la ruta para la que estamos preparando el scan; al confirmar, lanza el
-  // escaneo real.
+  // Modal de contexto previo al escaneo individual (botón ✨/⚡ por ruta).
   const [contextModalPathId, setContextModalPathId] = useState<string | null>(null);
+  const [contextModalForce, setContextModalForce] = useState(false);
+
+  // Cola de rutas para el flujo "Escanear todas": el modal se muestra una
+  // vez por cada ruta activa antes de lanzar el scan-all.
+  const [scanAllQueue, setScanAllQueue] = useState<{ id: string; path: string }[] | null>(null);
+  const [scanAllQueueIdx, setScanAllQueueIdx] = useState(0);
+  const [scanAllForce, setScanAllForce] = useState(false);
 
   // Estado del bucle batch "Escanear todas las rutas". Solo uno activo a la vez.
   const [batchScan, setBatchScan] = useState<{ running: boolean; total: number; processed: number; force: boolean } | null>(null);
@@ -387,28 +392,14 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
-  /**
-   * Escaneo masivo: dispara la IA sobre TODAS las rutas activas en serie.
-   * Devuelve los jobIds en el orden de las rutas activas para pre-poblar
-   * el mapping jobId↔pathId y que el progreso por ruta se renderize
-   * correctamente.
-   */
-  const handleScanAll = async (force: boolean) => {
+  /** Llama la API y arranca el scan-all real. Se invoca tras pasar por todos los modales de contexto. */
+  const executeActualScanAll = async (force: boolean) => {
     if (batchScan?.running) return;
-    const activeCount = paths.filter(p => p.isActive).length;
-    if (activeCount === 0) {
-      alert('No hay rutas activas para escanear');
-      return;
-    }
-    if (force) {
-      if (!confirm(`¿Re-escanear con IA las ${activeCount} rutas activas (incluso ya catalogadas)? Puede tardar bastante.`)) return;
-    }
     try {
       const r: any = await api.startScanAll(force);
       if (!r.success) throw new Error(r.error || 'Error iniciando escaneo masivo');
       const jobIds: string[] = Array.isArray(r.jobIds) ? r.jobIds : [];
       const activePaths = paths.filter(p => p.isActive);
-      // Pre-poblar el ref antes de que lleguen eventos WS (mismo patron que handleAiScan)
       for (let i = 0; i < jobIds.length && i < activePaths.length; i++) {
         jobIdToPathIdRef.current.set(jobIds[i], activePaths[i].id);
       }
@@ -416,6 +407,34 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     } catch (err: any) {
       alert('Error: ' + (err.message || 'desconocido'));
     }
+  };
+
+  /** Avanza al siguiente modal de contexto en la cola; si era el último, lanza el scan. */
+  const advanceScanAllQueue = () => {
+    const nextIdx = scanAllQueueIdx + 1;
+    if (nextIdx >= (scanAllQueue?.length ?? 0)) {
+      setScanAllQueue(null);
+      setScanAllQueueIdx(0);
+      executeActualScanAll(scanAllForce);
+    } else {
+      setScanAllQueueIdx(nextIdx);
+    }
+  };
+
+  /**
+   * Escaneo masivo: abre el modal de contexto para cada ruta activa en serie
+   * antes de lanzar el scan-all.
+   */
+  const handleScanAll = (force: boolean) => {
+    if (batchScan?.running) return;
+    const activePathsList = paths.filter(p => p.isActive);
+    if (activePathsList.length === 0) {
+      alert('No hay rutas activas para escanear');
+      return;
+    }
+    setScanAllForce(force);
+    setScanAllQueue(activePathsList.map(p => ({ id: p.id, path: p.path })));
+    setScanAllQueueIdx(0);
   };
 
   const handleCancelAll = async () => {
@@ -713,7 +732,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
                   {/* Escanear con IA — abre el modal de contexto previo al scan */}
                   <button
-                    onClick={() => setContextModalPathId(path.id)}
+                    onClick={() => { setContextModalForce(false); setContextModalPathId(path.id); }}
                     disabled={
                       !path.isActive ||
                       aiScansByPath.get(path.id)?.status === 'running' ||
@@ -739,10 +758,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                   {/* Re-escanear FORZADO — re-procesa todas las imágenes aunque
                       ya estén catalogadas. Útil al cambiar el prompt del VLM. */}
                   <button
-                    onClick={() => {
-                      if (!confirm(`¿Re-escanear con IA TODAS las imágenes de "${path.path}", incluso las ya catalogadas? Puede tardar varios minutos.`)) return;
-                      handleAiScan(path.id, true);
-                    }}
+                    onClick={() => { setContextModalForce(true); setContextModalPathId(path.id); }}
                     disabled={
                       !path.isActive ||
                       aiScansByPath.get(path.id)?.status === 'running' ||
@@ -858,7 +874,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         </ul>
       </div>
 
-      {/* Modal de contexto previo al escaneo con IA */}
+      {/* Modal de contexto — escaneo individual (✨ o ⚡ por ruta) */}
       {contextModalPathId && (() => {
         const target = paths.find(p => p.id === contextModalPathId);
         if (!target) return null;
@@ -867,10 +883,31 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             isOpen={true}
             rootPath={target.path}
             onClose={() => setContextModalPathId(null)}
-            onConfirm={() => handleAiScan(contextModalPathId, false)}
+            onConfirm={() => {
+              handleAiScan(contextModalPathId, contextModalForce);
+              setContextModalPathId(null);
+            }}
           />
         );
       })()}
+
+      {/* Modal de contexto — flujo scan-all (una ruta por vez) */}
+      {scanAllQueue && scanAllQueueIdx < scanAllQueue.length && (
+        <ScanContextModal
+          isOpen={true}
+          rootPath={scanAllQueue[scanAllQueueIdx].path}
+          onClose={() => { setScanAllQueue(null); setScanAllQueueIdx(0); }}
+          onConfirm={advanceScanAllQueue}
+          onSkip={advanceScanAllQueue}
+          onSkipAll={() => {
+            setScanAllQueue(null);
+            setScanAllQueueIdx(0);
+            executeActualScanAll(scanAllForce);
+          }}
+          confirmLabel={scanAllQueueIdx === scanAllQueue.length - 1 ? 'Lanzar escaneo' : 'Siguiente ruta'}
+          stepInfo={{ current: scanAllQueueIdx + 1, total: scanAllQueue.length }}
+        />
+      )}
     </div>
   );
 }

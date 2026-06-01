@@ -193,8 +193,12 @@ app.use('/media', express.static(CONTENT_DIR, {
   etag: true,
   lastModified: true,
   setHeaders: (res, p) => {
-    if (p.endsWith('.mp4') || p.endsWith('.mov') || p.endsWith('.avi')) {
+    const VIDEO_SERVE_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
+    const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
+    if (VIDEO_SERVE_EXTS.has(ext)) {
       res.set('Content-Type', 'video/mp4');
+    } else if (p.endsWith('.webm')) {
+      res.set('Content-Type', 'video/webm');
     } else if (p.endsWith('.mp3') || p.endsWith('.wav')) {
       res.set('Content-Type', 'audio/mpeg');
     } else if (p.endsWith('.jpg') || p.endsWith('.jpeg')) {

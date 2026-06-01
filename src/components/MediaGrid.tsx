@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Download, Heart, MoreHorizontal, Clock, Eye, Plus, X, FolderOpen } from 'lucide-react';
+import { Play, Download, Heart, MoreHorizontal, Clock, Eye, Plus, X, FolderOpen, Sparkles } from 'lucide-react';
 import { MediaFile, VideoItem } from '../types';
 import { formatDate } from '../utils/dateUtils';
 import Masonry from 'react-masonry-css';
@@ -23,6 +23,8 @@ interface MediaGridProps {
   onAddToCollection?: (fileId: string) => void; // New callback for adding to collection
   onRemoveFromCollection?: (fileId: string) => void; // New callback for removing from collection
   onOpenPath?: (fileId: string) => void; // New callback for opening file path (admin only)
+  onScanFile?: (file: MediaFile) => void; // Escaneo visual de un solo archivo (boton de la tarjeta)
+  scanningFiles?: Set<string>; // IDs de archivos con escaneo visual en curso
   downloadingFiles?: Set<string>; // IDs of files currently being downloaded
   isSelectionMode?: boolean; // Whether selection mode is active
   selectedFiles?: Set<string>; // IDs of selected files
@@ -45,6 +47,8 @@ export default function MediaGrid({
   onAddToCollection,
   onRemoveFromCollection,
   onOpenPath,
+  onScanFile,
+  scanningFiles = new Set(),
   downloadingFiles = new Set(),
   isSelectionMode = false,
   selectedFiles = new Set(),
@@ -164,6 +168,16 @@ export default function MediaGrid({
             {/* {isAdmin && onOpenPath && (
               <button onClick={(e) => { e.stopPropagation(); onOpenPath(file.id); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-green-500/20 text-white hover:bg-green-500/30" title="Abrir ruta"><FolderOpen className="w-4 h-4" /></button>
             )} */}
+            {onScanFile && file.type !== 'audio' && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onScanFile(file); }}
+                disabled={scanningFiles.has(file.id)}
+                className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${scanningFiles.has(file.id) ? 'bg-lavanda/30 text-white cursor-wait' : 'bg-lavanda/20 text-white hover:bg-lavanda/30'}`}
+                title={scanningFiles.has(file.id) ? 'Escaneando...' : (file.visual_description ? 'Re-escanear visualmente (IA)' : 'Escanear visualmente (IA)')}
+              >
+                {scanningFiles.has(file.id) ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              </button>
+            )}
             <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} disabled={downloadingFiles.has(file.id)} className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${downloadingFiles.has(file.id) ? 'bg-bruma/30 text-white cursor-not-allowed' : 'bg-bruma/20 text-white hover:bg-bruma/30'}`} title="Descargar">
               {downloadingFiles.has(file.id) ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Download className="w-4 h-4" />}
             </button>

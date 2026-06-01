@@ -162,6 +162,56 @@ module.exports = function createScanRoutes(deps) {
     res.json({ success: true, jobId, status: 'started' });
   });
 
+  // === SCAN SINGLE FILE ===
+  // body: { path: string } — escanea UN archivo (boton de la tarjeta del grid).
+  // Sincrono: espera a que termine y refresca la memoria, para que el frontend
+  // pueda pedir la metadata actualizada de ese archivo justo despues.
+  router.post('/scan/file', async (req, res) => {
+    const { path: filePath } = req.body || {};
+    if (!filePath || typeof filePath !== 'string') {
+      return res.status(400).json({ success: false, error: 'path requerido' });
+    }
+
+    // Guard: no escanear un archivo si hay un job de escaneo corriendo. Dos
+    // escaneos sobre la misma carpeta hacen read-modify-write del mismo
+    // _pensadero.json y se pisarian (perdida de entradas). El daemon VLM ademas
+    // es serial, asi que no se pierde paralelismo real.
+    const running = (scanOrchestrator.listJobs() || []).some(j => j.status === 'running');
+    if (running || batchState.running) {
+      return res.status(409).json({
+        success: false,
+        error: 'Hay un escaneo en curso. Espera a que termine para escanear este archivo.',
+      });
+    }
+
+    // Comprobar que el VLM está disponible — fallar rápido si no.
+    try {
+      const health = await getScanner().healthCheck();
+      if (!health.ollamaRunning) {
+        return res.status(503).json({ success: false, error: 'Ollama no disponible. Comprueba que el servicio está corriendo.' });
+      }
+      if (!health.modelAvailable) {
+        return res.status(503).json({ success: false, error: `Modelo ${health.model} no encontrado. Ejecuta: ollama pull ${health.model}` });
+      }
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+
+    try {
+      const result = await scanOrchestrator.scanSingleFile(filePath, {
+        broadcastProgress: broadcastProgress || (() => {}),
+      });
+      // Refrescar memoria para que GET /files/:id devuelva la metadata nueva.
+      if (typeof syncFiles === 'function' && result.written > 0) {
+        try { await syncFiles(); } catch (e) { console.warn('[scan-file] post-sync falló:', e.message); }
+      }
+      res.json({ success: true, data: result });
+    } catch (err) {
+      console.error('[scan-file] error:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // === JOBS LIST ===
   router.get('/scan/jobs', (req, res) => {
     res.json({ success: true, data: scanOrchestrator.listJobs() });

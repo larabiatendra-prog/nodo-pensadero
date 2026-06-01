@@ -132,6 +132,7 @@ Para cerrar Pensadero: cierra la ventana negra que dice "Pensadero".
 | Búsqueda natural devuelve error 503 | Falta `qwen2.5:14b-instruct` o Ollama no corre | Doctor dirá cuál es |
 | Pensadero abre pero no detecta caras | Python o venv no instalados | Doctor lo dirá. Solución: relanza instalador |
 | Pensadero no escanea vídeos | Falta ffmpeg | Doctor lo dirá. Solución: relanza instalador |
+| InsightFace lento / CPU al 100% aunque haya GPU | `.venv` copiado de otro PC (rutas rotas) o onnxruntime sin CUDA | Doctor muestra `[WARN] onnxruntime sin CUDAExecutionProvider`. Solución: eliminar `backend/python/.venv/`, relanzar instalador. Si persiste: `backend\python\.venv\Scripts\python.exe -m pip install onnxruntime-gpu --upgrade` |
 | Puerto 5000 o 5173 ocupado | Otra app usándolos | Cierra esa app, o edita `backend/.env` para cambiar PORT |
 | El navegador abre pero pantalla blanca | Backend tarda en arrancar | Espera 10 segundos y refresca con F5 |
 | "No se ven mis fotos de personas" | Carpeta `backend/data/people/<id>/` vacía | Sube fotos desde la UI → Personas |
@@ -310,3 +311,4 @@ Todo lo que **no** se versiona en git está en `.gitignore`. Nada va a la nube.
 | 2026-05-15 | P1+P2+P5 — InsightFace, vídeo con ffmpeg, code-splitting |
 | 2026-05-23 | Instalador unificado — Install.bat bootstrap completo (winget + ollama pull) + Doctor.bat de diagnóstico |
 | 2026-05-23 | Mejoras prompt VLM — system role, format:json, few-shot, definiciones shot_type, pre-resize sharp, num_predict 900, agregador vídeo por densidad semántica. Selector front reconoce internvl3. Nueva sección "Optimizar el escaneo visual en NODO". |
+| 2026-05-25 | Doctor.bat: check CUDAExecutionProvider en onnxruntime (detecta GPU infrautilizada por .venv roto o Blackwell SM_100). Install.bat: aviso CUDA post-paso 8. GUIA: fila troubleshooting CPU bottleneck. |

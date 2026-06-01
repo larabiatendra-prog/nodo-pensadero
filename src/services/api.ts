@@ -527,6 +527,15 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any[]>>(`${API_BASE_URL}/scan/jobs`);
   }
 
+  // Escanea visualmente UN solo archivo (boton de la tarjeta). Sincrono: la
+  // respuesta llega cuando el escaneo ha terminado y la memoria esta refrescada.
+  async scanFile(path: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ written: number; done: number }>>(
+      `${API_BASE_URL}/scan/file`,
+      { method: 'POST', body: JSON.stringify({ path }) }
+    );
+  }
+
   async scanStatus(jobId: string) {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan/status/${jobId}`);
   }
@@ -658,6 +667,16 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/train`, {
       method: 'POST',
     });
+  }
+
+  async assignFace(personId: string, payload: { folder: string; basename: string; face_index: number }) {
+    return this.fetchWithErrorHandling<ApiResponse<{ person_id: string; display_name: string }>>(
+      `${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/assign-face`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
   }
 
   async faceServiceStatus() {

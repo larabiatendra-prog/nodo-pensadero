@@ -314,6 +314,128 @@ module.exports = function createPersonsManageRoutes(deps) {
     }
   });
 
+  // POST — asignar manualmente una cara desconocida a una persona existente.
+  // Marca la deteccion en el _pensadero.json, fusiona el embedding en el
+  // centroid de la persona y dispara re-identificacion global en background.
+  router.post('/persons/registry/:id/assign-face', async (req, res) => {
+    const personId = req.params.id;
+    if (!assertValidPersonId(personId)) {
+      return res.status(400).json({ success: false, error: 'person_id invalido' });
+    }
+    const { folder, basename, face_index } = req.body || {};
+    if (!folder || !basename || typeof face_index !== 'number') {
+      return res.status(400).json({ success: false, error: 'folder, basename y face_index son requeridos' });
+    }
+
+    const state = peopleRegistry.getState();
+    if (!state.personIds.includes(personId)) {
+      return res.status(404).json({ success: false, error: 'persona no encontrada en el registry' });
+    }
+    const displayName = peopleRegistry.getDisplayName(personId) || personId;
+
+    const catalogPath = path.join(folder, '_pensadero.json');
+    let catalog;
+    try {
+      const raw = await fsp.readFile(catalogPath, 'utf-8');
+      catalog = JSON.parse(raw);
+    } catch (err) {
+      return res.status(404).json({ success: false, error: `catalogo no encontrado: ${err.message}` });
+    }
+
+    const photos = catalog.photos || catalog.clips || {};
+    const entry = photos[basename];
+    if (!entry) {
+      return res.status(404).json({ success: false, error: `entrada no encontrada: ${basename}` });
+    }
+    const detections = entry?.identity?.detections;
+    if (!Array.isArray(detections) || face_index < 0 || face_index >= detections.length) {
+      return res.status(400).json({ success: false, error: 'face_index fuera de rango o sin detecciones' });
+    }
+
+    const det = detections[face_index];
+    if (!det.embedding_b64) {
+      return res.status(400).json({ success: false, error: 'esta deteccion no tiene embedding (re-scan necesario)' });
+    }
+
+    // Marcar deteccion como asignada manualmente
+    det.person_id = personId;
+    det.display_name = displayName;
+    det.confidence = 1.0;
+    det.assigned_manually = true;
+
+    // Recalcular identity.faces deduplicado por persona (mayor confidence)
+    const byId = new Map();
+    for (const d of detections) {
+      if (!d.person_id) continue;
+      const prev = byId.get(d.person_id);
+      if (!prev || (d.confidence || 0) > (prev.confidence || 0)) {
+        byId.set(d.person_id, {
+          person_id: d.person_id,
+          display_name: d.display_name || peopleRegistry.getDisplayName(d.person_id) || d.person_id,
+          confidence: d.confidence || 0,
+        });
+      }
+    }
+    entry.identity.faces = Array.from(byId.values());
+    entry.identity.face_count = detections.length;
+
+    try {
+      await fsp.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
+    } catch (err) {
+      return res.status(500).json({ success: false, error: `error escribiendo catalogo: ${err.message}` });
+    }
+
+    // Fusionar embedding en el centroid de la persona (media ponderada + re-L2-normalize)
+    const personDir = getPersonDir(personId);
+    if (personDir) {
+      const embFile = path.join(personDir, 'embeddings.json');
+      try {
+        const raw = await fsp.readFile(embFile, 'utf-8');
+        const existing = JSON.parse(raw);
+        if (Array.isArray(existing.centroid) && existing.centroid.length === 512) {
+          const newEmb = decodeEmbedding(det.embedding_b64);
+          if (newEmb && newEmb.length === 512) {
+            const n = existing.count || 1;
+            const blended = new Float32Array(512);
+            for (let i = 0; i < 512; i++) blended[i] = (existing.centroid[i] * n + newEmb[i]) / (n + 1);
+            let norm = 0;
+            for (let i = 0; i < 512; i++) norm += blended[i] * blended[i];
+            norm = Math.sqrt(norm);
+            if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
+            existing.centroid = Array.from(blended);
+            existing.count = n + 1;
+            existing.trained_at = new Date().toISOString();
+            await fsp.writeFile(embFile, JSON.stringify(existing), 'utf-8');
+            // Invalidar cache en faceService para que el proximo identifyFaces use el centroid actualizado
+            getFaceService().embeddingsCache.delete(personId);
+          }
+        }
+      } catch {
+        // Sin embeddings.json: persona no entrenada. Se omite el blend sin error.
+      }
+    }
+
+    // Invalidar cluster cache (la cara ya no es desconocida)
+    faceClusterer.invalidateCache();
+
+    // Re-identificacion global en background para que otras apariciones sin matchear se asocien
+    setImmediate(async () => {
+      try {
+        const rootDirs = await getActiveRoots();
+        if (rootDirs.length > 0) {
+          await faceReidentifier.reidentifyAll({
+            rootDirs,
+            broadcastProgress: broadcastProgress || (() => {}),
+          });
+        }
+      } catch (err) {
+        console.error('[assign-face] error en re-identify background:', err);
+      }
+    });
+
+    res.json({ success: true, person_id: personId, display_name: displayName });
+  });
+
   // GET — estado del servicio de reconocimiento facial.
   // Si el daemon no esta ready y no fallo (unavailable=false), dispara init()
   // en background — el frontend hara polling y vera ready=true cuando el
@@ -511,25 +633,31 @@ module.exports = function createPersonsManageRoutes(deps) {
     res.json({ success: true, data: publicCluster(merged) });
   });
 
-  const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg']);
+  const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
 
-  // Extrae un frame representativo (~30% de duracion) de un video a un temp jpg.
-  // Replica la logica de scanOrchestrator.extractRepresentativeFrame para que el
-  // bbox guardado por el scan coincida con el frame recortado aqui.
-  async function extractVideoFrame(videoPath) {
+  // Extrae un frame de un video a un temp jpg para recortar una cara.
+  // `frameTime` (segundo) debe ser el momento donde se detecto la cara (lo
+  // persiste el scan en det.frame_time). Si no se pasa (catalogos antiguos sin
+  // frame_time), cae al 30% de duracion como hacia el scan legacy.
+  async function extractVideoFrame(videoPath, frameTime = null) {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pensadero-clusterframe-'));
     const outPath = path.join(tmpDir, 'rep.jpg');
-    // Probar primero con duration via ffprobe simple, sino fallback a 5s
-    const seekSec = await new Promise(resolve => {
-      const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoPath]);
-      let buf = '';
-      ff.stdout.on('data', d => { buf += d.toString(); });
-      ff.on('close', () => {
-        const dur = parseFloat(buf.trim());
-        resolve(isFinite(dur) && dur > 1 ? dur * 0.3 : 5);
+    let seekSec;
+    if (typeof frameTime === 'number' && frameTime >= 0) {
+      seekSec = frameTime;
+    } else {
+      // Fallback: 30% de duracion via ffprobe, o 5s si falla.
+      seekSec = await new Promise(resolve => {
+        const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoPath]);
+        let buf = '';
+        ff.stdout.on('data', d => { buf += d.toString(); });
+        ff.on('close', () => {
+          const dur = parseFloat(buf.trim());
+          resolve(isFinite(dur) && dur > 1 ? dur * 0.3 : 5);
+        });
+        ff.on('error', () => resolve(5));
       });
-      ff.on('error', () => resolve(5));
-    });
+    }
     return new Promise((resolve) => {
       const p = spawn('ffmpeg', ['-y', '-ss', String(seekSec), '-i', videoPath, '-frames:v', '1', '-q:v', '3', outPath], { stdio: 'ignore' });
       const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch {} resolve(null); }, 30_000);
@@ -574,7 +702,7 @@ module.exports = function createPersonsManageRoutes(deps) {
     let tmpToCleanup = null;
     try {
       if (VIDEO_EXTS.has(ext)) {
-        const framePath = await extractVideoFrame(srcPath);
+        const framePath = await extractVideoFrame(srcPath, typeof sample.frame_time === 'number' ? sample.frame_time : null);
         if (!framePath) return res.status(500).json({ success: false, error: 'no se pudo extraer frame del video' });
         cropSrc = framePath;
         tmpToCleanup = framePath;
@@ -707,7 +835,7 @@ module.exports = function createPersonsManageRoutes(deps) {
       let tmpToCleanup = null;
       try {
         if (VIDEO_EXTS.has(ext)) {
-          const framePath = await extractVideoFrame(srcPath);
+          const framePath = await extractVideoFrame(srcPath, typeof bestSample.frame_time === 'number' ? bestSample.frame_time : null);
           if (framePath) { cropSrc = framePath; tmpToCleanup = framePath; }
         }
         const buf = await cropFaceFromImage(cropSrc, bestSample.bbox, 400);

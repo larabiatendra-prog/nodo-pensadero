@@ -26,6 +26,10 @@ const DEFAULT_VLM_MODEL = 'qwen2.5vl:7b';
 const PER_IMAGE_TIMEOUT_MS = parseInt(process.env.VLM_TIMEOUT_MS || '180000', 10); // 180s por imagen (margen para fotos grandes + modelos grandes en cold-start)
 const VIDEO_FRAMES_PER_SCAN = parseInt(process.env.VLM_VIDEO_FRAMES || '3', 10); // 3 frames es buen balance calidad/coste
 const VIDEO_MAX_FRAMES = 6;
+// num_predict para la llamada multi-imagen de video: mas alto que el de foto
+// (900) porque la descripcion temporal (que ocurre a lo largo del clip) + todos
+// los campos del schema necesitan mas tokens antes de cerrar el JSON.
+const VIDEO_NUM_PREDICT = parseInt(process.env.VLM_VIDEO_NUM_PREDICT || '1400', 10);
 // Lado mayor objetivo al pre-redimensionar la imagen antes de enviarla al VLM.
 // La mayoria de encoders de vision aceptan hasta ~1568px y reescalan internamente
 // con perdida si reciben mas. Controlandolo nosotros con sharp (Lanczos) preservamos
@@ -50,12 +54,13 @@ class VisualScanService {
    * @param {string} [opts.folderContext] Texto a inyectar antes del esquema
    *   para acotar el dominio (qué es la carpeta, quién aparece, etc.).
    */
-  async scanImage(filePath, opts = {}) {
-    // Pre-resize con sharp: encoders de vision esperan ~1024-1568px lado mayor.
-    // Mejor controlar el resize nosotros (Lanczos) que dejar al modelo aplicar
-    // un downscale agresivo que pierde detalle. Si falla (formato raro), caemos
-    // al buffer original para no abortar el archivo.
-    let base64;
+  /**
+   * Pre-resize con sharp + base64. Encoders de vision esperan ~1024-1568px
+   * lado mayor; controlar el resize nosotros (Lanczos) preserva mas detalle
+   * que dejar al modelo aplicar un downscale agresivo. Si sharp falla (formato
+   * raro), cae al buffer original para no abortar el archivo.
+   */
+  async _imageToBase64(filePath) {
     try {
       const resized = await sharp(filePath, { failOn: 'none' })
         .rotate() // respetar orientacion EXIF
@@ -67,14 +72,19 @@ class VisualScanService {
         })
         .jpeg({ quality: 88, mozjpeg: true })
         .toBuffer();
-      base64 = resized.toString('base64');
+      return resized.toString('base64');
     } catch (err) {
-      try {
-        const buffer = await fs.readFile(filePath);
-        base64 = buffer.toString('base64');
-      } catch (err2) {
-        throw new Error(`No se pudo leer ${filePath}: ${err2.message}`);
-      }
+      const buffer = await fs.readFile(filePath);
+      return buffer.toString('base64');
+    }
+  }
+
+  async scanImage(filePath, opts = {}) {
+    let base64;
+    try {
+      base64 = await this._imageToBase64(filePath);
+    } catch (err2) {
+      throw new Error(`No se pudo leer ${filePath}: ${err2.message}`);
     }
 
     const systemPrompt = this._buildSystemPrompt();
@@ -157,38 +167,125 @@ class VisualScanService {
     }
 
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pensadero-frames-'));
-    const framePaths = [];
+    // El orquestador reutiliza estos frames (InsightFace, color, CLIP) y luego
+    // llama a cleanup(). NO borramos aqui salvo que falle la extraccion.
+    const cleanup = async () => {
+      try { await fs.rm(tempDir, { recursive: true, force: true }); } catch {}
+    };
+
+    const frames = []; // [{ path, timestamp }]
     try {
       for (let i = 0; i < timestamps.length; i++) {
         const out = path.join(tempDir, `frame_${i}.jpg`);
         const ok = await extractFrame(filePath, timestamps[i], out);
-        if (ok) framePaths.push(out);
+        if (ok) frames.push({ path: out, timestamp: timestamps[i] });
       }
 
-      if (framePaths.length === 0) {
+      if (frames.length === 0) {
         throw new Error('No se pudo extraer ningún frame del vídeo');
       }
 
-      // 3. Escanear cada frame con el VLM (pasando el mismo contexto de carpeta)
-      const frameResults = [];
-      for (const fp of framePaths) {
-        try {
-          const entry = await this.scanImage(fp, { folderContext: opts.folderContext });
-          frameResults.push(entry);
-        } catch (err) {
-          console.warn(`[scanVideo] frame ${path.basename(fp)}: ${err.message}`);
+      // 3. VLM: UNA sola llamada multi-imagen con todos los frames en orden
+      //    cronológico. Esto permite al modelo razonar sobre la SECUENCIA
+      //    (movimiento de cámara, acciones a lo largo del clip, cambios de
+      //    escena) en vez de describir cada frame como foto aislada.
+      let entry = null;
+      try {
+        entry = await this._scanVideoFrames(frames.map(f => f.path), {
+          folderContext: opts.folderContext,
+          durationSec: probe.duration,
+        });
+      } catch (err) {
+        console.warn(`[scanVideo] multi-imagen falló (${path.basename(filePath)}): ${err.message}. Fallback per-frame.`);
+      }
+
+      // 4. Fallback: si la llamada multi-imagen falló o devolvió vacío (modelo
+      //    que no soporta multi-imagen), escanear frame a frame y agregar.
+      if (!entry || !entry.description_what) {
+        const frameResults = [];
+        for (const f of frames) {
+          try {
+            const e = await this.scanImage(f.path, { folderContext: opts.folderContext });
+            frameResults.push(e);
+          } catch (err) {
+            console.warn(`[scanVideo] frame ${path.basename(f.path)}: ${err.message}`);
+          }
         }
+        if (frameResults.length === 0) {
+          throw new Error('Ningún frame pudo ser descrito por el VLM');
+        }
+        entry = aggregateFrameEntries(frameResults, probe);
+      } else {
+        // technical lo aporta ffprobe (el VLM no conoce duración/fps/codec).
+        entry.technical = {
+          ...(entry.technical || {}),
+          duration: probe.duration || null,
+          resolution: `${probe.width}x${probe.height}`,
+          fps: probe.fps || null,
+          codec: probe.codec || null,
+          // movement_type heurístico legacy: hay accion si el VLM listo acciones.
+          movement_type: (entry.semantics?.actions?.length > 0) ? 'moving' : 'estatico',
+        };
       }
 
-      if (frameResults.length === 0) {
-        throw new Error('Ningún frame pudo ser descrito por el VLM');
-      }
-
-      return aggregateFrameEntries(frameResults, probe);
-    } finally {
-      // Limpieza de temporales (best-effort)
-      try { await fs.rm(tempDir, { recursive: true, force: true }); } catch {}
+      return { entry, frames, cleanup };
+    } catch (err) {
+      await cleanup();
+      throw err;
     }
+  }
+
+  /**
+   * Una sola llamada al VLM con N frames de un vídeo en orden cronológico.
+   * Devuelve un entry normalizado describiendo el clip como un todo temporal.
+   * Requiere un modelo que soporte multi-imagen (qwen2.5vl, internvl3, gemma3,
+   * minicpm-v...). Si el modelo no lo soporta, la respuesta será pobre o fallará
+   * y scanVideo cae al modo per-frame.
+   */
+  async _scanVideoFrames(framePaths, opts = {}) {
+    const images = [];
+    for (const fp of framePaths) {
+      images.push(await this._imageToBase64(fp));
+    }
+
+    const systemPrompt = this._buildVideoSystemPrompt();
+    const userPrompt = this._buildVideoUserPrompt(opts.folderContext, framePaths.length, opts.durationSec);
+
+    // Timeout escalado: procesar N imágenes en una llamada tarda ~N veces más
+    // que una sola. Cap a 600s para no colgar el batch indefinidamente.
+    const timeoutMs = Math.min(PER_IMAGE_TIMEOUT_MS * framePaths.length, 600_000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let response;
+    try {
+      response = await this.ollama.chat({
+        model: this.model,
+        format: 'json',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt, images },
+        ],
+        stream: false,
+        options: {
+          temperature: 0.2,
+          num_predict: VIDEO_NUM_PREDICT,
+        },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const msg = (err && err.message) || String(err);
+      if (controller.signal.aborted || /aborted|timeout/i.test(msg)) {
+        throw new Error(`VLM timeout (${timeoutMs}ms) en vídeo multi-frame`);
+      }
+      throw new Error(`VLM multi-frame falló: ${msg}`);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const text = (response && response.message && response.message.content || '').trim();
+    const parsed = this._extractJson(text);
+    return this._normalizeEntry(parsed, framePaths[0]);
   }
 
   /**
@@ -334,6 +431,100 @@ Describe esta imagen siguiendo el esquema. Devuelve solo el JSON.`;
   }
 
   /**
+   * Prompt de sistema para VIDEO multi-frame. Igual schema que fotos pero la
+   * tarea cambia: recibes varios frames CRONOLOGICOS del MISMO clip y debes
+   * describir el video como un TODO TEMPORAL — que ocurre a lo largo del clip,
+   * como se mueve la camara (comparando frames), que acciones suceden, y si hay
+   * cambios de escena. Anade el campo booleano scene_changes.
+   */
+  _buildVideoSystemPrompt() {
+    return `Eres un asistente experto en describir VIDEOS para un archivo personal indexable y buscable en lenguaje natural espanol. Recibes VARIOS frames extraidos en ORDEN CRONOLOGICO del MISMO clip (el primer frame es el inicio, el ultimo es el final). NO los describas por separado: razona sobre la SECUENCIA y describe el video como un todo.
+
+CLAVE — lo que solo se puede deducir viendo varios frames juntos:
+- camera_movement: compara la posicion de los objetos/encuadre entre frames. Si el encuadre se desplaza lateralmente es "panoramica"/"travelling"; si se acerca/aleja es "zoom_in"/"zoom_out"; si tiembla es "handheld"; si todo queda igual es "fijo".
+- actions: que ACCIONES ocurren a lo largo del clip (no lo que hay en un frame). Ej: "entrar por la puerta", "abrazarse", "caminar".
+- scene_changes: true si el clip salta entre escenas/planos distintos (cambio brusco de lugar o encuadre entre frames); false si es una toma continua.
+- description_what: NARRA lo que sucede en el clip de principio a fin, no un instante congelado.
+
+ESQUEMA EXACTO (rellena TODOS los campos; usa null en los enums solo si realmente no aplica):
+{
+  "description_what": "frase en ESPAÑOL narrando QUE ocurre en el clip (sujetos concretos, verbos de accion, evolucion). Rica en sustantivos y verbos. Evita 'video', 'clip', 'escena' como muletilla.",
+  "description_mood": "frase en ESPAÑOL describiendo el AMBIENTE (luz, atmosfera, sensacion). Concisa pero evocadora.",
+  "shot_type": uno de los valores listados abajo o null,
+  "camera_angle": "normal" | "picado" | "contrapicado" | "cenital" | "nadir" | null,
+  "camera_movement": "fijo" | "panoramica" | "travelling" | "dolly" | "zoom_in" | "zoom_out" | "handheld" | "steady" | null,
+  "scene_changes": true | false,
+  "people_framing": "ninguno" | "individual" | "pareja" | "grupo" | "multitud",
+  "mood": "alegre" | "neutro" | "serio" | "intimo" | "festivo" | "melancolico" | "energico" | "formal" | "contemplativo" | null,
+  "lighting": "luz_natural" | "luz_dorada" | "contraluz" | "interior" | "neon" | "nocturna" | "mixta" | null,
+  "space_type": "interior" | "exterior" | "urbano" | "naturaleza" | "oficina" | "escenario" | "hogar" | "transito" | null,
+  "time_of_day": "amanecer" | "manana" | "mediodia" | "tarde" | "atardecer" | "noche" | "indeterminado" | null,
+  "style": "documental" | "retrato" | "paisaje" | "accion" | "producto" | "ambiente" | "abstracto" | null,
+  "objects": ["sustantivos simples en español", max 10],
+  "actions": ["verbos en infinitivo o sustantivos en español describiendo lo que pasa en el clip", max 5],
+  "expressions": ["sonrisa","serio","neutro","sorpresa",...], max 5, vacio si nadie,
+  "ocr_text": ["texto visible legible",...], max 10, vacio si nada
+}
+
+DEFINICIONES de shot_type (siempre intentar rellenar — solo null si es imposible decidir):
+- plano_general: encuadre muy amplio, sujeto pequeno respecto al entorno (paisaje, multitud)
+- plano_conjunto: varias personas o sujeto entero con su entorno cercano
+- plano_americano: persona de las rodillas para arriba
+- plano_medio: persona de la cintura para arriba
+- plano_medio_corto: persona del pecho para arriba
+- primer_plano: cara y hombros (la cara llena el encuadre)
+- plano_detalle: parte concreta de un objeto o cuerpo (mano, ojo, textura)
+
+REGLAS:
+1. description_what y description_mood: 2 frases concisas en español. NO inventes lo que no veas.
+2. NO inferir edad ni genero de las personas — otro modulo lo hace. Solo people_framing como conteo aproximado.
+3. camera_movement: dedúcelo COMPARANDO frames. Si solo hubiera un frame, devuelve "fijo".
+4. scene_changes: true solo si ves un salto claro de escena/plano entre frames.
+5. ocr_text: solo texto legible visible. NO inventes texto.
+6. NO incluyas palette/dominant_colors — el color lo extrae otro modulo.
+7. Si recibes CONTEXTO DE LA CARPETA, usalo para precisar. NUNCA inventes nombres que el contexto no proporcione.
+8. NO empieces description_what con "Un video de" / "Se ve". Ve directo al sujeto y la accion.
+9. Devuelve UNICAMENTE el JSON valido, sin texto antes ni despues, sin markdown.
+
+EJEMPLO de salida bien hecha (input: 3 frames de una mujer que entra en un salon, se sienta en el sofa y abre un portatil; la camara la sigue):
+{
+  "description_what": "Una mujer entra en el salon, cruza la habitacion y se sienta en el sofa donde abre un portatil para ponerse a trabajar",
+  "description_mood": "Ambiente domestico y tranquilo con luz natural suave entrando por la ventana",
+  "shot_type": "plano_conjunto",
+  "camera_angle": "normal",
+  "camera_movement": "panoramica",
+  "scene_changes": false,
+  "people_framing": "individual",
+  "mood": "contemplativo",
+  "lighting": "luz_natural",
+  "space_type": "hogar",
+  "time_of_day": "manana",
+  "style": "documental",
+  "objects": ["sofa","portatil","ventana","mesa","cojines"],
+  "actions": ["entrar","caminar","sentarse","abrir portatil"],
+  "expressions": ["neutro"],
+  "ocr_text": []
+}`;
+  }
+
+  /**
+   * Prompt de usuario para video: indica cuantos frames hay y en que orden,
+   * mas el contexto opcional de la carpeta.
+   */
+  _buildVideoUserPrompt(folderContext, frameCount, durationSec) {
+    const ctx = typeof folderContext === 'string' ? folderContext.trim() : '';
+    const dur = (typeof durationSec === 'number' && durationSec > 0)
+      ? ` El clip dura ~${Math.round(durationSec)}s.`
+      : '';
+    const head = `Estos son ${frameCount} frames extraidos en orden cronologico del mismo video (frame 1 = inicio, frame ${frameCount} = final).${dur} Describe el video COMPLETO como secuencia temporal siguiendo el esquema. Devuelve solo el JSON.`;
+    if (!ctx) return head;
+    return `CONTEXTO DE LA CARPETA (usalo para acotar y precisar; NO inventes nada que no veas):
+${ctx}
+
+${head}`;
+  }
+
+  /**
    * Extrae el primer bloque JSON de la respuesta del LLM. Tolera texto
    * residual antes o después.
    */
@@ -395,6 +586,8 @@ Describe esta imagen siguiendo el esquema. Devuelve solo el JSON.`;
     const cameraAngle = enumVal(r.camera_angle, ['normal','picado','contrapicado','cenital','nadir']);
     const cameraMovement = enumVal(r.camera_movement, ['fijo','panoramica','travelling','dolly','zoom_in','zoom_out','handheld','steady']);
     const framing = enumVal(r.people_framing, ['ninguno','individual','pareja','grupo','multitud'], 'ninguno');
+    // scene_changes: solo aplica a video (multi-frame). En fotos queda null.
+    const sceneChanges = typeof r.scene_changes === 'boolean' ? r.scene_changes : null;
 
     // Atmosfera (nuevos enums buscables en lenguaje natural)
     const mood = enumVal(r.mood, ['alegre','neutro','serio','intimo','festivo','melancolico','energico','formal','contemplativo']);
@@ -448,6 +641,7 @@ Describe esta imagen siguiendo el esquema. Devuelve solo el JSON.`;
         shot_type: shotType,
         camera_angle: cameraAngle,
         camera_movement: cameraMovement,
+        scene_changes: sceneChanges,
         people_framing: framing,
       },
       atmosphere: {

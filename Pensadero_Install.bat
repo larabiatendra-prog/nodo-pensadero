@@ -225,6 +225,14 @@ if %ERRORLEVEL% NEQ 0 (
     echo [AVISO] pip install ha fallado. Modulo facial deshabilitado.
 ) else (
     echo [OK] Modulo Python instalado.
+    for /f "delims=" %%P in ('"%ROOT%backend\python\.venv\Scripts\python.exe" -c "import onnxruntime as o; print(chr(79)+'K_CUDA' if 'CUDAExecutionProvider' in o.get_available_providers() else 'WARN_CPU')" 2^>nul') do set "ORT_RESULT=%%P"
+    if "!ORT_RESULT!"=="OK_CUDA" (
+        echo [OK] onnxruntime ve GPU ^(CUDAExecutionProvider^). InsightFace usara GPU.
+    ) else (
+        echo [WARN] onnxruntime no detecta CUDAExecutionProvider. InsightFace correra en CPU.
+        echo        Si tienes GPU NVIDIA nueva ^(Blackwell/RTX 50xx^), actualiza tras finalizar:
+        echo          backend\python\.venv\Scripts\python.exe -m pip install onnxruntime-gpu --upgrade
+    )
 )
 
 :models

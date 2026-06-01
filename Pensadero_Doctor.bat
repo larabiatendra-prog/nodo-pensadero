@@ -160,6 +160,31 @@ if %ERRORLEVEL% EQU 0 (
     echo [WARN] nvidia-smi no encontrado. IA correra en CPU ^(mas lento^).
 )
 
+REM --- CUDA / onnxruntime ---
+echo.
+echo --------------------------------------------------------------
+echo  CUDA / onnxruntime ^(InsightFace en GPU^)
+echo --------------------------------------------------------------
+if not exist "%ROOT%backend\python\.venv\Scripts\python.exe" (
+    echo [SKIP] venv no existe, saltando check CUDA.
+    goto :skip_cuda
+)
+"%ROOT%backend\python\.venv\Scripts\python.exe" -c "import onnxruntime" >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [FAIL] onnxruntime no instalado en venv. Relanza Pensadero_Install.bat.
+    set /a PROBLEMS+=1
+    goto :skip_cuda
+)
+for /f "delims=" %%P in ('"%ROOT%backend\python\.venv\Scripts\python.exe" -c "import onnxruntime as o; print('CUDA' if 'CUDAExecutionProvider' in o.get_available_providers() else 'CPU')" 2^>nul') do set "ORT_PROVIDER=%%P"
+if "%ORT_PROVIDER%"=="CUDA" (
+    echo [OK] CUDAExecutionProvider disponible. InsightFace usara GPU.
+) else (
+    echo [WARN] onnxruntime sin CUDAExecutionProvider. InsightFace correra en CPU.
+    echo        Causa probable: GPU nueva ^(Blackwell/RTX 50xx^) + onnxruntime no actualizado.
+    echo        Solucion: backend\python\.venv\Scripts\python.exe -m pip install onnxruntime-gpu --upgrade
+)
+:skip_cuda
+
 REM --- Resumen ---
 echo.
 echo ==============================================================

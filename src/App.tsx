@@ -52,6 +52,8 @@ function App() {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [downloadingFiles, setDownloadingFiles] = useState<Set<string>>(new Set());
+  // IDs de archivos con un escaneo visual de un solo archivo en curso (boton de la tarjeta)
+  const [scanningFiles, setScanningFiles] = useState<Set<string>>(new Set());
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
@@ -896,6 +898,48 @@ function App() {
     } finally {
       // Remover archivo de la lista de descargas en progreso
       setDownloadingFiles(prev => {
+        const updated = new Set(prev);
+        updated.delete(file.id);
+        return updated;
+      });
+    }
+  };
+
+  // Escaneo visual de un único archivo desde el botón de su tarjeta. Espera al
+  // backend (sincrono) y luego re-lee solo ese archivo para refrescar su card
+  // sin recargar toda la galería.
+  const handleScanFile = async (file: MediaFile) => {
+    if (scanningFiles.has(file.id)) return;
+    const targetPath = file.fullPath;
+    if (!targetPath) {
+      toast.error('No se puede determinar la ruta del archivo');
+      return;
+    }
+    setScanningFiles(prev => new Set([...prev, file.id]));
+    toast.loading(`Escaneando "${file.name}"...`, { id: `scan-${file.id}` });
+    try {
+      const res = await api.scanFile(targetPath);
+      if (!res.success) throw new Error((res as any).error || 'Error escaneando');
+
+      // Re-leer la metadata actualizada de ese archivo y mezclarla en el estado.
+      const fresh: any = await api.getFile(file.id);
+      if (fresh.success && fresh.data) {
+        const mapped: MediaFile = {
+          ...fresh.data,
+          createdAt: new Date(fresh.data.createdAt),
+          modifiedAt: new Date(fresh.data.modifiedAt),
+          extractedDate: fresh.data.extractedDate ? new Date(fresh.data.extractedDate) : undefined,
+          isFavorite: userFavs.some(f => normalizePath(fresh.data.fullPath) === normalizePath(f.photo_url)),
+        };
+        setMediaFiles(prev => prev.map(f => (f.id === file.id ? mapped : f)));
+        // Si el modal está abierto sobre este archivo, refrescarlo también.
+        setSelectedFile(prev => (prev && prev.id === file.id ? mapped : prev));
+      }
+      toast.success(`"${file.name}" escaneado`, { id: `scan-${file.id}` });
+    } catch (err: any) {
+      toast.error(err.message || 'Error escaneando el archivo', { id: `scan-${file.id}` });
+    } finally {
+      setScanningFiles(prev => {
         const updated = new Set(prev);
         updated.delete(file.id);
         return updated;
@@ -2896,6 +2940,8 @@ function App() {
                     onAddToCollection={handleAddToCollection}
                     onRemoveFromCollection={selectedCollectionId ? handleRemoveFromCollection : undefined}
                     onOpenPath={handleOpenPath}
+                    onScanFile={handleScanFile}
+                    scanningFiles={scanningFiles}
                     downloadingFiles={downloadingFiles}
                     isSelectionMode={isSelectionMode}
                     selectedFiles={selectedFiles}

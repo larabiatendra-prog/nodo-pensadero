@@ -17,9 +17,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const sharp = require('sharp');
 
 // Replica server.js generateFileId — md5 del filePath. Se usa para indexar
@@ -50,8 +48,8 @@ function ageBucket(age) {
 }
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif']);
-const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg']);
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tif', '.tiff', '.avif']);
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
 const SCANNABLE_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS]);
 
 function isVideoExt(ext) { return VIDEO_EXTS.has(ext.toLowerCase()); }
@@ -154,45 +152,6 @@ async function readExistingCatalog(folderPath) {
 }
 
 /**
- * Extrae un frame representativo de un vídeo (~30% del total) y lo escribe
- * a un archivo temporal JPG. Devuelve la ruta del archivo o null si falla.
- * Se usa para pasar el frame a InsightFace y detectar caras.
- */
-async function extractRepresentativeFrame(videoPath, durationSec) {
-  const seek = (typeof durationSec === 'number' && durationSec > 1) ? durationSec * 0.3 : 0;
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pensadero-frame-'));
-  const outPath = path.join(tmpDir, 'rep.jpg');
-  const args = [
-    '-y',
-    '-ss', String(seek),
-    '-i', videoPath,
-    '-frames:v', '1',
-    '-q:v', '3',
-    outPath,
-  ];
-
-  return new Promise((resolve) => {
-    const p = spawn('ffmpeg', args, { stdio: 'ignore' });
-    const timer = setTimeout(() => {
-      try { p.kill('SIGKILL'); } catch {}
-      resolve(null);
-    }, 30_000);
-    p.on('close', (code) => {
-      clearTimeout(timer);
-      // Devolvemos un objeto con la ruta y el seek timestamp en segundos
-      // (lo necesita el visor para mostrar los bboxes solo cuando el video
-      // este reproduciendo cerca del momento donde se hizo la deteccion).
-      if (code === 0) resolve({ outPath, seekSec: seek });
-      else resolve(null);
-    });
-    p.on('error', () => {
-      clearTimeout(timer);
-      resolve(null);
-    });
-  });
-}
-
-/**
  * Genera técnica básica (resolution, aspect_ratio) usando sharp para no
  * depender solo de lo que diga el VLM.
  */
@@ -217,6 +176,26 @@ async function extractTechnical(filePath) {
 }
 
 /**
+ * Escanea UN único archivo (desde el boton de la tarjeta del grid). Reutiliza
+ * todo el pipeline de scanFolder (VLM + caras + color + CLIP + escritura del
+ * catalogo) pero acotado a ese archivo. force:true porque el escaneo de un
+ * archivo concreto es una accion explicita: siempre re-escanea aunque ya tenga
+ * entry. La carpeta padre es donde vive su _pensadero.json.
+ *
+ * @param {string} filePath  Ruta absoluta del archivo
+ * @param {object} opts  (broadcastProgress, jobId)
+ * @returns {Promise<{jobId, total, done, errors, written}>}
+ */
+async function scanSingleFile(filePath, opts = {}) {
+  const folderPath = path.dirname(filePath);
+  return scanFolder(folderPath, {
+    ...opts,
+    singleFile: filePath,
+    force: true,
+  });
+}
+
+/**
  * Procesa una carpeta: lista imágenes, escanea cada una (saltando las que ya
  * estén catalogadas si !force), y actualiza/escribe el _pensadero.json.
  *
@@ -226,6 +205,7 @@ async function extractTechnical(filePath) {
  *   - broadcastProgress: fn(data) — para WebSocket
  *   - getMediaFiles, syncFiles: opcional, para refrescar memoria post-scan
  *   - jobId: string — id de tracking
+ *   - singleFile: string — si se pasa, escanea solo ese archivo
  * @returns {Promise<{jobId, total, done, errors, written}>}
  */
 async function scanFolder(folderPath, opts = {}) {
@@ -233,6 +213,9 @@ async function scanFolder(folderPath, opts = {}) {
     force = false,
     broadcastProgress = () => {},
     jobId = makeJobId(),
+    // singleFile: ruta absoluta. Si se pasa, escanea SOLO ese archivo (no
+    // recorre el arbol). Lo usa scanSingleFile para el escaneo desde la tarjeta.
+    singleFile = null,
   } = opts;
 
   const scanner = getScanner();
@@ -297,8 +280,9 @@ async function scanFolder(folderPath, opts = {}) {
     percentage: 0,
   });
 
-  // 1) Listar imágenes
-  const allImages = await collectImages(folderPath);
+  // 1) Listar imágenes. Si es escaneo de un único archivo, no recorremos el
+  // arbol entero: usamos directamente ese path (la carpeta padre es folderPath).
+  const allImages = singleFile ? [singleFile] : await collectImages(folderPath);
   if (allImages.length === 0) {
     job.status = 'done';
     broadcastProgress({
@@ -391,7 +375,8 @@ async function scanFolder(folderPath, opts = {}) {
       let entry;
       let technical = {};
       let faceDetections = [];
-      let videoFrameTime = null; // segundo del video donde se detectaron caras (solo videos)
+      let videoFrameTime = null; // segundo del frame con mas caras (default del visor)
+      let videoFaceCount = null; // video: max caras en un solo frame (para face_count)
 
       // Componer el contexto de la carpeta (con herencia desde la raíz del
       // scan). Si no hay `_contexto.md` en ningún nivel, devolverá string
@@ -403,27 +388,40 @@ async function scanFolder(folderPath, opts = {}) {
       );
 
       if (isVideo) {
-        // Para vídeo: scanVideo orquesta ffprobe + extracción de frames + VLM.
-        // La detección de caras no es por archivo sino por uno de los frames
-        // intermedios (compromiso: una pasada de InsightFace en ese frame).
-        entry = await scanner.scanVideo(filePath, { folderContext: folderContextStr });
-        // technical lo rellena scanVideo desde ffprobe; no llamamos a sharp
-        // que daría error en vídeos.
-        // Extraemos UN frame representativo y lo usamos para DOS cosas:
-        // 1) Deteccion facial via InsightFace
-        // 2) Analisis cromatico via colorAnalyzer (perceptual prominence)
-        let repFramePath = null;
+        // Para vídeo: scanVideo extrae N frames UNA vez, los manda al VLM en una
+        // sola llamada multi-imagen (descripcion temporal: movimiento de camara,
+        // acciones, cambios de escena) y nos los DEVUELVE para reutilizarlos.
+        // Asi evitamos extraer frames por separado para cada cosa.
+        const videoResult = await scanner.scanVideo(filePath, { folderContext: folderContextStr });
+        entry = videoResult.entry;
+        const videoFrames = Array.isArray(videoResult.frames) ? videoResult.frames : []; // [{ path, timestamp }]
         try {
-          const repFrame = await extractRepresentativeFrame(filePath, entry.technical?.duration);
-          if (repFrame && repFrame.outPath) {
-            repFramePath = repFrame.outPath;
-            videoFrameTime = repFrame.seekSec;
-            if (facesEnabled) {
-              faceDetections = await faceSvc.detectFaces(repFramePath).catch(() => []);
+          // 1) Deteccion facial en CADA frame (mejor cobertura que un solo frame:
+          //    captura personas que solo aparecen en un tramo del clip). Cada
+          //    deteccion se etiqueta con el timestamp de su frame (_frameTime)
+          //    para que el visor dibuje el bbox solo cuando el video pasa por ahi.
+          if (facesEnabled && videoFrames.length > 0) {
+            let maxCount = -1;
+            for (const fr of videoFrames) {
+              const dets = await faceSvc.detectFaces(fr.path).catch(() => []);
+              for (const d of dets) {
+                d._frameTime = fr.timestamp;
+                faceDetections.push(d);
+              }
+              // detection_frame_time = frame con MAS caras (default del boton
+              // "saltar a las caras"). face_count = max en un solo frame (no la
+              // suma: la misma persona en 3 frames no son 3 personas).
+              if (dets.length > maxCount) { maxCount = dets.length; videoFrameTime = fr.timestamp; }
             }
-            // Color analysis sobre el mismo frame (sustituye al palette del VLM)
+            videoFaceCount = maxCount > 0 ? maxCount : 0;
+          }
+
+          // 2) Color + CLIP sobre el frame CENTRAL (uno representa bien el clip;
+          //    no hace falta repetir el analisis cromatico en todos).
+          const midFrame = videoFrames[Math.floor(videoFrames.length / 2)];
+          if (midFrame) {
             try {
-              const colorResult = await colorAnalyzer.analyzeImageColors(repFramePath);
+              const colorResult = await colorAnalyzer.analyzeImageColors(midFrame.path);
               if (colorResult && Array.isArray(colorResult.palette) && colorResult.palette.length > 0) {
                 entry.colors = entry.colors || {};
                 entry.colors.palette = enrichPalette(colorResult.palette.slice(0, 3));
@@ -431,10 +429,9 @@ async function scanFolder(folderPath, opts = {}) {
             } catch (cErr) {
               console.warn(`[scan-video] color analysis ${basename}: ${cErr.message}`);
             }
-            // CLIP embedding sobre el mismo frame (place recognition + image search)
             if (clipEnabled) {
               try {
-                const clipEmb = await clipSvc.embedImage(repFramePath);
+                const clipEmb = await clipSvc.embedImage(midFrame.path);
                 if (clipEmb) {
                   entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
                   clipIndex.upsert(fileIdFor(filePath), clipEmb);
@@ -456,10 +453,11 @@ async function scanFolder(folderPath, opts = {}) {
             }
           }
         } catch (err) {
-          console.warn(`[scan-video] extract frame ${basename}: ${err.message}`);
+          console.warn(`[scan-video] proceso frames ${basename}: ${err.message}`);
         } finally {
-          if (repFramePath) {
-            try { await fs.unlink(repFramePath); } catch {}
+          // Borrar los frames temporales extraidos por scanVideo.
+          if (typeof videoResult.cleanup === 'function') {
+            await videoResult.cleanup();
           }
         }
       } else {
@@ -531,7 +529,11 @@ async function scanFolder(folderPath, opts = {}) {
         }
         entry.identity = entry.identity || {};
         entry.identity.faces = Array.from(byId.values());
-        entry.identity.face_count = faceDetections.length;
+        // En video face_count = max caras en un solo frame (videoFaceCount);
+        // en foto = numero de caras detectadas.
+        entry.identity.face_count = (isVideo && videoFaceCount != null)
+          ? videoFaceCount
+          : faceDetections.length;
 
         // Persistir TODAS las detecciones (con embeddings base64) para que la
         // re-identificación retroactiva pueda recalcular matches al añadir
@@ -550,6 +552,10 @@ async function scanFolder(folderPath, opts = {}) {
               age: f.age ?? null,
               gender: f.gender ?? null,
             };
+            // frame_time: segundo del clip donde se detecto esta cara (solo
+            // video multi-frame). El visor lo usa para mostrar el bbox solo
+            // cuando el reproductor pasa por ese momento.
+            if (typeof f._frameTime === 'number') out.frame_time = f._frameTime;
             if (match && match.person_id) {
               out.person_id = match.person_id;
               out.display_name = peopleRegistry.getDisplayName(match.person_id);
@@ -700,6 +706,7 @@ function cancelJob(jobId) {
 
 module.exports = {
   scanFolder,
+  scanSingleFile,
   getJobStatus,
   listJobs,
   cancelJob,

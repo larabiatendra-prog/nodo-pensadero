@@ -114,11 +114,22 @@ export default function MediaModal({
   const [seedingDisplayName, setSeedingDisplayName] = useState('');
   const [seedingSubmitting, setSeedingSubmitting] = useState(false);
 
-  // Resetear estado del seed al cerrar / cambiar archivo
+  // Flujo "asignar cara desconocida a persona existente"
+  const [assignFaceIdx, setAssignFaceIdx] = useState<number | null>(null);
+  const [assignPersons, setAssignPersons] = useState<Array<{ person_id: string; display_name: string; avatar_path?: string | null }>>([]);
+  const [assignQuery, setAssignQuery] = useState('');
+  const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
+  const [assignSubmitting, setAssignSubmitting] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+
+  // Resetear estado del seed y assign al cerrar / cambiar archivo
   useEffect(() => {
     setSeedingCluster(null);
     setSeedingError(null);
     setSeedingDisplayName('');
+    setAssignFaceIdx(null);
+    setAssignError(null);
+    setAssignSuccess(null);
   }, [file?.id]);
 
   async function handleSeedFromUnknownFace(faceIndex: number) {
@@ -183,6 +194,38 @@ export default function MediaModal({
     }
   }
 
+
+  async function handleAssignFaceClick(faceIndex: number) {
+    setAssignFaceIdx(faceIndex);
+    setAssignQuery('');
+    setAssignError(null);
+    try {
+      const r: any = await api.listPersonsRegistry();
+      if (r.success && Array.isArray(r.data)) setAssignPersons(r.data);
+    } catch {}
+  }
+
+  async function handleAssignConfirm(personId: string, displayName: string) {
+    if (!file?.fullPath || assignFaceIdx === null) return;
+    const fp = file.fullPath;
+    const sep = Math.max(fp.lastIndexOf('\\'), fp.lastIndexOf('/'));
+    if (sep < 0) return;
+    const folder = fp.slice(0, sep);
+    const basename = fp.slice(sep + 1);
+    setAssignSubmitting(true);
+    setAssignError(null);
+    try {
+      const r: any = await api.assignFace(personId, { folder, basename, face_index: assignFaceIdx });
+      if (!r.success) throw new Error(r.error || 'Error asignando');
+      setAssignFaceIdx(null);
+      setAssignSuccess(displayName);
+      setTimeout(() => setAssignSuccess(null), 4000);
+    } catch (err: any) {
+      setAssignError(err.message || 'Error asignando cara');
+    } finally {
+      setAssignSubmitting(false);
+    }
+  }
 
   // Calcular índice actual del archivo en allFiles - ANTES de los useEffect
   const currentIndex = file ? allFiles.findIndex(f => f.id === file.id) : -1;
@@ -378,8 +421,24 @@ export default function MediaModal({
       case 'export': {
         const boxes = file.face_boxes || [];
         const detTime = typeof file.detection_frame_time === 'number' ? file.detection_frame_time : null;
-        const inWindow = detTime != null && Math.abs(videoCurrentTime - detTime) < VIDEO_BBOX_TOLERANCE_S;
-        const showOverlay = showFaceBoxes && videoNatural && boxes.length > 0 && detTime != null && inWindow;
+        // Cada deteccion lleva su frame_time (video multi-frame): mostramos solo
+        // los bboxes del frame que se reproduce ahora, asi aparecen/desaparecen
+        // segun avanzas. Catalogos antiguos (sin frame_time por caja) caen al
+        // detection_frame_time global y muestran todos a la vez.
+        const hasPerBoxTime = boxes.some(b => typeof b.frame_time === 'number');
+        const visibleBoxes = hasPerBoxTime
+          ? boxes.filter(b => typeof b.frame_time === 'number'
+              && Math.abs(videoCurrentTime - b.frame_time) < VIDEO_BBOX_TOLERANCE_S)
+          : (detTime != null && Math.abs(videoCurrentTime - detTime) < VIDEO_BBOX_TOLERANCE_S ? boxes : []);
+        const showOverlay = showFaceBoxes && videoNatural && visibleBoxes.length > 0;
+        // Tiempos de los frames que tienen caras. El boton "ir a caras" salta al
+        // mas cercano al momento actual (multi-frame) o al detection_frame_time.
+        const faceTimes = hasPerBoxTime
+          ? boxes.map(b => b.frame_time).filter((t): t is number => typeof t === 'number')
+          : (detTime != null ? [detTime] : []);
+        const jumpTarget = faceTimes.length > 0
+          ? faceTimes.reduce((best, t) => Math.abs(t - videoCurrentTime) < Math.abs(best - videoCurrentTime) ? t : best, faceTimes[0])
+          : detTime;
         return (
           <div className="relative bg-noche rounded-lg overflow-hidden">
             <div className="relative inline-block max-w-full">
@@ -404,11 +463,12 @@ export default function MediaModal({
               </video>
               {showOverlay && (
                 <FaceBoxesOverlay
-                  boxes={boxes}
+                  boxes={visibleBoxes}
                   naturalWidth={videoNatural!.w}
                   naturalHeight={videoNatural!.h}
                   onPersonFilter={onPersonFilter}
                   onSeedUnknown={handleSeedFromUnknownFace}
+                  onAssignFace={handleAssignFaceClick}
                   onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
@@ -437,19 +497,20 @@ export default function MediaModal({
                 <Pencil className="w-4 h-4" />
               </button>
             )}
-            {/* Indicador sutil sobre cuando aparecen los bboxes */}
-            {showFaceBoxes && boxes.length > 0 && detTime != null && !inWindow && (
+            {/* Indicador sutil: cuando no hay caras visibles ahora pero las hay
+                en otro frame, ofrece saltar al frame con caras mas cercano. */}
+            {showFaceBoxes && boxes.length > 0 && jumpTarget != null && visibleBoxes.length === 0 && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   if (videoRef.current) {
-                    videoRef.current.currentTime = detTime;
+                    videoRef.current.currentTime = jumpTarget;
                   }
                 }}
                 className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-lavanda/90 hover:bg-lavanda text-white text-xs rounded-full backdrop-blur-sm transition-colors"
-                title={`Saltar al frame con caras detectadas (${detTime.toFixed(1)}s)`}
+                title={`Saltar al frame con caras detectadas (${jumpTarget.toFixed(1)}s)`}
               >
-                Caras a {detTime.toFixed(1)}s — ir
+                Caras a {jumpTarget.toFixed(1)}s — ir
               </button>
             )}
           </div>
@@ -507,6 +568,7 @@ export default function MediaModal({
                   naturalHeight={imgNatural.h}
                   onPersonFilter={onPersonFilter}
                   onSeedUnknown={handleSeedFromUnknownFace}
+                  onAssignFace={handleAssignFaceClick}
                   onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
@@ -820,6 +882,82 @@ export default function MediaModal({
       </div>
     )}
 
+    {/* Modal: asignar cara desconocida a persona existente */}
+    {assignFaceIdx !== null && (
+      <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+        <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-sm">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-marfil flex items-center gap-2">
+              <UserPlus className="w-5 h-5 text-lavanda" />
+              Identificar cara
+            </h2>
+            <button
+              onClick={() => { setAssignFaceIdx(null); setAssignError(null); }}
+              className="text-lavanda-archivo hover:text-marfil"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <p className="text-xs text-niebla mb-3">
+            Elige a quién pertenece esta cara. El sistema aprenderá para reconocerla la próxima vez.
+          </p>
+          <div className="relative mb-3">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-lavanda-archivo" />
+            <input
+              type="text"
+              value={assignQuery}
+              onChange={e => setAssignQuery(e.target.value)}
+              placeholder="Buscar persona..."
+              className="w-full pl-9 pr-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda text-sm"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            {assignPersons
+              .filter(p => !assignQuery || p.display_name.toLowerCase().includes(assignQuery.toLowerCase()))
+              .map(p => (
+                <button
+                  key={p.person_id}
+                  onClick={() => handleAssignConfirm(p.person_id, p.display_name)}
+                  disabled={assignSubmitting}
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-pizarra text-left transition-colors disabled:opacity-50"
+                >
+                  <div className="w-8 h-8 rounded-full bg-lavanda/20 flex items-center justify-center text-lavanda font-semibold text-sm flex-shrink-0">
+                    {p.display_name.slice(0, 2).toUpperCase()}
+                  </div>
+                  <span className="text-marfil text-sm">{p.display_name}</span>
+                </button>
+              ))
+            }
+            {assignPersons.filter(p => !assignQuery || p.display_name.toLowerCase().includes(assignQuery.toLowerCase())).length === 0 && (
+              <p className="text-xs text-niebla px-3 py-4 text-center">No hay personas en el registro</p>
+            )}
+          </div>
+          {assignError && (
+            <div className="mt-3 p-2 bg-red-500/10 border border-red-400/30 rounded-xl text-xs text-red-300">
+              {assignError}
+            </div>
+          )}
+          {assignSubmitting && (
+            <div className="mt-3 flex items-center justify-center gap-2 text-xs text-niebla">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Guardando...
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    {/* Toast: asignacion correcta */}
+    {assignSuccess && (
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-lavanda/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+        <UserPlus className="w-4 h-4 text-lavanda" />
+        <span className="text-sm text-marfil">
+          Cara asignada a <strong className="text-lavanda">{assignSuccess}</strong>. Re-identificando en segundo plano…
+        </span>
+      </div>
+    )}
+
     {/* Toast: cargando busqueda de caras similares */}
     {seedingLoading && (
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-melocoton/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
@@ -950,6 +1088,7 @@ function FaceBoxesOverlay({
   naturalHeight,
   onPersonFilter,
   onSeedUnknown,
+  onAssignFace,
   onClosePreview,
   hoveredFaceKey,
   setHoveredFaceKey,
@@ -959,6 +1098,7 @@ function FaceBoxesOverlay({
   naturalHeight: number;
   onPersonFilter?: (personId: string) => void;
   onSeedUnknown?: (faceIndex: number) => void;
+  onAssignFace?: (faceIndex: number) => void;
   onClosePreview?: () => void;
   hoveredFaceKey: string | null;
   setHoveredFaceKey: (key: string | null) => void;
@@ -982,14 +1122,19 @@ function FaceBoxesOverlay({
         const labelBelow = top < 15;
         const label = b.display_name || 'desconocido';
         const faceIdx = typeof b.face_index === 'number' ? b.face_index : i;
-        const seedable = !isKnown && !!onSeedUnknown;
-        const clickable = (isKnown && !!onPersonFilter) || seedable;
+        // assignable: cara desconocida y hay handler de asignacion a persona existente (tiene prioridad)
+        const assignable = !isKnown && !!onAssignFace;
+        // seedable: cara desconocida, no hay assign, pero hay handler de crear persona nueva
+        const seedable = !isKnown && !assignable && !!onSeedUnknown;
+        const clickable = (isKnown && !!onPersonFilter) || assignable || seedable;
         const handleClick = (e: React.MouseEvent) => {
           // Evitar que el click llegue a la <img> (que abre fullscreen)
           e.stopPropagation();
           if (isKnown && b.person_id && onPersonFilter) {
             onPersonFilter(b.person_id);
             onClosePreview?.();
+          } else if (assignable && onAssignFace) {
+            onAssignFace(faceIdx);
           } else if (seedable && onSeedUnknown) {
             onSeedUnknown(faceIdx);
           }
@@ -1005,27 +1150,33 @@ function FaceBoxesOverlay({
             title={
               isKnown
                 ? `Filtrar galeria por ${label}`
-                : seedable
-                  ? 'Buscar caras similares y crear persona'
-                  : undefined
+                : assignable
+                  ? 'Identificar esta cara'
+                  : seedable
+                    ? 'Buscar caras similares y crear persona'
+                    : undefined
             }
           >
             <div
               className={`absolute inset-0 rounded-md border-2 transition-colors ${
                 isKnown
                   ? 'border-lavanda shadow-[0_0_0_1px_rgba(15,17,26,0.6)] group-hover/face:border-lavanda-claro group-hover/face:shadow-[0_0_0_2px_rgba(200,182,255,0.5)]'
-                  : `border-bruma/70 border-dashed ${seedable ? 'group-hover/face:border-melocoton group-hover/face:border-solid' : ''}`
+                  : assignable
+                    ? 'border-lavanda/50 border-dashed group-hover/face:border-lavanda group-hover/face:border-solid'
+                    : `border-bruma/70 border-dashed ${seedable ? 'group-hover/face:border-melocoton group-hover/face:border-solid' : ''}`
               }`}
             />
             <div
               className={`absolute whitespace-nowrap text-xs px-1.5 py-0.5 rounded-md backdrop-blur-sm transition-opacity ${
                 isKnown
                   ? 'bg-lavanda/90 text-white group-hover/face:bg-lavanda'
-                  : `bg-noche/70 text-lavanda-archivo ${seedable ? 'group-hover/face:bg-melocoton group-hover/face:text-noche' : ''}`
+                  : assignable
+                    ? 'bg-noche/70 text-lavanda-archivo group-hover/face:bg-lavanda group-hover/face:text-white'
+                    : `bg-noche/70 text-lavanda-archivo ${seedable ? 'group-hover/face:bg-melocoton group-hover/face:text-noche' : ''}`
               } ${labelBelow ? 'top-full mt-1' : 'bottom-full mb-1'} left-0 flex items-center gap-1`}
               style={{ fontSize: '11px' }}
             >
-              {seedable && <UserPlus className="w-3 h-3" />}
+              {(assignable || seedable) && <UserPlus className="w-3 h-3" />}
               {label}
             </div>
           </div>
@@ -1088,6 +1239,7 @@ const COMPOSITION_LABELS: Record<string, string> = {
   shot_type: 'Plano',
   camera_angle: 'Angulo',
   camera_movement: 'Movimiento',
+  scene_changes: 'Cambios de escena',
   people_framing: 'Personas',
 };
 
@@ -1112,7 +1264,9 @@ function objectToChips(
   const out: Array<{ label: string; value: string }> = [];
   for (const [k, v] of Object.entries(obj)) {
     if (v == null || v === '' || v === 'ninguno') continue;
-    const value = humanizeValue(v);
+    // Booleanos (e.g. scene_changes): false no aporta, no se muestra; true -> "si".
+    if (v === false) continue;
+    const value = v === true ? 'si' : humanizeValue(v);
     if (!value) continue;
     out.push({ label: labels[k] || k.replace(/_/g, ' '), value });
   }

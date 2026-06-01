@@ -315,6 +315,8 @@ function mergeClipIntoFile(fileData, clip, catalog) {
       const v = clip.composition[key];
       if (typeof v === 'string' && v.trim()) newTags.push(v.trim());
     }
+    // scene_changes es booleano (solo video); lo volcamos como tag buscable.
+    if (clip.composition.scene_changes === true) newTags.push('cambio de escena');
   }
   if (clip.atmosphere) {
     for (const key of ['mood','lighting','space_type','time_of_day','style']) {
@@ -418,6 +420,10 @@ function mergeClipIntoFile(fileData, clip, catalog) {
             confidence: typeof d.confidence === 'number' ? d.confidence : null,
             age: typeof d.age === 'number' ? d.age : null,
             gender: typeof d.gender === 'number' ? d.gender : null,
+            // frame_time: segundo del video de esta deteccion (multi-frame). El
+            // visor dibuja el bbox solo cuando el reproductor pasa por ese
+            // momento. null/ausente en fotos y catalogos antiguos.
+            frame_time: typeof d.frame_time === 'number' ? d.frame_time : null,
             face_index: originalIndex,
           };
         });
@@ -486,14 +492,18 @@ async function applyCatalog(fileData) {
   }
 
   // 3) Catálogo por carpeta como fallback general.
-  // Soporta tanto `clips` (vídeo) como `photos` (foto) como `audios`. El primero
-  // que exista gana; no se mergean. Permite que el mismo formato `_marina.json`
-  // sirva para distintos tipos de media sin duplicar el contrato.
+  // Soporta `clips`, `photos` y `audios`. Se fusionan clips+photos con photos
+  // tomando prioridad (las re-escaneos individuales escriben en photos con
+  // schema v2, mientras que los batch legacy usaban clips).
   const catalog = await getCatalogForDir(dir);
   if (catalog) {
-    const entries = (catalog.clips && typeof catalog.clips === 'object') ? catalog.clips
-                  : (catalog.photos && typeof catalog.photos === 'object') ? catalog.photos
-                  : (catalog.audios && typeof catalog.audios === 'object') ? catalog.audios
+    const clipsEntries  = (catalog.clips  && typeof catalog.clips  === 'object') ? catalog.clips  : {};
+    const photosEntries = (catalog.photos && typeof catalog.photos === 'object') ? catalog.photos : {};
+    const audiosEntries = (catalog.audios && typeof catalog.audios === 'object') ? catalog.audios : {};
+    // photos sobreescribe clips para el mismo basename (re-escaneo individual gana)
+    const mergedEntries = { ...clipsEntries, ...photosEntries };
+    const entries = Object.keys(mergedEntries).length > 0 ? mergedEntries
+                  : Object.keys(audiosEntries).length > 0 ? audiosEntries
                   : null;
     if (entries) {
       const clip = entries[basename];

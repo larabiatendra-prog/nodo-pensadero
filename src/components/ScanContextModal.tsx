@@ -35,8 +35,16 @@ interface ScanContextModalProps {
   isOpen: boolean;
   rootPath: string;
   onClose: () => void;
-  /** Llamada cuando el usuario confirma. El padre se encarga del scan real. */
+  /** Llamada cuando el usuario confirma. El padre gestiona el ciclo de vida del modal. */
   onConfirm: () => void;
+  /** Omitir esta ruta (flujo scan-all: avanza a la siguiente sin lanzar). */
+  onSkip?: () => void;
+  /** Omitir todas las rutas restantes y lanzar el scan ya. */
+  onSkipAll?: () => void;
+  /** Texto del botón de confirmar. Por defecto "Lanzar escaneo". */
+  confirmLabel?: string;
+  /** Progreso en el flujo scan-all. */
+  stepInfo?: { current: number; total: number };
 }
 
 const EMPTY_FORM: ContextForm = {
@@ -94,7 +102,7 @@ function isFormEmpty(f: ContextForm): boolean {
   return Object.values(f).every((v) => !v || v.trim() === '');
 }
 
-export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm }: ScanContextModalProps) {
+export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm, onSkip, onSkipAll, confirmLabel, stepInfo }: ScanContextModalProps) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [folders, setFolders] = useState<FolderEntry[]>([]);
@@ -185,7 +193,8 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm 
 
   const handleConfirm = () => {
     onConfirm();
-    onClose();
+    // El padre gestiona el cierre; no llamamos onClose aquí para que el
+    // flujo scan-all pueda avanzar al siguiente modal sin cerrar todo.
   };
 
   const withContext = folders.filter((f) => f.hasContext).length;
@@ -395,18 +404,36 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm 
 
         {/* Pie con acciones */}
         <div className="flex items-center justify-between p-6 border-t border-pizarra">
-          <p className="text-xs text-lavanda-archivo">
-            Las carpetas sin contexto se escanearán con el prompt genérico.
-          </p>
+          <div className="flex items-center gap-3">
+            {stepInfo ? (
+              <p className="text-xs text-lavanda-archivo">
+                Ruta <span className="text-marfil font-medium">{stepInfo.current}</span> de <span className="text-marfil font-medium">{stepInfo.total}</span>
+              </p>
+            ) : (
+              <p className="text-xs text-lavanda-archivo">
+                Las carpetas sin contexto se escanearán con el prompt genérico.
+              </p>
+            )}
+          </div>
           <div className="flex gap-3">
             <button onClick={onClose} className="btn-secondary">Cancelar</button>
+            {onSkipAll && (
+              <button onClick={onSkipAll} className="btn-secondary">
+                Omitir todo
+              </button>
+            )}
+            {onSkip && (
+              <button onClick={onSkip} className="btn-secondary">
+                Omitir
+              </button>
+            )}
             <button
               onClick={handleConfirm}
               disabled={loading || !!loadError}
               className="btn-primary flex items-center gap-2"
             >
               <Sparkles className="w-4 h-4" />
-              Lanzar escaneo
+              {confirmLabel ?? 'Lanzar escaneo'}
             </button>
           </div>
         </div>

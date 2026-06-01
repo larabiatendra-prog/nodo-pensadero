@@ -24,6 +24,7 @@ export interface FaceBox {
   confidence: number | null;
   age: number | null;
   gender: number | null;
+  frame_time?: number | null; // segundo del video de esta deteccion (multi-frame); null/ausente en fotos y catalogos antiguos
   face_index?: number; // posicion original en identity.detections[] del catalog
 }
 

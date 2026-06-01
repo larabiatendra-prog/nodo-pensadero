@@ -239,18 +239,22 @@ if %ERRORLEVEL% NEQ 0 (
 cd /d "%ROOT%"
 
 REM ================================================================
-REM  [9/9] Modelos Ollama (qwen2.5 + qwen2.5vl)
+REM  [9/9] Modelos Ollama (config objetivo NODO)
+REM    - internvl3:14b        VLM principal de escaneo (calidad)
+REM    - qwen2.5:7b-instruct  busqueda en lenguaje natural (velocidad)
+REM    - qwen2.5vl:7b         VLM fallback manual (sin automatismo)
 REM ================================================================
 echo.
 echo ==============================================================
-echo  [9/9] Modelos IA (descarga ~15 GB, 20-40 min segun red)
+echo  [9/9] Modelos IA (descarga ~20 GB, 25-50 min segun red)
 echo ==============================================================
 echo.
 echo  Esto descarga los "cerebros" de la IA local. Solo primera vez.
 echo  Si se interrumpe, puedes relanzar este instalador y reanudara.
 echo.
 
-call :pull_model qwen2.5:14b-instruct
+call :pull_model internvl3:14b
+call :pull_model qwen2.5:7b-instruct
 call :pull_model qwen2.5vl:7b
 
 REM ================================================================
@@ -269,11 +273,18 @@ call :check_cmd python "Python" optional
 call :check_cmd ffmpeg "ffmpeg" optional
 
 echo [...] Verificando modelos Ollama...
-ollama list 2>nul | findstr /i "qwen2.5:14b-instruct" >nul
+ollama list 2>nul | findstr /i "internvl3:14b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] qwen2.5:14b-instruct descargado.
+    echo [OK] internvl3:14b descargado.
 ) else (
-    echo [FAIL] qwen2.5:14b-instruct NO descargado.
+    echo [FAIL] internvl3:14b NO descargado.
+    set "CHECK_FAIL=1"
+)
+ollama list 2>nul | findstr /i "qwen2.5:7b-instruct" >nul
+if %ERRORLEVEL% EQU 0 (
+    echo [OK] qwen2.5:7b-instruct descargado.
+) else (
+    echo [FAIL] qwen2.5:7b-instruct NO descargado.
     set "CHECK_FAIL=1"
 )
 ollama list 2>nul | findstr /i "qwen2.5vl:7b" >nul

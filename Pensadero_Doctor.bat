@@ -106,17 +106,25 @@ echo.
 echo --------------------------------------------------------------
 echo  Modelos IA
 echo --------------------------------------------------------------
-ollama list 2>nul | findstr /i "qwen2.5:14b-instruct" >nul
+ollama list 2>nul | findstr /i "internvl3:14b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] qwen2.5:14b-instruct  ^(LLM busqueda natural^)
+    echo [OK] internvl3:14b  ^(VLM principal de escaneo^)
 ) else (
-    echo [FAIL] qwen2.5:14b-instruct NO descargado.
-    echo        Ejecuta: ollama pull qwen2.5:14b-instruct
+    echo [FAIL] internvl3:14b NO descargado.
+    echo        Ejecuta: ollama pull internvl3:14b
+    set /a PROBLEMS+=1
+)
+ollama list 2>nul | findstr /i "qwen2.5:7b-instruct" >nul
+if %ERRORLEVEL% EQU 0 (
+    echo [OK] qwen2.5:7b-instruct  ^(LLM busqueda natural^)
+) else (
+    echo [FAIL] qwen2.5:7b-instruct NO descargado.
+    echo        Ejecuta: ollama pull qwen2.5:7b-instruct
     set /a PROBLEMS+=1
 )
 ollama list 2>nul | findstr /i "qwen2.5vl:7b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] qwen2.5vl:7b  ^(VLM escaneo visual^)
+    echo [OK] qwen2.5vl:7b  ^(VLM fallback manual^)
 ) else (
     echo [FAIL] qwen2.5vl:7b NO descargado.
     echo        Ejecuta: ollama pull qwen2.5vl:7b

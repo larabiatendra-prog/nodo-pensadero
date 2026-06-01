@@ -32,7 +32,7 @@ Hay un tercero, `Pensadero_Doctor.bat`, que **no instala nada** pero te dice qu�
 
 El instalador hace todo esto solo:
 - Instalar Node.js, Python, Ollama, ffmpeg.
-- Descargar los modelos de IA (internvl3:14b, qwen2.5:7b-instruct y qwen2.5vl:7b).
+- Descargar los modelos de IA (gemma3:12b, qwen2.5:7b-instruct y qwen2.5vl:7b).
 - Instalar las dependencias del proyecto (npm + pip).
 - Crear el entorno Python (.venv) con InsightFace y SigLIP-2.
 - Construir el bundle de producción.
@@ -130,7 +130,7 @@ Para cerrar Pensadero: cierra la ventana negra que dice "Pensadero".
 | Doctor dice "GPU NVIDIA no encontrada" | Driver NVIDIA no instalado | Descarga driver desde nvidia.com (no debería pasar en NODO) |
 | Botón ✨ (escaneo IA) deshabilitado | Falta `qwen2.5vl:7b` | Abre cmd: `ollama pull qwen2.5vl:7b` |
 | Búsqueda natural devuelve error 503 | Falta el modelo de `OLLAMA_MODEL` (NODO: `qwen2.5:7b-instruct`) o Ollama no corre | Doctor dirá cuál es |
-| Escaneo visual falla / botón ✨ 503 | Falta el modelo de `VLM_MODEL` (NODO: `internvl3:14b`) | `ollama pull internvl3:14b` |
+| Escaneo visual falla / botón ✨ 503 | Falta el modelo de `VLM_MODEL` (NODO: `gemma3:12b`) | `ollama pull gemma3:12b` |
 | Pensadero abre pero no detecta caras | Python o venv no instalados | Doctor lo dirá. Solución: relanza instalador |
 | Pensadero no escanea vídeos | Falta ffmpeg | Doctor lo dirá. Solución: relanza instalador |
 | InsightFace lento / CPU al 100% aunque haya GPU | `.venv` copiado de otro PC (rutas rotas) o onnxruntime sin CUDA | Doctor muestra `[WARN] onnxruntime sin CUDAExecutionProvider`. Solución: eliminar `backend/python/.venv/`, relanzar instalador. Si persiste: `backend\python\.venv\Scripts\python.exe -m pip install onnxruntime-gpu --upgrade` |
@@ -153,7 +153,7 @@ Invoke-RestMethod -Uri "http://localhost:5000/api/scan/health"
 ollama list
 
 # Si falta un modelo, descargarlo manualmente
-ollama pull internvl3:14b
+ollama pull gemma3:12b
 ollama pull qwen2.5:7b-instruct
 ollama pull qwen2.5vl:7b
 ```
@@ -185,8 +185,7 @@ El instalador descarga `qwen2.5vl:7b` por defecto: cabe en cualquier GPU decente
 |---|---|---|---|
 | `qwen2.5vl:7b` | ~5 GB | Buena | Default. Rápido y multilingüe. |
 | `minicpm-v:8b` | ~5 GB | Buena | Fuerte en detalle visual + OCR. |
-| `gemma3:12b` | ~8 GB | Muy buena | Salto notable sobre 7b. |
-| `internvl3:14b` | ~9 GB | Excelente | **Recomendado para NODO.** Top sin riesgo de OOM. |
+| `gemma3:12b` | ~8 GB | Muy buena | **Recomendado para NODO.** Salto notable sobre 7b; deja VRAM para caras + CLIP. |
 | `gemma3:27b` | ~16 GB | Excelente | Al límite — riesgo de OOM con contexto largo. |
 | `qwen2.5vl:32b` | ~18 GB | Excelente | **NO cabe en 16 GB VRAM.** No usar. |
 
@@ -194,7 +193,7 @@ El instalador descarga `qwen2.5vl:7b` por defecto: cabe en cualquier GPU decente
 
 1. Descarga el modelo elegido. Ejemplo recomendado:
    ```powershell
-   ollama pull internvl3:14b
+   ollama pull gemma3:12b
    ```
 2. Abre Pensadero. Menú "..." → **Configuración del escaneo visual** (el selector lista solo modelos visión disponibles).
 3. Selecciona el modelo nuevo y guarda. No necesitas reiniciar.
@@ -215,7 +214,7 @@ Para NODO hay un fichero listo: copia `backend/.env.nodo` como `backend/.env`
 
 | Variable | NODO | Para qué |
 |---|---|---|
-| `VLM_MODEL` | `internvl3:14b` | VLM de escaneo. Calidad máxima en 16 GB. Fallback **manual** (sin automatismo): si falla, cámbialo a `qwen2.5vl:7b` y re-escanea. |
+| `VLM_MODEL` | `gemma3:12b` | VLM de escaneo. Muy buena calidad, holgado en 16 GB. Fallback **manual** (sin automatismo): si falla, cámbialo a `qwen2.5vl:7b` y re-escanea. |
 | `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | Modelo de texto de la búsqueda natural. Prioriza velocidad. |
 | `VLM_TIMEOUT_MS` | `300000` | Timeout por imagen (ms). Holgado por el cold-start del modelo 14b. |
 | `VLM_VIDEO_FRAMES` | `3` | Frames por vídeo (inicio/medio/final). El vídeo es una **escena única**. No subir, no lógica adaptativa, no detección de escenas. |
@@ -226,7 +225,7 @@ Para NODO hay un fichero listo: copia `backend/.env.nodo` como `backend/.env`
 > **Modelos del objetivo NODO** (el instalador ya los descarga en el paso 9; estos
 > comandos solo hacen falta si quieres bajar alguno a mano):
 > ```powershell
-> ollama pull internvl3:14b        # VLM principal de escaneo
+> ollama pull gemma3:12b        # VLM principal de escaneo
 > ollama pull qwen2.5:7b-instruct  # busqueda en lenguaje natural
 > ollama pull qwen2.5vl:7b         # fallback manual del VLM
 > ```
@@ -403,4 +402,5 @@ Todo lo que **no** se versiona en git está en `.gitignore`. Nada va a la nube.
 | 2026-05-23 | Instalador unificado — Install.bat bootstrap completo (winget + ollama pull) + Doctor.bat de diagnóstico |
 | 2026-05-23 | Mejoras prompt VLM — system role, format:json, few-shot, definiciones shot_type, pre-resize sharp, num_predict 900, agregador vídeo por densidad semántica. Selector front reconoce internvl3. Nueva sección "Optimizar el escaneo visual en NODO". |
 | 2026-05-25 | Doctor.bat: check CUDAExecutionProvider en onnxruntime (detecta GPU infrautilizada por .venv roto o Blackwell SM_100). Install.bat: aviso CUDA post-paso 8. GUIA: fila troubleshooting CPU bottleneck. |
-| 2026-06-01 | Config objetivo NODO: `backend/.env.nodo` (VLM `internvl3:14b`, búsqueda `qwen2.5:7b-instruct`, vídeo 3 frames). VLM sin fallback automático (fallback manual a `qwen2.5vl:7b`). Nueva sección "Validación GPU en NODO (Blackwell)". Drift corregido (`llama3.1:8b` ya no es modelo de búsqueda; tabla de vars no sugiere subir frames). |
+| 2026-06-01 | Config objetivo NODO: `backend/.env.nodo` (VLM `gemma3:12b`, búsqueda `qwen2.5:7b-instruct`, vídeo 3 frames). VLM sin fallback automático (fallback manual a `qwen2.5vl:7b`). Nueva sección "Validación GPU en NODO (Blackwell)". Drift corregido (`llama3.1:8b` ya no es modelo de búsqueda; tabla de vars no sugiere subir frames). |
+| 2026-06-01 | VLM principal cambiado de `internvl3:14b` a `gemma3:12b`: `internvl3` NO existe en la library oficial de Ollama (registry da 404), el pull fallaría. `gemma3:12b` (~8 GB, verificado en registry) cabe holgado en 16 GB con caras+CLIP. Instalador queda plug-and-play. |

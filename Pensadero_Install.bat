@@ -240,7 +240,7 @@ cd /d "%ROOT%"
 
 REM ================================================================
 REM  [9/9] Modelos Ollama (config objetivo NODO)
-REM    - internvl3:14b        VLM principal de escaneo (calidad)
+REM    - gemma3:12b        VLM principal de escaneo (calidad)
 REM    - qwen2.5:7b-instruct  busqueda en lenguaje natural (velocidad)
 REM    - qwen2.5vl:7b         VLM fallback manual (sin automatismo)
 REM ================================================================
@@ -253,7 +253,7 @@ echo  Esto descarga los "cerebros" de la IA local. Solo primera vez.
 echo  Si se interrumpe, puedes relanzar este instalador y reanudara.
 echo.
 
-call :pull_model internvl3:14b
+call :pull_model gemma3:12b
 call :pull_model qwen2.5:7b-instruct
 call :pull_model qwen2.5vl:7b
 
@@ -273,11 +273,11 @@ call :check_cmd python "Python" optional
 call :check_cmd ffmpeg "ffmpeg" optional
 
 echo [...] Verificando modelos Ollama...
-ollama list 2>nul | findstr /i "internvl3:14b" >nul
+ollama list 2>nul | findstr /i "gemma3:12b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] internvl3:14b descargado.
+    echo [OK] gemma3:12b descargado.
 ) else (
-    echo [FAIL] internvl3:14b NO descargado.
+    echo [FAIL] gemma3:12b NO descargado.
     set "CHECK_FAIL=1"
 )
 ollama list 2>nul | findstr /i "qwen2.5:7b-instruct" >nul

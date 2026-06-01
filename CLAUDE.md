@@ -19,7 +19,7 @@ Guía para futuras sesiones de Claude Code dentro de este repositorio.
 
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS.
 - **Backend**: Node.js + Express + WebSocket (`ws`). Servidor en `backend/server.js`, rutas modulares en `backend/routes/`, servicios en `backend/services/`.
-- **IA opcional**: Ollama local. Búsqueda en lenguaje natural con `qwen2.5:7b-instruct` (NODO) o `qwen2.5:14b-instruct`. VLM de escaneo con `internvl3:14b` (NODO) o `qwen2.5vl:7b` (fallback manual, sin automatismo). Configurable en `backend/.env` (ver `backend/.env.nodo`).
+- **IA opcional**: Ollama local. Búsqueda en lenguaje natural con `qwen2.5:7b-instruct` (NODO) o `qwen2.5:14b-instruct`. VLM de escaneo con `gemma3:12b` (NODO) o `qwen2.5vl:7b` (fallback manual, sin automatismo). Configurable en `backend/.env` (ver `backend/.env.nodo`).
 - **Sin Electron, sin pkg, sin instaladores.** Stack deliberadamente simple: `npm install` + un `.bat`.
 
 ## Diseño

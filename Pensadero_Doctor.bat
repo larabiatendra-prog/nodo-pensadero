@@ -106,12 +106,12 @@ echo.
 echo --------------------------------------------------------------
 echo  Modelos IA
 echo --------------------------------------------------------------
-ollama list 2>nul | findstr /i "internvl3:14b" >nul
+ollama list 2>nul | findstr /i "gemma3:12b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] internvl3:14b  ^(VLM principal de escaneo^)
+    echo [OK] gemma3:12b  ^(VLM principal de escaneo^)
 ) else (
-    echo [FAIL] internvl3:14b NO descargado.
-    echo        Ejecuta: ollama pull internvl3:14b
+    echo [FAIL] gemma3:12b NO descargado.
+    echo        Ejecuta: ollama pull gemma3:12b
     set /a PROBLEMS+=1
 )
 ollama list 2>nul | findstr /i "qwen2.5:7b-instruct" >nul

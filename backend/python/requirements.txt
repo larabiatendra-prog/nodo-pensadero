@@ -22,6 +22,9 @@ onnxruntime-gpu>=1.18
 numpy>=1.24,<2.0
 opencv-python>=4.8
 pillow>=10.0
+# pillow-heif: decodifica HEIC/HEIF (fotos de iPhone) que opencv NO soporta.
+# Sin esto, detect_in_image no encuentra caras en .heic y falla en silencio.
+pillow-heif>=0.16
 
 # SigLIP-2 (Google, 2024) — image+text embeddings multilingue en el mismo
 # espacio de 768 dims. Sustituye a CLIP base + M-CLIP. Soporta español

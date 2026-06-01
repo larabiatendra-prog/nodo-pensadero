@@ -44,11 +44,18 @@ if not exist "%ROOT%backend\node_modules" (
     if %ERRORLEVEL% NEQ 0 exit /b 1
 )
 
-if not exist "%ROOT%dist" (
-    echo [AVISO] Falta el build de produccion. Construyendo...
-    cd /d "%ROOT%"
-    call npm run build
-    if %ERRORLEVEL% NEQ 0 ( pause & exit /b 1 )
+REM Reconstruir SIEMPRE antes de arrancar. Garantiza que se sirve el codigo
+REM actual y no un dist/ viejo. El coste (unos segundos) es preferible a servir
+REM una build obsoleta sin darse cuenta.
+echo Construyendo build de produccion...
+cd /d "%ROOT%"
+call npm run build
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo [ERROR] El build fallo. Pensadero NO se arrancara.
+    echo         Revisa los errores de arriba y vuelve a ejecutar Pensadero_Start.bat.
+    pause
+    exit /b 1
 )
 
 REM Asegurar que Ollama corre (si esta instalado). Sin Ollama, la IA local no funciona.

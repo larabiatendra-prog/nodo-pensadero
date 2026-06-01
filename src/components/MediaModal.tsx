@@ -132,7 +132,7 @@ export default function MediaModal({
     setAssignSuccess(null);
   }, [file?.id]);
 
-  async function handleSeedFromUnknownFace(faceIndex: number) {
+  async function handleSeedFromUnknownFace(faceIndex: number, initialName = '') {
     if (!file || !file.fullPath) {
       setSeedingError('No se puede determinar la ruta del archivo');
       return;
@@ -149,7 +149,9 @@ export default function MediaModal({
     setSeedingLoading(true);
     setSeedingError(null);
     setSeedingCluster(null);
-    setSeedingDisplayName('');
+    // Prefijar el nombre con lo que el usuario tecleo en el buscador del panel
+    // "Identificar cara" (si vino de ahi). Asi no reescribe el nombre dos veces.
+    setSeedingDisplayName(initialName);
     try {
       const r: any = await api.seedFaceCluster({ folder, basename, face_index: faceIndex });
       if (!r.success || !r.data) {
@@ -930,9 +932,32 @@ export default function MediaModal({
               ))
             }
             {assignPersons.filter(p => !assignQuery || p.display_name.toLowerCase().includes(assignQuery.toLowerCase())).length === 0 && (
-              <p className="text-xs text-niebla px-3 py-4 text-center">No hay personas en el registro</p>
+              <p className="text-xs text-niebla px-3 py-3 text-center">
+                {assignQuery.trim() ? 'Ninguna persona coincide' : 'No hay personas en el registro'}
+              </p>
             )}
           </div>
+          {/* Crear persona nueva a partir de esta cara desconocida: dispara el
+              flujo seed (busca caras similares en la biblioteca) -> promote. El
+              nombre tecleado en el buscador se reutiliza como nombre inicial. */}
+          <button
+            onClick={() => {
+              const idx = assignFaceIdx;
+              const q = assignQuery.trim();
+              setAssignFaceIdx(null);
+              setAssignError(null);
+              if (idx !== null) handleSeedFromUnknownFace(idx, q);
+            }}
+            disabled={assignSubmitting}
+            className="mt-2 w-full flex items-center gap-3 px-3 py-2 rounded-xl border border-dashed border-lavanda-archivo/50 hover:bg-pizarra text-left transition-colors disabled:opacity-50"
+          >
+            <div className="w-8 h-8 rounded-full bg-lavanda/10 flex items-center justify-center text-lavanda flex-shrink-0">
+              <UserPlus className="w-4 h-4" />
+            </div>
+            <span className="text-marfil text-sm">
+              Crear persona nueva{assignQuery.trim() ? ` «${assignQuery.trim()}»` : ''}
+            </span>
+          </button>
           {assignError && (
             <div className="mt-3 p-2 bg-red-500/10 border border-red-400/30 rounded-xl text-xs text-red-300">
               {assignError}

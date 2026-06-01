@@ -160,20 +160,58 @@ def get_app():
 
 # ----- Operaciones -----
 
+def _load_image_bgr(path: str):
+    """
+    Carga una imagen como array BGR (formato que espera InsightFace/cv2).
+
+    Estrategia en cascada:
+      1) cv2.imread — camino rapido para jpg/png/etc.
+      2) cv2.imdecode de bytes crudos — rutas con caracteres no ASCII
+         (Windows / acentos / eñes) que imread no abre.
+      3) Pillow + pillow-heif — HEIC/HEIF (fotos de iPhone) que opencv NO
+         decodifica. Si pillow-heif no esta instalado, este paso falla y se
+         lanza el error claro (mismo comportamiento que antes, sin regresion).
+    """
+    import cv2
+
+    img = cv2.imread(path)
+    if img is not None:
+        return img
+
+    # 2) Rutas no ASCII: leer bytes y decodificar.
+    try:
+        with open(path, "rb") as f:
+            data = np.frombuffer(f.read(), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
+    if img is not None:
+        return img
+
+    # 3) HEIC/HEIF via Pillow + pillow-heif. opencv no trae soporte HEIF.
+    try:
+        from PIL import Image
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        except Exception:
+            # pillow-heif no instalado: si el archivo es HEIC fallara abajo en
+            # Image.open con un error claro. Para formatos que Pillow ya soporta
+            # (jpg/png/tiff) seguimos pudiendo abrirlos.
+            pass
+        with Image.open(path) as im:
+            rgb = np.array(im.convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        raise RuntimeError(f"No se pudo leer la imagen ({e})")
+
+
 def detect_in_image(path: str) -> dict:
     """
     Detecta todas las caras en una imagen y devuelve sus embeddings + bbox.
     """
-    import cv2
-    img = cv2.imread(path)
-    if img is None:
-        # Soporte para rutas con caracteres no ASCII (Windows / acentos)
-        try:
-            with open(path, "rb") as f:
-                data = np.frombuffer(f.read(), dtype=np.uint8)
-            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
-        except Exception as e:
-            raise RuntimeError(f"No se pudo leer la imagen ({e})")
+    import cv2  # noqa: F401  (se usa dentro de _load_image_bgr)
+    img = _load_image_bgr(path)
     if img is None:
         raise RuntimeError("Imagen ilegible o formato no soportado")
 

@@ -83,24 +83,16 @@ function reidentifyEntry(entry, faceSvc) {
 
   // identifyFaces acepta `embedding_b64` (lo decodifica internamente).
   const identified = faceSvc.identifyFaces(detections);
-  const named = identified
-    .filter(f => f.person_id)
-    .map(f => ({
-      person_id: f.person_id,
-      display_name: peopleRegistry.getDisplayName(f.person_id),
-      confidence: f.similarity,
-    }));
-  const byId = new Map();
-  for (const f of named) {
-    const prev = byId.get(f.person_id);
-    if (!prev || f.confidence > prev.confidence) byId.set(f.person_id, f);
-  }
-  const newFaces = Array.from(byId.values());
 
-  // Actualizar tambien el person_id por detección (uno-a-uno con cada cara
-  // fisica) para que el visor pueda etiquetar cada bbox.
+  // Actualizar el person_id por detección (uno-a-uno con cada cara fisica)
+  // para que el visor pueda etiquetar cada bbox.
   for (let i = 0; i < detections.length; i++) {
     const det = detections[i];
+    // Respetar asignaciones manuales: el usuario las fijo a mano (assign-face).
+    // El re-id automatico NO debe recalcularlas ni borrarlas — si no, la propia
+    // re-id que dispara assign-face (o un re-id global posterior) borraria la
+    // asignacion justo en el caso que la necesitaba (cosine < umbral).
+    if (det.assigned_manually) continue;
     const match = identified[i];
     if (match && match.person_id) {
       det.person_id = match.person_id;
@@ -112,6 +104,23 @@ function reidentifyEntry(entry, faceSvc) {
       delete det.confidence;
     }
   }
+
+  // faces[]: deduplicar por person_id sobre el estado FINAL de las detecciones
+  // (mayor confidence). Se construye desde detections — no desde `identified` —
+  // para incluir las caras asignadas manualmente, que identifyFaces no recupera.
+  const byId = new Map();
+  for (const d of detections) {
+    if (!d.person_id) continue;
+    const prev = byId.get(d.person_id);
+    if (!prev || (d.confidence || 0) > (prev.confidence || 0)) {
+      byId.set(d.person_id, {
+        person_id: d.person_id,
+        display_name: d.display_name || peopleRegistry.getDisplayName(d.person_id) || d.person_id,
+        confidence: d.confidence || 0,
+      });
+    }
+  }
+  const newFaces = Array.from(byId.values());
 
   // Demografia inferida de TODAS las detecciones
   const ageRanges = new Set();

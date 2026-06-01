@@ -36,6 +36,12 @@ const VIDEO_NUM_PREDICT = parseInt(process.env.VLM_VIDEO_NUM_PREDICT || '1400', 
 // detalle de forma mas predecible que dejarselo al pipeline del modelo.
 const VLM_IMAGE_MAX_SIDE = parseInt(process.env.VLM_IMAGE_MAX_SIDE || '1568', 10);
 
+// Formatos que un VLM acepta como bytes crudos sin transcodificar. Solo para
+// estos es seguro el fallback "leer el archivo tal cual" si sharp falla. HEIC/
+// HEIF/AVIF/TIFF NO entran: mandar sus bytes crudos al modelo produce basura
+// silenciosa (el VLM no los decodifica). Para esos, mejor fallar visible.
+const VLM_RAW_SAFE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']);
+
 class VisualScanService {
   constructor() {
     const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
@@ -74,8 +80,20 @@ class VisualScanService {
         .toBuffer();
       return resized.toString('base64');
     } catch (err) {
-      const buffer = await fs.readFile(filePath);
-      return buffer.toString('base64');
+      // sharp no pudo decodificar (formato sin soporte en esta build, p.ej.
+      // HEIC/AVIF sin libheif, o archivo corrupto). Solo caemos a bytes crudos
+      // si el formato es uno que el VLM lee nativo; si no, fallamos visible para
+      // no catalogar el archivo con una descripcion basura silenciosa.
+      const ext = path.extname(filePath).toLowerCase();
+      if (VLM_RAW_SAFE_EXTS.has(ext)) {
+        const buffer = await fs.readFile(filePath);
+        return buffer.toString('base64');
+      }
+      throw new Error(
+        `sharp no pudo decodificar ${path.basename(filePath)} (${ext}): ${err.message}. ` +
+        `Formato no soportado por esta build de sharp (¿falta libheif para HEIC/AVIF?); ` +
+        `se omite para no generar metadata invalida.`
+      );
     }
   }
 

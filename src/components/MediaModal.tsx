@@ -113,6 +113,10 @@ export default function MediaModal({
   const [seedingCluster, setSeedingCluster] = useState<SeedCluster | null>(null);
   const [seedingDisplayName, setSeedingDisplayName] = useState('');
   const [seedingSubmitting, setSeedingSubmitting] = useState(false);
+  // Exclusion temporal de muestras al crear persona (mismo patron que
+  // PersonsManager -> Promote): el centroide se calcula solo con las incluidas.
+  // No borra archivos ni toca catalogos; es estado de UI de esta creacion.
+  const [seedingExcludedIndices, setSeedingExcludedIndices] = useState<Set<number>>(new Set());
 
   // Flujo "asignar cara desconocida a persona existente"
   const [assignFaceIdx, setAssignFaceIdx] = useState<number | null>(null);
@@ -127,10 +131,22 @@ export default function MediaModal({
     setSeedingCluster(null);
     setSeedingError(null);
     setSeedingDisplayName('');
+    setSeedingExcludedIndices(new Set());
     setAssignFaceIdx(null);
     setAssignError(null);
     setAssignSuccess(null);
   }, [file?.id]);
+
+  // Excluir/incluir una muestra del cluster en creacion (toggle). Identico a
+  // toggleSampleExclusion de PersonsManager.
+  function toggleSeedSampleExclusion(index: number) {
+    setSeedingExcludedIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
 
   async function handleSeedFromUnknownFace(faceIndex: number, initialName = '') {
     if (!file || !file.fullPath) {
@@ -149,6 +165,7 @@ export default function MediaModal({
     setSeedingLoading(true);
     setSeedingError(null);
     setSeedingCluster(null);
+    setSeedingExcludedIndices(new Set());
     // Prefijar el nombre con lo que el usuario tecleo en el buscador del panel
     // "Identificar cara" (si vino de ahi). Asi no reescribe el nombre dos veces.
     setSeedingDisplayName(initialName);
@@ -178,17 +195,23 @@ export default function MediaModal({
       setSeedingError('El nombre debe tener al menos una letra o numero');
       return;
     }
+    if (seedingCluster.sample_count > 0 && seedingExcludedIndices.size >= seedingCluster.sample_count) {
+      setSeedingError('No puedes excluir todas las muestras');
+      return;
+    }
     setSeedingSubmitting(true);
     setSeedingError(null);
     try {
       const r: any = await api.promoteFaceCluster(seedingCluster.cluster_id, {
         person_id: id,
         display_name: display,
+        excluded_sample_indices: Array.from(seedingExcludedIndices).sort((a, b) => a - b),
       });
       if (!r.success) throw new Error(r.error || 'Error creando persona');
       // Exito — cerrar modal y limpiar
       setSeedingCluster(null);
       setSeedingDisplayName('');
+      setSeedingExcludedIndices(new Set());
     } catch (err: any) {
       setSeedingError(err.message || 'Error creando persona');
     } finally {
@@ -1011,7 +1034,7 @@ export default function MediaModal({
               Crear persona desde esta cara
             </h2>
             <button
-              onClick={() => { setSeedingCluster(null); setSeedingError(null); }}
+              onClick={() => { setSeedingCluster(null); setSeedingError(null); setSeedingExcludedIndices(new Set()); }}
               className="text-lavanda-archivo hover:text-marfil"
             >
               <X className="w-5 h-5" />
@@ -1024,26 +1047,47 @@ export default function MediaModal({
             <p className="text-lavanda-archivo text-xs mt-0.5">
               {[seedingCluster.dominant_gender, seedingCluster.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
               {seedingCluster.sample_count > 0 && (
-                <> · mostrando hasta {seedingCluster.sample_count} muestras representativas</>
+                <> · {seedingCluster.sample_count - seedingExcludedIndices.size} de {seedingCluster.sample_count} muestras incluidas</>
               )}
             </p>
             <p className="text-xs text-bruma mt-1">
-              Verifica que todas las caras sean la misma persona antes de crearla. Si hay errores, mejor usa "Descubrir caras" en la pestaña Personas.
+              Pulsa una muestra para excluirla si no es la misma persona. El centroide se calcula solo con las muestras incluidas.
             </p>
           </div>
           {seedingCluster.sample_count > 0 && (
             <div className="mb-5 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
-              {Array.from({ length: seedingCluster.sample_count }).map((_, i) => (
-                <div key={i} className="aspect-square rounded-xl bg-pizarra overflow-hidden border border-grafito">
-                  <img
-                    src={api.faceClusterSampleUrl(seedingCluster.cluster_id, i)}
-                    alt={`Muestra ${i + 1}`}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-                  />
-                </div>
-              ))}
+              {Array.from({ length: seedingCluster.sample_count }).map((_, i) => {
+                const excluded = seedingExcludedIndices.has(i);
+                const meta = seedingCluster.samples_meta?.[i];
+                return (
+                  <div
+                    key={i}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleSeedSampleExclusion(i)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSeedSampleExclusion(i); } }}
+                    title={meta ? `${meta.basename} · score ${meta.det_score.toFixed(2)} · ${excluded ? 'pulsa para incluir' : 'pulsa para excluir'}` : (excluded ? 'pulsa para incluir' : 'pulsa para excluir')}
+                    className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all cursor-pointer ${
+                      excluded
+                        ? 'border-red-400/70 bg-pizarra opacity-50'
+                        : 'border-grafito bg-pizarra hover:border-lavanda'
+                    }`}
+                  >
+                    <img
+                      src={api.faceClusterSampleUrl(seedingCluster.cluster_id, i)}
+                      alt={`Muestra ${i + 1}`}
+                      className={`w-full h-full object-cover ${excluded ? 'grayscale' : ''}`}
+                      loading="lazy"
+                      onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
+                    />
+                    {excluded && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-noche/40 pointer-events-none">
+                        <X className="w-8 h-8 text-red-300 drop-shadow-[0_0_4px_rgba(0,0,0,0.8)]" strokeWidth={3} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
           <div className="space-y-2">
@@ -1073,7 +1117,7 @@ export default function MediaModal({
           )}
           <div className="mt-6 flex justify-end gap-2">
             <button
-              onClick={() => { setSeedingCluster(null); setSeedingError(null); }}
+              onClick={() => { setSeedingCluster(null); setSeedingError(null); setSeedingExcludedIndices(new Set()); }}
               disabled={seedingSubmitting}
               className="px-4 py-2 text-lavanda-archivo hover:text-marfil"
             >
@@ -1081,9 +1125,9 @@ export default function MediaModal({
             </button>
             <button
               onClick={handleSeedPromote}
-              disabled={seedingSubmitting || !seedingDisplayName.trim() || !slugifyPersonId(seedingDisplayName)}
+              disabled={seedingSubmitting || !seedingDisplayName.trim() || !slugifyPersonId(seedingDisplayName) || (seedingCluster.sample_count > 0 && seedingExcludedIndices.size >= seedingCluster.sample_count)}
               className={`px-4 py-2 rounded-full font-medium ${
-                seedingSubmitting || !seedingDisplayName.trim() || !slugifyPersonId(seedingDisplayName)
+                seedingSubmitting || !seedingDisplayName.trim() || !slugifyPersonId(seedingDisplayName) || (seedingCluster.sample_count > 0 && seedingExcludedIndices.size >= seedingCluster.sample_count)
                   ? 'bg-lavanda/30 text-marfil/50 cursor-not-allowed'
                   : 'bg-lavanda text-white hover:bg-lavanda-claro'
               }`}

@@ -84,17 +84,20 @@ async function getExportsPaths() {
 }
 
 /**
- * Genera URL de thumbnail
+ * Genera URL de thumbnail (relativa al origen).
+ * Sin host hardcodeado: el navegador la resuelve contra el host actual
+ * (localhost, pensadero, IP de LAN/VPN). Imprescindible para servir un unico
+ * build desde cualquier origen. Ver src/config/index.ts (origen unico).
  */
 function getThumbnailUrl(thumbnailName) {
-  return `${serverConfig.serverUrl}/thumbnails/${thumbnailName}`;
+  return `/thumbnails/${thumbnailName}`;
 }
 
 /**
- * Genera URL de streaming
+ * Genera URL de streaming (relativa al origen). Mismo motivo que arriba.
  */
 function getStreamUrl(fileId) {
-  return `${serverConfig.serverUrl}/api/stream/${fileId}`;
+  return `/api/stream/${fileId}`;
 }
 
 /**

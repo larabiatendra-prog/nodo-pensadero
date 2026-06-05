@@ -13,11 +13,24 @@
 // CONFIGURACIÓN BASE
 // ============================================
 
-// Obtener URLs base desde variables de entorno o usar valores por defecto
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-// IMPORTANTE: incluir /ws en el path — el backend monta el WebSocketServer
-// en `{ server, path: '/ws' }` y rechaza upgrades sin ese path con HTTP 400.
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5000/ws';
+// Origen del backend. Vacío = mismo origen que sirve el frontend → todas las
+// URLs quedan relativas. Así un único build funciona desde localhost,
+// pensadero, o cualquier IP de LAN/VPN sin reconstruir. En desarrollo (vite en
+// :5173 con el backend en :5000, distinto origen) se define VITE_API_URL en
+// .env.development para cruzar de origen.
+const API_URL = import.meta.env.VITE_API_URL || '';
+
+// WebSocket: el constructor `WebSocket` exige esquema ws/wss, no admite URL
+// relativa. Sin override, lo derivamos del origen actual en runtime → funciona
+// en cualquier host. IMPORTANTE: incluir /ws en el path — el backend monta el
+// WebSocketServer en `{ server, path: '/ws' }` y rechaza upgrades sin ese path
+// con HTTP 400.
+function defaultWsUrl(): string {
+  if (typeof window === 'undefined') return 'ws://localhost:5000/ws';
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/ws`;
+}
+const WS_URL = import.meta.env.VITE_WS_URL || defaultWsUrl();
 
 // ============================================
 // API_CONFIG - Objeto central de configuración

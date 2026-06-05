@@ -83,27 +83,23 @@ if %ERRORLEVEL% EQU 0 (
     echo         Ejecuta Pensadero_Doctor.bat para diagnostico.
 )
 
-echo Arrancando backend en puerto 5000...
-start "Pensadero Backend" /min cmd /c "cd /d %ROOT%backend && node server.js"
-
-timeout /t 3 /nobreak >nul
-
-echo Arrancando frontend (preview)...
-start "Pensadero Frontend" /min cmd /c "cd /d %ROOT% && npm run start"
+REM Origen unico: el backend Node sirve el bundle (dist/) Y la API en el mismo
+REM puerto 5000. Ya no hace falta arrancar vite preview por separado.
+echo Arrancando Pensadero en puerto 5000 (frontend + API)...
+start "Pensadero" /min cmd /c "cd /d %ROOT%backend && node server.js"
 
 timeout /t 4 /nobreak >nul
 
-start http://localhost:5173
+start http://localhost:5000
 
 echo.
-echo  Backend:  http://localhost:5000
-echo  Frontend: http://localhost:5173
+echo  Pensadero: http://localhost:5000
+echo  Para el nombre http://pensadero:5000 anade el alias en hosts (ver README).
 echo.
 echo  Cierra esta ventana para detener Pensadero.
 pause >nul
 
 echo.
 echo Deteniendo Pensadero...
-taskkill /FI "WINDOWTITLE eq Pensadero Backend*" /T /F >nul 2>&1
-taskkill /FI "WINDOWTITLE eq Pensadero Frontend*" /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Pensadero*" /T /F >nul 2>&1
 exit

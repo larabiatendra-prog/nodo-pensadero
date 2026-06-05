@@ -65,6 +65,10 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+// Interfaz de escucha. Default 127.0.0.1 (solo local, sin exposicion a red).
+// Para acceso LAN/VPN: define HOST=0.0.0.0 en backend/.env. La app NO tiene
+// auth: hazlo solo tras montar la VPN o en una red de confianza.
+const HOST = process.env.HOST || '127.0.0.1';
 
 // Servidor HTTP
 const server = http.createServer(app);
@@ -249,6 +253,31 @@ function broadcastProgress(data) {
 
 // === CACHE ===
 
+// Migracion a origen unico: convierte URLs absolutas horneadas
+// (http://host:port/...) en relativas. El cache viejo guardaba
+// http://localhost:5000/... que rompe en acceso remoto (LAN/VPN). Respeta los
+// data: URI (placeholders SVG). Idempotente: en arranques ya migrados es no-op.
+function toRelativeAssetUrl(u) {
+  if (typeof u !== 'string' || u.startsWith('data:')) return u;
+  return u.replace(/^https?:\/\/[^/]+/i, '');
+}
+
+function migrateCacheUrlsToRelative() {
+  let changed = 0;
+  for (const entry of fileCache.values()) {
+    if (!entry || !entry.fileData) continue;
+    const fd = entry.fileData;
+    const newUrl = toRelativeAssetUrl(fd.url);
+    const newThumb = toRelativeAssetUrl(fd.thumbnail);
+    if (newUrl !== fd.url || newThumb !== fd.thumbnail) {
+      fd.url = newUrl;
+      fd.thumbnail = newThumb;
+      changed++;
+    }
+  }
+  return changed;
+}
+
 async function loadCache() {
   try {
     await favoritesManager.loadFavorites();
@@ -259,6 +288,13 @@ async function loadCache() {
       const cacheData = await fs.readFile(CACHE_FILE, 'utf-8');
       fileCache = new Map(Object.entries(JSON.parse(cacheData)));
       console.log(`📦 Cache cargado: ${fileCache.size} archivos`);
+      // Migrar URLs absolutas heredadas a relativas (origen unico). Solo
+      // re-guarda si algo cambio; en arranques posteriores es no-op.
+      const migrated = migrateCacheUrlsToRelative();
+      if (migrated > 0) {
+        console.log(`🔧 Cache migrado a URLs relativas: ${migrated} entradas`);
+        await saveCache();
+      }
     } else {
       console.log('📦 Sin cache previo');
     }
@@ -983,6 +1019,32 @@ async function cleanOrphanedThumbnails() {
   }
 }
 
+// === FRONTEND (origen unico) ===
+// El backend sirve el bundle de produccion (dist/) en el MISMO origen que la
+// API. Asi el frontend usa URLs relativas y funciona desde cualquier host
+// (localhost, pensadero, IP de LAN/VPN) sin reconstruir. Se monta el ULTIMO,
+// despues de /api y de los estaticos, para no pisar ninguna ruta. El fallback
+// SPA deja listo el routing por archivo del Eje B (deep links /archivo/<id>).
+function mountFrontend() {
+  const fsSync = require('fs');
+  const DIST_DIR = path.join(__dirname, '..', 'dist');
+  if (!fsSync.existsSync(path.join(DIST_DIR, 'index.html'))) {
+    console.warn('⚠️ No existe dist/index.html. Ejecuta "npm run build". El backend sirve solo la API.');
+    return;
+  }
+  app.use(express.static(DIST_DIR, { index: 'index.html', maxAge: '1h', etag: true }));
+  app.get('*', (req, res, next) => {
+    const p = req.path;
+    if (p.startsWith('/api') || p.startsWith('/ws') ||
+        p.startsWith('/thumbnails') || p.startsWith('/media') ||
+        p.startsWith('/persons-avatars') || p.startsWith('/spaces-covers')) {
+      return next();
+    }
+    res.sendFile(path.join(DIST_DIR, 'index.html'), (err) => { if (err) next(); });
+  });
+  console.log(`🖥️ Frontend servido desde: ${DIST_DIR}`);
+}
+
 // === ARRANQUE ===
 
 async function initialize() {
@@ -1021,6 +1083,9 @@ async function initialize() {
     console.log(`🏢 Spaces registry vacío. Se creará en ${SPACES_REGISTRY_PATH} al guardar el primer espacio.`);
   }
   mountPersonsAvatars();
+  // Montar el frontend (dist/) al final del stack: despues de /persons-avatars
+  // y /spaces-covers para que el fallback SPA no los intercepte.
+  mountFrontend();
   watchPersonsRegistry();
 
   // Cargar la tabla de sinonimos. Si no existe el archivo, opera vacia.
@@ -1036,9 +1101,9 @@ async function initialize() {
   // frontend pueda conectarse de inmediato. La sync (que puede tardar varios
   // minutos en bibliotecas grandes) corre en background; el watcher y la
   // limpieza de thumbnails se enganchan cuando la primera pasada termina.
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`🚀 Pensadero backend en http://127.0.0.1:${PORT}`);
-    console.log(`📡 WebSocket en ws://127.0.0.1:${PORT}/ws`);
+  server.listen(PORT, HOST, () => {
+    console.log(`🚀 Pensadero en http://${HOST}:${PORT} (frontend + API, origen unico)`);
+    console.log(`📡 WebSocket en ws://${HOST}:${PORT}/ws`);
     console.log(`📂 Carpeta de contenido: ${CONTENT_DIR}`);
     console.log(`💾 Cache: ${fileCache.size} archivos`);
     console.log(`👥 Personas: ${personsAggregate.length} con apariciones`);

@@ -13,27 +13,58 @@ Archivo audiovisual personal de uso individual. Pensadero escanea carpetas local
 1. Copia o clona este repositorio en `C:\TOOLS\Pensadero\`.
 2. Doble click en `Pensadero_Start.bat`.
 
-La primera ejecución instala dependencias del frontend y del backend, construye el bundle de producción y abre el navegador en `http://localhost:5173`. El proceso completo tarda entre 3 y 5 minutos. Las ejecuciones posteriores arrancan en pocos segundos.
+La primera ejecución instala dependencias del frontend y del backend, construye el bundle de producción y abre el navegador en `http://localhost:5000`. El proceso completo tarda entre 3 y 5 minutos. Las ejecuciones posteriores arrancan en pocos segundos.
+
+El backend Node sirve el frontend y la API en el **mismo origen** (puerto 5000). No hay un servidor de frontend aparte.
 
 Para detener la app, cierra la ventana negra titulada "Pensadero".
 
 ## Configuración
 
-### `.env` (raíz del proyecto, frontend)
+### Frontend (`.env.development` / `.env.production`, raíz)
 
-| Variable | Descripción | Valor por defecto |
-|---|---|---|
-| `VITE_API_URL` | URL del backend Node | `http://localhost:5000` |
-| `VITE_WS_URL` | URL del WebSocket de progreso | `ws://localhost:5000/ws` |
+Pensadero usa **origen único**: en producción el backend sirve el frontend y la API en el mismo puerto, así que el frontend usa URLs **relativas** y un único build funciona desde cualquier host (`localhost`, `pensadero`, IP de LAN/VPN) sin reconstruir.
+
+| Variable | Descripción | Desarrollo (`npm run dev`) | Producción (build) |
+|---|---|---|---|
+| `VITE_API_URL` | URL del backend Node | `http://localhost:5000` | (vacío → relativo) |
+| `VITE_WS_URL` | URL del WebSocket de progreso | `ws://localhost:5000/ws` | (vacío → derivado de `window.location`) |
+
+En desarrollo el frontend (vite, `:5173`) y el backend (`:5000`) son orígenes distintos; por eso `.env.development` apunta explícitamente al backend.
 
 ### `backend/.env`
 
 | Variable | Descripción | Valor por defecto |
 |---|---|---|
-| `PORT` | Puerto del servidor backend | `5000` |
+| `PORT` | Puerto del servidor (frontend + API) | `5000` |
+| `HOST` | Interfaz de escucha. `127.0.0.1` = solo local; `0.0.0.0` = accesible en LAN/VPN | `127.0.0.1` |
 | `CONTENT_DIR` | Carpeta raíz por defecto para escaneos | (vacío) |
 | `OLLAMA_HOST` | Host de Ollama si se usa búsqueda IA | `http://localhost:11434` |
-| `OLLAMA_MODEL` | Modelo Ollama a utilizar | `llama3.1:8b` |
+| `OLLAMA_MODEL` | Modelo Ollama a utilizar | `qwen2.5:7b-instruct` |
+
+## Acceso por nombre (`pensadero`) y desde otros dispositivos
+
+Por defecto Pensadero solo escucha en `127.0.0.1` (este PC) y la URL es `http://localhost:5000`.
+
+### Nombre `pensadero` en este PC
+
+Añade un alias en el archivo `hosts` de Windows (requiere permisos de administrador):
+
+1. Abre el **Bloc de notas como administrador**.
+2. Abre `C:\Windows\System32\drivers\etc\hosts`.
+3. Añade al final esta línea:
+   ```
+   127.0.0.1   pensadero
+   ```
+4. Guarda. Ya puedes usar `http://pensadero:5000`.
+
+Para quitar el puerto (`http://pensadero` a secas) pon `PORT=80` en `backend/.env`. Aviso: el puerto 80 puede estar ocupado por otro servicio (IIS, etc.).
+
+### Acceso desde otros dispositivos (LAN / VPN)
+
+Pon `HOST=0.0.0.0` en `backend/.env` y reinicia. Pensadero quedará accesible desde otros equipos por la IP de este PC (`http://<IP>:5000`) o a través de la VPN.
+
+> **Aviso de seguridad:** Pensadero no tiene autenticación. Con `HOST=0.0.0.0` cualquiera en tu red local ve todo el archivo. Hazlo solo en una red de confianza o detrás de una VPN. Para revertir, vuelve a `HOST=127.0.0.1`.
 
 ## Añadir bibliotecas
 

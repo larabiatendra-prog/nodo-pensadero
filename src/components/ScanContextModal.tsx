@@ -1,33 +1,28 @@
-import { useEffect, useState } from 'react';
-import { X, Sparkles, MapPin, Users, Folder, Image as ImageIcon, Film, Check, ChevronDown, ChevronRight, Save, AlertCircle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { X, Sparkles, Users, Folder, Image as ImageIcon, Film, Check, ChevronLeft, ChevronRight, AlertCircle, Loader2 } from 'lucide-react';
 import { api } from '../services/api';
 
 /**
- * Estructura de un contexto editable en el modal. Refleja el frontmatter
- * que el backend serializa a `_contexto.md`. Todo opcional.
+ * Estado editable de una carpeta en el flujo de diapositivas. Solo dos
+ * entradas de cara al usuario: personas (chips) y un texto libre. El resto
+ * de campos antiguos (tipo/lugar/fecha/priorizar/ignorar) se aplanan al
+ * texto libre al cargar — el VLM recibe prosa de todas formas.
  */
-interface ContextForm {
-  tipo: string;
-  lugar: string;
-  fecha: string;
-  personas: string;   // entrada como texto separado por comas
-  priorizar: string;
-  ignorar: string;
-  notas: string;
-}
-
-interface FolderEntry {
+interface FolderSlide {
   dir: string;
   relPath: string;
+  displayName: string;   // nombre legible (subcarpeta o "<raíz> (raíz)")
+  isRoot: boolean;
   mediaCount: number;
   imageCount: number;
   videoCount: number;
+  personas: string[];
+  notas: string;
   hasContext: boolean;
-  // estado en edición — separado del que vino del servidor
-  form: ContextForm;
-  expanded: boolean;
+  // control de guardado autosave
+  dirty: boolean;        // hay cambios sin persistir
   saving: boolean;
-  saved: boolean;
+  saved: boolean;        // último guardado OK (para el check verde)
   error?: string;
 }
 
@@ -47,103 +42,116 @@ interface ScanContextModalProps {
   stepInfo?: { current: number; total: number };
 }
 
-const EMPTY_FORM: ContextForm = {
-  tipo: '',
-  lugar: '',
-  fecha: '',
-  personas: '',
-  priorizar: '',
-  ignorar: '',
-  notas: '',
-};
-
-const TIPO_SUGERENCIAS = [
-  'viaje', 'evento', 'celebración', 'naturaleza',
-  'cotidiano', 'familia', 'amigos', 'trabajo', 'otro'
-];
-
 /**
- * Convierte el contexto recibido del backend (meta object + body string) al
- * formato editable del formulario.
+ * Aplana el contexto antiguo (meta estructurada + cuerpo) a un único texto
+ * libre editable, preservando las personas aparte. Así un `_contexto.md`
+ * con frontmatter heredado de la versión anterior sigue siendo legible y
+ * editable, y al guardar se reescribe como texto libre + personas.
  */
-function metaToForm(meta: Record<string, any> | null | undefined, body: string | undefined): ContextForm {
+function flattenContext(meta: Record<string, any> | null | undefined, body: string | undefined): { personas: string[]; notas: string } {
   const m = meta || {};
   const personas = Array.isArray(m.personas)
-    ? m.personas.join(', ')
-    : (typeof m.personas === 'string' ? m.personas : '');
-  return {
-    tipo: typeof m.tipo === 'string' ? m.tipo : '',
-    lugar: typeof m.lugar === 'string' ? m.lugar : '',
-    fecha: typeof m.fecha === 'string' ? m.fecha : '',
-    personas,
-    priorizar: typeof m.priorizar === 'string' ? m.priorizar : '',
-    ignorar: typeof m.ignorar === 'string' ? m.ignorar : '',
-    notas: typeof body === 'string' ? body : '',
-  };
+    ? m.personas.filter(Boolean)
+    : (typeof m.personas === 'string' && m.personas.trim()
+        ? m.personas.split(',').map((s) => s.trim()).filter(Boolean)
+        : []);
+
+  // Reconstruimos una frase con los campos estructurados antiguos para no
+  // perder nada. Personas queda fuera porque tiene su propio chip-field.
+  const parts: string[] = [];
+  if (typeof m.tipo === 'string' && m.tipo.trim()) parts.push(`Tipo: ${m.tipo.trim()}.`);
+  if (typeof m.lugar === 'string' && m.lugar.trim()) parts.push(`Lugar: ${m.lugar.trim()}.`);
+  if (typeof m.fecha === 'string' && m.fecha.trim()) parts.push(`Fecha: ${m.fecha.trim()}.`);
+  if (typeof m.priorizar === 'string' && m.priorizar.trim()) parts.push(`Priorizar: ${m.priorizar.trim()}.`);
+  if (typeof m.ignorar === 'string' && m.ignorar.trim()) parts.push(`Ignorar: ${m.ignorar.trim()}.`);
+  // Campos personalizados extra que no sean reservados.
+  for (const [k, v] of Object.entries(m)) {
+    if (['tipo', 'lugar', 'fecha', 'personas', 'priorizar', 'ignorar'].includes(k)) continue;
+    if (Array.isArray(v) && v.length) parts.push(`${k}: ${v.join(', ')}.`);
+    else if (typeof v === 'string' && v.trim()) parts.push(`${k}: ${v.trim()}.`);
+  }
+
+  const flattened = parts.join(' ');
+  const freeBody = typeof body === 'string' ? body.trim() : '';
+  const notas = [flattened, freeBody].filter(Boolean).join('\n\n');
+  return { personas, notas };
 }
 
-function formToPayload(f: ContextForm): Record<string, any> {
-  const personasArr = f.personas
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+/** Construye el payload que espera el backend, o null si está todo vacío. */
+function slideToPayload(s: FolderSlide): Record<string, any> | null {
+  const personas = s.personas.map((p) => p.trim()).filter(Boolean);
+  const notas = s.notas.trim();
+  if (personas.length === 0 && notas === '') return null;
   return {
-    tipo: f.tipo.trim() || undefined,
-    lugar: f.lugar.trim() || undefined,
-    fecha: f.fecha.trim() || undefined,
-    personas: personasArr.length > 0 ? personasArr : undefined,
-    priorizar: f.priorizar.trim() || undefined,
-    ignorar: f.ignorar.trim() || undefined,
-    notas: f.notas.trim() || undefined,
+    personas: personas.length ? personas : undefined,
+    notas: notas || undefined,
   };
-}
-
-function isFormEmpty(f: ContextForm): boolean {
-  return Object.values(f).every((v) => !v || v.trim() === '');
 }
 
 export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm, onSkip, onSkipAll, confirmLabel, stepInfo }: ScanContextModalProps) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [folders, setFolders] = useState<FolderEntry[]>([]);
-  const [rootForm, setRootForm] = useState<ContextForm>(EMPTY_FORM);
-  const [rootHasContext, setRootHasContext] = useState(false);
-  const [rootExpanded, setRootExpanded] = useState(true);
-  const [rootSaving, setRootSaving] = useState(false);
-  const [rootSaved, setRootSaved] = useState(false);
-  const [rootError, setRootError] = useState<string | undefined>();
+  const [slides, setSlides] = useState<FolderSlide[]>([]);
+  const [idx, setIdx] = useState(0);
+  const [personaDraft, setPersonaDraft] = useState('');
+
+  // Ref para poder guardar el slide actual sin depender del closure de
+  // estado dentro de los handlers de navegación.
+  const slidesRef = useRef<FolderSlide[]>([]);
+  slidesRef.current = slides;
 
   useEffect(() => {
     if (!isOpen) return;
     setLoading(true);
     setLoadError(null);
+    setIdx(0);
+    setPersonaDraft('');
     api.scanInventory(rootPath)
       .then((res) => {
         if (!res.success || !res.data) {
           throw new Error((res as any).message || 'No se pudo cargar el inventario');
         }
-        const rootCtx = res.data.rootContext;
-        setRootHasContext(!!rootCtx);
-        setRootForm(metaToForm(rootCtx?.meta, rootCtx?.body));
-        setRootExpanded(!rootCtx);
+        // Cada carpeta con material tiene su propia diapositiva — incluida la
+        // raíz si contiene archivos directos (relPath '.'). Si la raíz no tiene
+        // material directo pero queremos poder darle contexto general, la
+        // añadimos igualmente como primer slide.
+        const rootAbs = res.data.root;
+        const rootName = (rootAbs.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || rootAbs);
+        const raw = [...res.data.folders];
+        const hasRootEntry = raw.some((f) => f.relPath === '.' || f.relPath === '');
+        if (!hasRootEntry) {
+          const rc = res.data.rootContext;
+          raw.unshift({
+            dir: rootAbs,
+            relPath: '.',
+            mediaCount: 0,
+            imageCount: 0,
+            videoCount: 0,
+            hasContext: !!rc,
+            context: rc,
+          });
+        }
 
-        // Excluimos la raíz de la lista de subcarpetas: ya está
-        // representada por su propia sección "Contexto de la raíz".
-        const entries: FolderEntry[] = res.data.folders
-          .filter((f) => f.relPath !== '.' && f.relPath !== '')
-          .map((f) => ({
+        const entries: FolderSlide[] = raw.map((f) => {
+          const { personas, notas } = flattenContext(f.context?.meta, f.context?.body);
+          const isRoot = f.relPath === '.' || f.relPath === '';
+          return {
             dir: f.dir,
             relPath: f.relPath,
+            displayName: isRoot ? `${rootName} (raíz)` : f.relPath,
+            isRoot,
             mediaCount: f.mediaCount,
             imageCount: f.imageCount,
             videoCount: f.videoCount,
+            personas,
+            notas,
             hasContext: f.hasContext,
-            form: metaToForm(f.context?.meta, f.context?.body),
-            expanded: false,
+            dirty: false,
             saving: false,
             saved: false,
-          }));
-        setFolders(entries);
+          };
+        });
+        setSlides(entries);
       })
       .catch((err) => setLoadError(err.message || 'Error desconocido'))
       .finally(() => setLoading(false));
@@ -151,58 +159,80 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
 
   if (!isOpen) return null;
 
-  const updateFolder = (idx: number, patch: Partial<FolderEntry>) => {
-    setFolders((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  const current = slides[idx];
+
+  const patchSlide = (i: number, patch: Partial<FolderSlide>) => {
+    setSlides((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   };
 
-  const updateFolderForm = (idx: number, patch: Partial<ContextForm>) => {
-    setFolders((prev) =>
-      prev.map((f, i) => (i === idx ? { ...f, form: { ...f.form, ...patch }, saved: false } : f))
-    );
-  };
-
-  const handleSaveRoot = async () => {
-    setRootSaving(true);
-    setRootError(undefined);
-    setRootSaved(false);
+  /** Persiste el slide `i` si tiene cambios sin guardar. Devuelve promesa. */
+  const persistSlide = async (i: number) => {
+    const s = slidesRef.current[i];
+    if (!s || !s.dirty) return;
+    patchSlide(i, { saving: true, error: undefined });
     try {
-      const payload = isFormEmpty(rootForm) ? null : formToPayload(rootForm);
-      const res = await api.saveScanContext(rootPath, payload);
+      const payload = slideToPayload(s);
+      const res = await api.saveScanContext(s.dir, payload);
       if (!res.success) throw new Error((res as any).error || 'Error guardando');
-      setRootSaved(true);
-      setRootHasContext(!isFormEmpty(rootForm));
+      patchSlide(i, { saving: false, saved: true, dirty: false, hasContext: payload !== null });
     } catch (err: any) {
-      setRootError(err.message || 'Error desconocido');
-    } finally {
-      setRootSaving(false);
+      patchSlide(i, { saving: false, error: err.message || 'Error desconocido' });
     }
   };
 
-  const handleSaveFolder = async (idx: number) => {
-    const f = folders[idx];
-    updateFolder(idx, { saving: true, error: undefined, saved: false });
-    try {
-      const payload = isFormEmpty(f.form) ? null : formToPayload(f.form);
-      const res = await api.saveScanContext(f.dir, payload);
-      if (!res.success) throw new Error((res as any).error || 'Error guardando');
-      updateFolder(idx, { saving: false, saved: true, hasContext: !isFormEmpty(f.form) });
-    } catch (err: any) {
-      updateFolder(idx, { saving: false, error: err.message || 'Error desconocido' });
+  const commitPersonaDraft = () => {
+    const v = personaDraft.trim();
+    if (!v) return;
+    if (!current.personas.includes(v)) {
+      patchSlide(idx, { personas: [...current.personas, v], dirty: true, saved: false });
     }
+    setPersonaDraft('');
   };
 
-  const handleConfirm = () => {
+  const removePersona = (name: string) => {
+    patchSlide(idx, { personas: current.personas.filter((p) => p !== name), dirty: true, saved: false });
+  };
+
+  const goTo = async (next: number) => {
+    // Guardamos el draft de personas pendiente antes de movernos.
+    if (personaDraft.trim()) commitPersonaDraft();
+    await persistSlide(idx);
+    setPersonaDraft('');
+    setIdx(next);
+  };
+
+  const goPrev = () => { if (idx > 0) goTo(idx - 1); };
+  const goNext = () => { if (idx < slides.length - 1) goTo(idx + 1); };
+
+  const handleClose = async () => {
+    if (personaDraft.trim()) commitPersonaDraft();
+    await persistSlide(idx);
+    onClose();
+  };
+
+  const handleConfirm = async () => {
+    if (personaDraft.trim()) commitPersonaDraft();
+    await persistSlide(idx);
     onConfirm();
     // El padre gestiona el cierre; no llamamos onClose aquí para que el
     // flujo scan-all pueda avanzar al siguiente modal sin cerrar todo.
   };
 
-  const withContext = folders.filter((f) => f.hasContext).length;
-  const totalMedia = folders.reduce((sum, f) => sum + f.mediaCount, 0);
+  const handleSkip = async () => {
+    await persistSlide(idx);
+    onSkip?.();
+  };
+  const handleSkipAll = async () => {
+    await persistSlide(idx);
+    onSkipAll?.();
+  };
+
+  const withContext = slides.filter((s) => s.hasContext).length;
+  const isLast = idx === slides.length - 1;
 
   return (
     <div className="fixed inset-0 bg-noche bg-opacity-70 flex items-center justify-center p-4 z-50">
-      <div className="bg-tinta text-marfil rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col border border-pizarra">
+      <div className="bg-tinta text-marfil rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col border border-pizarra">
         {/* Cabecera */}
         <div className="flex items-center justify-between p-6 border-b border-pizarra">
           <div>
@@ -211,19 +241,19 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
               Contexto para el escaneo
             </h2>
             <p className="text-sm text-lavanda-archivo mt-1">
-              Antes de describir cada archivo, el modelo leerá el contexto que rellenes para cada carpeta.
+              Escribe lo que ayude al modelo a entender cada carpeta. Se guarda solo al pasar.
             </p>
           </div>
-          <button onClick={onClose} className="text-lavanda-archivo hover:text-marfil">
+          <button onClick={handleClose} className="text-lavanda-archivo hover:text-marfil">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Cuerpo scrollable */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        {/* Cuerpo */}
+        <div className="flex-1 overflow-y-auto p-6">
           {loading && (
-            <div className="text-center py-12 text-lavanda-archivo">
-              Cargando inventario de carpetas...
+            <div className="text-center py-16 text-lavanda-archivo flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" /> Cargando inventario de carpetas...
             </div>
           )}
 
@@ -237,195 +267,147 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
             </div>
           )}
 
-          {!loading && !loadError && (
-            <>
-              {/* Resumen */}
-              <div className="text-sm text-lavanda-archivo flex items-center gap-4 flex-wrap">
+          {!loading && !loadError && slides.length === 0 && (
+            <div className="text-center py-16 text-lavanda-archivo text-sm">
+              No se ha encontrado material escaneable en esta ruta.
+            </div>
+          )}
+
+          {!loading && !loadError && current && (
+            <div className="space-y-5">
+              {/* Progreso */}
+              <div className="flex items-center justify-between text-xs text-lavanda-archivo">
                 <span>
-                  <span className="text-marfil font-medium">{folders.length}</span> subcarpetas con material
+                  Carpeta <span className="text-marfil font-medium">{idx + 1}</span> / {slides.length}
+                  <span className="ml-3">{withContext} con contexto</span>
                 </span>
-                <span>
-                  <span className="text-marfil font-medium">{totalMedia}</span> archivos en total
-                </span>
-                <span>
-                  <span className="text-marfil font-medium">{withContext}</span> con contexto
-                </span>
+                {current.hasContext ? (
+                  <span className="px-2 py-1 bg-lavanda text-noche rounded-full flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Con contexto
+                  </span>
+                ) : (
+                  <span className="px-2 py-1 bg-pizarra text-lavanda-archivo rounded-full">Sin contexto</span>
+                )}
               </div>
 
-              {/* Contexto de la raíz */}
-              <div className="bg-grafito rounded-2xl border border-pizarra">
-                <button
-                  onClick={() => setRootExpanded(!rootExpanded)}
-                  className="w-full flex items-center justify-between p-4 hover:bg-pizarra/30 rounded-2xl transition-colors"
-                >
-                  <div className="flex items-center gap-3 text-left">
-                    {rootExpanded ? (
-                      <ChevronDown className="w-4 h-4 text-lavanda-archivo" />
-                    ) : (
-                      <ChevronRight className="w-4 h-4 text-lavanda-archivo" />
-                    )}
-                    <Folder className="w-4 h-4 text-lavanda" />
-                    <div>
-                      <p className="text-sm font-medium text-marfil">Contexto de la raíz</p>
-                      <p className="text-xs text-lavanda-archivo truncate max-w-md">{rootPath}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {rootHasContext ? (
-                      <span className="text-xs px-2 py-1 bg-lavanda text-noche rounded-full flex items-center gap-1">
-                        <Check className="w-3 h-3" /> Con contexto
-                      </span>
-                    ) : (
-                      <span className="text-xs px-2 py-1 bg-pizarra text-lavanda-archivo rounded-full">
-                        Sin contexto
-                      </span>
-                    )}
-                  </div>
-                </button>
+              {/* Barra de progreso */}
+              <div className="h-1 bg-pizarra rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-lavanda transition-all"
+                  style={{ width: `${((idx + 1) / slides.length) * 100}%` }}
+                />
+              </div>
 
-                {rootExpanded && (
-                  <div className="px-4 pb-4">
-                    <p className="text-xs text-lavanda-archivo mb-3">
-                      Este contexto aplica a todas las subcarpetas, salvo que cada una añada el suyo propio.
-                    </p>
-                    <ContextFormFields
-                      form={rootForm}
-                      onChange={(patch) => {
-                        setRootForm((prev) => ({ ...prev, ...patch }));
-                        setRootSaved(false);
-                      }}
-                    />
-                    <div className="flex items-center gap-3 mt-3">
-                      <button
-                        onClick={handleSaveRoot}
-                        disabled={rootSaving}
-                        className="px-4 py-2 bg-lavanda text-noche rounded-full text-sm font-medium hover:bg-lavanda-claro transition-colors flex items-center gap-2 disabled:opacity-50"
-                      >
-                        <Save className="w-4 h-4" />
-                        {rootSaving ? 'Guardando...' : 'Guardar contexto'}
+              {/* Nombre de la carpeta + conteo */}
+              <div className="flex items-start gap-3">
+                <Folder className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-lg font-medium text-marfil break-words">{current.displayName}</p>
+                  <div className="flex items-center gap-3 text-xs text-lavanda-archivo mt-1">
+                    {current.imageCount > 0 && (
+                      <span className="flex items-center gap-1"><ImageIcon className="w-3 h-3" />{current.imageCount}</span>
+                    )}
+                    {current.videoCount > 0 && (
+                      <span className="flex items-center gap-1"><Film className="w-3 h-3" />{current.videoCount}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Personas (chips) */}
+              <div>
+                <label className="block text-xs text-lavanda-archivo mb-1 flex items-center gap-1">
+                  <Users className="w-3 h-3" /> Personas que pueden aparecer
+                </label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {current.personas.map((p) => (
+                    <span key={p} className="inline-flex items-center gap-1 px-3 py-1 bg-pizarra rounded-full text-sm text-marfil">
+                      {p}
+                      <button onClick={() => removePersona(p)} className="text-lavanda-archivo hover:text-marfil">
+                        <X className="w-3 h-3" />
                       </button>
-                      {rootSaved && (
-                        <span className="text-xs text-salvia flex items-center gap-1">
-                          <Check className="w-3 h-3" /> Guardado
-                        </span>
-                      )}
-                      {rootError && (
-                        <span className="text-xs text-red-400">{rootError}</span>
-                      )}
-                    </div>
-                  </div>
-                )}
+                    </span>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={personaDraft}
+                  onChange={(e) => setPersonaDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ',') {
+                      e.preventDefault();
+                      commitPersonaDraft();
+                    } else if (e.key === 'Backspace' && !personaDraft && current.personas.length) {
+                      removePersona(current.personas[current.personas.length - 1]);
+                    }
+                  }}
+                  onBlur={commitPersonaDraft}
+                  placeholder="Escribe un nombre y pulsa Enter..."
+                  className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                />
               </div>
 
-              {/* Subcarpetas */}
-              <div className="space-y-2">
-                {folders.map((f, idx) => (
-                  <div key={f.dir} className="bg-grafito rounded-2xl border border-pizarra">
-                    <button
-                      onClick={() => updateFolder(idx, { expanded: !f.expanded })}
-                      className="w-full flex items-center justify-between p-4 hover:bg-pizarra/30 rounded-2xl transition-colors"
-                    >
-                      <div className="flex items-center gap-3 text-left min-w-0">
-                        {f.expanded ? (
-                          <ChevronDown className="w-4 h-4 text-lavanda-archivo flex-shrink-0" />
-                        ) : (
-                          <ChevronRight className="w-4 h-4 text-lavanda-archivo flex-shrink-0" />
-                        )}
-                        <Folder className="w-4 h-4 text-lavanda flex-shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-marfil truncate">{f.relPath === '.' ? '(raíz)' : f.relPath}</p>
-                          <div className="flex items-center gap-3 text-xs text-lavanda-archivo">
-                            {f.imageCount > 0 && (
-                              <span className="flex items-center gap-1">
-                                <ImageIcon className="w-3 h-3" />
-                                {f.imageCount}
-                              </span>
-                            )}
-                            {f.videoCount > 0 && (
-                              <span className="flex items-center gap-1">
-                                <Film className="w-3 h-3" />
-                                {f.videoCount}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {f.hasContext ? (
-                          <span className="text-xs px-2 py-1 bg-lavanda text-noche rounded-full flex items-center gap-1">
-                            <Check className="w-3 h-3" /> Con contexto
-                          </span>
-                        ) : (
-                          <span className="text-xs px-2 py-1 bg-pizarra text-lavanda-archivo rounded-full">
-                            Sin contexto
-                          </span>
-                        )}
-                      </div>
-                    </button>
-
-                    {f.expanded && (
-                      <div className="px-4 pb-4">
-                        <ContextFormFields
-                          form={f.form}
-                          onChange={(patch) => updateFolderForm(idx, patch)}
-                        />
-                        <div className="flex items-center gap-3 mt-3">
-                          <button
-                            onClick={() => handleSaveFolder(idx)}
-                            disabled={f.saving}
-                            className="px-4 py-2 bg-lavanda text-noche rounded-full text-sm font-medium hover:bg-lavanda-claro transition-colors flex items-center gap-2 disabled:opacity-50"
-                          >
-                            <Save className="w-4 h-4" />
-                            {f.saving ? 'Guardando...' : 'Guardar contexto'}
-                          </button>
-                          {f.saved && (
-                            <span className="text-xs text-salvia flex items-center gap-1">
-                              <Check className="w-3 h-3" /> Guardado
-                            </span>
-                          )}
-                          {f.error && (
-                            <span className="text-xs text-red-400">{f.error}</span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                {folders.length === 0 && (
-                  <div className="text-center py-8 text-lavanda-archivo text-sm">
-                    No se ha encontrado material en subcarpetas. El escaneo usará sólo el contexto de la raíz (si existe).
-                  </div>
-                )}
+              {/* Texto libre */}
+              <div>
+                <label className="block text-xs text-lavanda-archivo mb-1">Contexto de la carpeta</label>
+                <textarea
+                  autoFocus
+                  value={current.notas}
+                  onChange={(e) => patchSlide(idx, { notas: e.target.value, dirty: true, saved: false })}
+                  rows={6}
+                  placeholder="Viaje a París, fin de semana. Priorizar momentos de grupo, ignorar planos de relleno..."
+                  className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-2xl text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
+                />
+                <div className="h-4 mt-1 text-xs">
+                  {current.saving && (
+                    <span className="text-lavanda-archivo flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Guardando...</span>
+                  )}
+                  {!current.saving && current.saved && (
+                    <span className="text-salvia flex items-center gap-1"><Check className="w-3 h-3" /> Guardado</span>
+                  )}
+                  {current.error && <span className="text-red-400">{current.error}</span>}
+                </div>
               </div>
-            </>
+
+              {/* Navegación entre slides */}
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  onClick={goPrev}
+                  disabled={idx === 0}
+                  className="btn-secondary flex items-center gap-1 disabled:opacity-30"
+                >
+                  <ChevronLeft className="w-4 h-4" /> Atrás
+                </button>
+                <button
+                  onClick={goNext}
+                  disabled={isLast}
+                  className="btn-secondary flex items-center gap-1 disabled:opacity-30"
+                >
+                  Siguiente <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
-        {/* Pie con acciones */}
+        {/* Pie con acciones globales */}
         <div className="flex items-center justify-between p-6 border-t border-pizarra">
-          <div className="flex items-center gap-3">
+          <div>
             {stepInfo ? (
               <p className="text-xs text-lavanda-archivo">
                 Ruta <span className="text-marfil font-medium">{stepInfo.current}</span> de <span className="text-marfil font-medium">{stepInfo.total}</span>
               </p>
             ) : (
-              <p className="text-xs text-lavanda-archivo">
-                Las carpetas sin contexto se escanearán con el prompt genérico.
-              </p>
+              <p className="text-xs text-lavanda-archivo">Las carpetas sin contexto usan el prompt genérico.</p>
             )}
           </div>
           <div className="flex gap-3">
-            <button onClick={onClose} className="btn-secondary">Cancelar</button>
+            <button onClick={handleClose} className="btn-secondary">Cancelar</button>
             {onSkipAll && (
-              <button onClick={onSkipAll} className="btn-secondary">
-                Omitir todo
-              </button>
+              <button onClick={handleSkipAll} className="btn-secondary">Omitir todo</button>
             )}
             {onSkip && (
-              <button onClick={onSkip} className="btn-secondary">
-                Omitir
-              </button>
+              <button onClick={handleSkip} className="btn-secondary">Omitir</button>
             )}
             <button
               onClick={handleConfirm}
@@ -437,107 +419,6 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
             </button>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Sub-componente con los campos editables del contexto. Se reutiliza para
- * la raíz y para cada subcarpeta. Mantiene el layout consistente.
- */
-function ContextFormFields({
-  form,
-  onChange,
-}: {
-  form: ContextForm;
-  onChange: (patch: Partial<ContextForm>) => void;
-}) {
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-lavanda-archivo mb-1">Tipo de material</label>
-          <input
-            list="tipo-suggestions"
-            type="text"
-            value={form.tipo}
-            onChange={(e) => onChange({ tipo: e.target.value })}
-            placeholder="viaje, evento, naturaleza..."
-            className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          />
-          <datalist id="tipo-suggestions">
-            {TIPO_SUGERENCIAS.map((t) => <option key={t} value={t} />)}
-          </datalist>
-        </div>
-        <div>
-          <label className="block text-xs text-lavanda-archivo mb-1 flex items-center gap-1">
-            <MapPin className="w-3 h-3" /> Lugar
-          </label>
-          <input
-            type="text"
-            value={form.lugar}
-            onChange={(e) => onChange({ lugar: e.target.value })}
-            placeholder="París, casa de Carlos..."
-            className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-lavanda-archivo mb-1">Fecha (opcional)</label>
-          <input
-            type="text"
-            value={form.fecha}
-            onChange={(e) => onChange({ fecha: e.target.value })}
-            placeholder="2024-03, marzo 2024..."
-            className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-lavanda-archivo mb-1 flex items-center gap-1">
-            <Users className="w-3 h-3" /> Personas (separadas por coma)
-          </label>
-          <input
-            type="text"
-            value={form.personas}
-            onChange={(e) => onChange({ personas: e.target.value })}
-            placeholder="Carlos, Sara, Ester..."
-            className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-lavanda-archivo mb-1">Priorizar</label>
-          <input
-            type="text"
-            value={form.priorizar}
-            onChange={(e) => onChange({ priorizar: e.target.value })}
-            placeholder="momentos de grupo, retratos..."
-            className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-lavanda-archivo mb-1">Ignorar</label>
-          <input
-            type="text"
-            value={form.ignorar}
-            onChange={(e) => onChange({ ignorar: e.target.value })}
-            placeholder="planos de relleno, fondos..."
-            className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label className="block text-xs text-lavanda-archivo mb-1">Notas adicionales para el modelo</label>
-        <textarea
-          value={form.notas}
-          onChange={(e) => onChange({ notas: e.target.value })}
-          rows={3}
-          placeholder="Cualquier detalle libre que ayude a interpretar las imágenes..."
-          className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-2xl text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
-        />
       </div>
     </div>
   );

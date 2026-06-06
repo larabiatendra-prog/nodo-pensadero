@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil } from 'lucide-react';
+import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -77,6 +77,11 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   // Token de cache-bust de avatares: se incrementa al cambiar un avatar para
   // forzar recarga (el avatar.jpg se sobrescribe en el mismo path).
   const [avatarBust, setAvatarBust] = useState(0);
+  // Fusionar persona<->persona (M5a): absorber otra persona en selectedPerson.
+  const [mergePersonOpen, setMergePersonOpen] = useState(false);
+  const [mergeLoserId, setMergeLoserId] = useState<string | null>(null);
+  const [mergeQuery, setMergeQuery] = useState('');
+  const [mergingPersons, setMergingPersons] = useState(false);
   interface FaceCluster {
     cluster_id: string;
     face_count: number;            // nº de caras (detecciones)
@@ -711,6 +716,32 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       setAvatarBust(b => b + 1);
     } catch (err: any) {
       setError(err.message || 'Error');
+    }
+  }
+
+  // M5a: fusiona la persona elegida (loser) en selectedPerson (survivor): mezcla
+  // centroides, copia fotos, reasigna sus caras y elimina la loser.
+  async function handleMergePersons() {
+    if (!selectedPerson || !mergeLoserId || mergeLoserId === selectedPerson.person_id) return;
+    setMergingPersons(true);
+    setError(null);
+    try {
+      const r: any = await api.mergePersons(selectedPerson.person_id, mergeLoserId);
+      if (!r.success) throw new Error(r.error || 'Error fusionando personas');
+      setMergePersonOpen(false);
+      setMergeLoserId(null);
+      setMergeQuery('');
+      const list = await loadPersons();
+      if (Array.isArray(list)) {
+        const surv = list.find((p: any) => p.person_id === selectedPerson.person_id);
+        setSelectedPerson(surv || null);
+      }
+      setAvatarBust(b => b + 1);
+      await loadFaceStatus();
+    } catch (err: any) {
+      setError(err.message || 'Error fusionando personas');
+    } finally {
+      setMergingPersons(false);
     }
   }
 
@@ -1374,6 +1405,59 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         </div>
       )}
 
+      {/* Modal: fusionar otra persona en selectedPerson (M5a) */}
+      {mergePersonOpen && selectedPerson && (
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-marfil">Fusionar en {selectedPerson.display_name}</h2>
+              <button onClick={() => setMergePersonOpen(false)} className="text-lavanda-archivo hover:text-marfil"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-bruma mb-3">
+              Elige otra persona: sus caras y fotos pasaran a <span className="text-marfil font-medium">{selectedPerson.display_name}</span> y esa persona se eliminara. No se puede deshacer.
+            </p>
+            <input
+              type="text"
+              value={mergeQuery}
+              onChange={e => setMergeQuery(e.target.value)}
+              placeholder="Buscar persona..."
+              className="w-full mb-3 px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+              autoFocus
+            />
+            <div className="max-h-64 overflow-y-auto space-y-1">
+              {persons
+                .filter(p => p.person_id !== selectedPerson.person_id && (!mergeQuery.trim() || p.display_name.toLowerCase().includes(mergeQuery.trim().toLowerCase())))
+                .map(p => (
+                  <button
+                    key={p.person_id}
+                    onClick={() => setMergeLoserId(p.person_id)}
+                    className={`w-full flex items-center gap-2 p-2 rounded-xl text-left transition-colors ${
+                      mergeLoserId === p.person_id ? 'bg-lavanda/20 ring-1 ring-lavanda' : 'hover:bg-pizarra'
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center bg-pizarra shrink-0">
+                      <Avatar url={avatarSrc(p)} name={p.display_name} bust={avatarBust} iconClassName="w-4 h-4" />
+                    </div>
+                    <span className="text-sm text-marfil truncate">{p.display_name}</span>
+                  </button>
+                ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setMergePersonOpen(false)} disabled={mergingPersons} className="px-4 py-2 text-lavanda-archivo hover:text-marfil">Cancelar</button>
+              <button
+                onClick={handleMergePersons}
+                disabled={!mergeLoserId || mergingPersons}
+                className={`px-4 py-2 rounded-full font-medium ${
+                  !mergeLoserId || mergingPersons ? 'bg-lavanda/30 text-marfil/50 cursor-not-allowed' : 'bg-lavanda text-white hover:bg-lavanda-claro'
+                }`}
+              >
+                {mergingPersons ? 'Fusionando...' : (mergeLoserId ? `Fusionar "${persons.find((p: any) => p.person_id === mergeLoserId)?.display_name || ''}" aqui` : 'Elige una persona')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Layout principal: lista + detalle (vista de personas) */}
       {view === 'persons' && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1451,6 +1535,15 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                       title="Re-entrenar embeddings desde las fotos actuales"
                     >
                       <Brain className={`w-4 h-4 ${trainingIds.has(selectedPerson.person_id) ? 'animate-pulse' : ''}`} />
+                    </button>
+                  )}
+                  {persons.length > 1 && (
+                    <button
+                      onClick={() => { setMergePersonOpen(true); setMergeLoserId(null); setMergeQuery(''); }}
+                      className="p-2 rounded-lg bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors"
+                      title="Fusionar otra persona en esta (combina caras y elimina la otra)"
+                    >
+                      <GitMerge className="w-4 h-4" />
                     </button>
                   )}
                   <button

@@ -500,6 +500,7 @@ module.exports = function createPersonsManageRoutes(deps) {
           faceReidentifier.requestBackgroundReidentify({
             rootDirs,
             broadcastProgress: broadcastProgress || (() => {}),
+            refreshDir,
           });
         }
       } catch (err) {
@@ -644,6 +645,7 @@ module.exports = function createPersonsManageRoutes(deps) {
           rootDirs,
           broadcastProgress: broadcastProgress || (() => {}),
           jobId,
+          refreshDir,
         }).catch(err => {
           console.error('[reidentify] error fatal:', err);
         });
@@ -1185,6 +1187,26 @@ module.exports = function createPersonsManageRoutes(deps) {
     } else if (typeof recomputePersonsAggregate === 'function') {
       recomputePersonsAggregate();
     }
+
+    // 8) Propagar la persona al RESTO de la biblioteca: re-id en background
+    //    (debounced + single-flight) para encontrar otras apariciones que no
+    //    estaban en este cluster. El promote solo etiqueta las caras del cluster;
+    //    sin esto, una persona que sale en mas videos solo apareceria en los del
+    //    cluster. No bloquea la respuesta.
+    setImmediate(async () => {
+      try {
+        const rootDirs = await getActiveRoots();
+        if (rootDirs.length > 0) {
+          faceReidentifier.requestBackgroundReidentify({
+            rootDirs,
+            broadcastProgress: broadcastProgress || (() => {}),
+            refreshDir,
+          });
+        }
+      } catch (err) {
+        console.error('[cluster-promote] re-id propagacion:', err.message);
+      }
+    });
 
     res.json({
       success: true,

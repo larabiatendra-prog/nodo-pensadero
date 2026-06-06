@@ -155,6 +155,7 @@ async function reidentifyAll(opts = {}) {
     rootDirs = [],
     broadcastProgress = () => {},
     jobId = makeJobId(),
+    refreshDir,   // opcional: refresca mediaFiles en memoria por carpeta escrita
   } = opts;
 
   // Single-flight: si ya hay un re-id en curso, no lanzamos un re-walk completo
@@ -303,6 +304,10 @@ async function reidentifyAll(opts = {}) {
           await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
           catalogReader.invalidateCatalog(folder);
           job.catalogsWritten++;
+          // Refrescar mediaFiles en memoria de esta carpeta para que el home
+          // vea las nuevas etiquetas sin un sync completo (el re-id solo cambia
+          // catalogos en disco; sin esto, /api/files seguiria sirviendo lo viejo).
+          if (typeof refreshDir === 'function') { try { await refreshDir(folder); } catch {} }
         } catch (err) {
           console.warn(`[reidentify] error escribiendo ${catalogPath}: ${err.message}`);
         }
@@ -338,7 +343,7 @@ async function reidentifyAll(opts = {}) {
     // Si llegaron disparos mientras corria, ejecutar UNA rerun coalescida.
     if (_pendingRerun) {
       _pendingRerun = false;
-      setImmediate(() => reidentifyAll({ rootDirs, broadcastProgress }).catch(e => console.error('[reidentify-rerun]', e)));
+      setImmediate(() => reidentifyAll({ rootDirs, broadcastProgress, refreshDir }).catch(e => console.error('[reidentify-rerun]', e)));
     }
   }
 }

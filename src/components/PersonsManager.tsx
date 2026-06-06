@@ -498,6 +498,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       setError('selecciona al menos 2 clusters');
       return;
     }
+    // Confirmacion: el merge combina N grupos en uno y es dificil de deshacer.
+    // Antes esta via (multi-select) NO confirmaba, mientras la de grupo si →
+    // riesgo de fusion accidental con un clic.
+    if (!confirm(`¿Fusionar estos ${ids.length} grupos de caras en uno solo? Se combinaran en una sola persona.`)) return;
     setMerging(true);
     setError(null);
     try {
@@ -1013,6 +1017,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                 <p className="text-xs text-lavanda-archivo mt-1">Otros nombres con los que se le conoce. Ayuda al LLM en busquedas.</p>
               </div>
             </div>
+            {error && (
+              <p className="mt-3 text-xs text-estado-error">{error}</p>
+            )}
             <div className="mt-6 flex justify-end gap-2">
               <button
                 onClick={() => { setShowCreate(false); setError(null); }}
@@ -1369,6 +1376,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                 />
               </div>
             </div>
+            {error && (
+              <p className="mt-3 text-xs text-estado-error">{error}</p>
+            )}
             <div className="mt-6 flex justify-end gap-2">
               <button
                 onClick={() => { setPromotingCluster(null); setError(null); }}

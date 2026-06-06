@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { slugifyPersonId } from '../utils/persons';
+import Avatar from './Avatar';
 
 interface Person {
   person_id: string;
@@ -53,7 +54,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
   // Estado del job de re-identificacion retroactiva
   type ReidStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
-  const [reidJob, setReidJob] = useState<{
+  interface ReidJob {
     jobId: string | null;
     status: ReidStatus;
     total: number;
@@ -61,13 +62,21 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     changed: number;
     skippedNoDetections: number;
     catalogsWritten: number;
+    folder?: string;                      // carpeta actual (R5)
+    perPerson?: Record<string, number>;   // caras nuevas por persona (R5)
+    startedAt?: number;                   // para ETA (R5)
     errorMessage?: string;
-  }>({ jobId: null, status: 'idle', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 });
+  }
+  const IDLE_REID_JOB: ReidJob = { jobId: null, status: 'idle', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 };
+  const [reidJob, setReidJob] = useState<ReidJob>(IDLE_REID_JOB);
 
   const { progressData } = useWebSocket(config.wsUrl);
 
   // Vista actual: gestion de personas vs. descubrimiento de caras desconocidas
   const [view, setView] = useState<'persons' | 'clusters'>('persons');
+  // Token de cache-bust de avatares: se incrementa al cambiar un avatar para
+  // forzar recarga (el avatar.jpg se sobrescribe en el mismo path).
+  const [avatarBust, setAvatarBust] = useState(0);
   interface FaceCluster {
     cluster_id: string;
     face_count: number;            // nº de caras (detecciones)
@@ -161,6 +170,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     if (!progressData) return;
     const d: any = progressData;
     if (!d.type || !String(d.type).startsWith('reidentify_')) return;
+    // R6: ignorar re-ids de FONDO. Si en esta pantalla no hay un re-id propio en
+    // curso (idle), no dejamos que un re-id disparado por assign-face secuestre
+    // el banner con su progreso.
+    if (reidJob.status === 'idle') return;
     if (reidJob.jobId && d.jobId && d.jobId !== reidJob.jobId) return;
 
     if (d.type === 'reidentify_start') {
@@ -173,34 +186,97 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         done: d.done ?? prev.done,
         changed: d.changed ?? prev.changed,
         skippedNoDetections: d.skippedNoDetections ?? prev.skippedNoDetections,
+        catalogsWritten: d.catalogsWritten ?? prev.catalogsWritten,
+        folder: typeof d.folder === 'string' ? d.folder : prev.folder, // R5: carpeta actual
       }));
     } else if (d.type === 'reidentify_done') {
+      // El backend manda type 'reidentify_done' tambien al cancelar (con status
+      // que contiene "cancelada"): lo detectamos para usar el estado 'cancelled'.
+      const wasCancelled = typeof d.status === 'string' && /cancel/i.test(d.status);
       setReidJob(prev => ({
         ...prev,
-        status: 'done',
+        status: wasCancelled ? 'cancelled' : 'done',
         total: d.total ?? prev.total,
         done: d.done ?? prev.done,
         changed: d.changed ?? prev.changed,
         skippedNoDetections: d.skippedNoDetections ?? prev.skippedNoDetections,
         catalogsWritten: d.catalogsWritten ?? prev.catalogsWritten,
+        perPerson: d.perPerson ?? prev.perPerson, // R5: delta por persona
       }));
       // Refrescar status (el trainedPersons no cambia pero por consistencia)
       loadFaceStatus();
     } else if (d.type === 'reidentify_error') {
       setReidJob(prev => ({ ...prev, status: 'error', errorMessage: d.error || 'Error desconocido' }));
     }
-  }, [progressData, reidJob.jobId]);
+  }, [progressData, reidJob.jobId, reidJob.status]);
 
   async function handleReidentify() {
     setError(null);
-    setReidJob({ jobId: null, status: 'running', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 });
+    setReidJob({ ...IDLE_REID_JOB, status: 'running', startedAt: Date.now() });
     try {
       const r: any = await api.reidentifyAll();
       if (!r.success) throw new Error(r.error || 'Error iniciando re-identificacion');
       if (r.jobId) setReidJob(prev => ({ ...prev, jobId: r.jobId }));
     } catch (err: any) {
-      setReidJob({ jobId: null, status: 'error', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0, errorMessage: err.message || 'Error' });
+      setReidJob({ ...IDLE_REID_JOB, status: 'error', errorMessage: err.message || 'Error' });
     }
+  }
+
+  // R3: cancelar el re-id en curso (el backend ya soportaba cancelJob; la UI no
+  // lo exponia). El job emitira reidentify_done con "cancelada"; lo reflejamos ya.
+  async function handleCancelReidentify() {
+    if (!reidJob.jobId) return;
+    try {
+      await api.cancelReidentify(reidJob.jobId);
+      setReidJob(prev => ({ ...prev, status: 'cancelled' }));
+    } catch (err: any) {
+      setError(err.message || 'No se pudo cancelar');
+    }
+  }
+
+  // R4: fallback por polling. Si se pierde el frame WS terminal (reconexion de
+  // 5s durante un re-id largo), consultamos el estado del job para no quedarnos
+  // "ejecutando" para siempre. Un 404 = job terminado y ya liberado → cerrar.
+  useEffect(() => {
+    if (reidJob.status !== 'running' || !reidJob.jobId) return;
+    const id = reidJob.jobId;
+    const interval = setInterval(async () => {
+      try {
+        const r: any = await api.reidentifyStatus(id);
+        if (!r.success || !r.data) return;
+        const j = r.data;
+        const terminal = j.status === 'done' || j.status === 'cancelled' || j.status === 'error';
+        setReidJob(prev => (prev.jobId !== id || prev.status !== 'running') ? prev : ({
+          ...prev,
+          status: terminal ? j.status : 'running',
+          total: j.total ?? prev.total,
+          done: j.done ?? prev.done,
+          changed: j.changed ?? prev.changed,
+          skippedNoDetections: j.skippedNoDetections ?? prev.skippedNoDetections,
+          catalogsWritten: j.catalogsWritten ?? prev.catalogsWritten,
+          perPerson: j.perPerson ?? prev.perPerson,
+          errorMessage: j.errorMessage ?? prev.errorMessage,
+        }));
+      } catch (err: any) {
+        if (err && err.status === 404) {
+          setReidJob(prev => (prev.jobId === id && prev.status === 'running') ? ({ ...prev, status: 'done' }) : prev);
+        }
+      }
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [reidJob.status, reidJob.jobId]);
+
+  // R5: ETA del re-id estimada en cliente (elapsed/done extrapolado a total).
+  function reidEtaText(): string | null {
+    if (reidJob.status !== 'running' || !reidJob.startedAt || reidJob.done <= 0 || reidJob.total <= 0) return null;
+    const elapsed = Date.now() - reidJob.startedAt;
+    const rate = reidJob.done / elapsed;
+    if (rate <= 0) return null;
+    const remMs = (reidJob.total - reidJob.done) / rate;
+    if (!isFinite(remMs) || remMs <= 0) return null;
+    const s = Math.round(remMs / 1000);
+    const m = Math.floor(s / 60);
+    return m > 0 ? `~${m}m ${s % 60}s` : `~${s}s`;
   }
 
   // Listener WS para clustering
@@ -624,7 +700,15 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   async function handleSetAvatar(personId: string, filename: string) {
     try {
       await api.setPersonAvatar(personId, filename);
-      await loadPersons();
+      const list = await loadPersons();
+      // Refrescar el selectedPerson desde la lista nueva: el panel de detalle
+      // mostraba estado viejo (su avatar/badge no se movia hasta reseleccionar).
+      if (Array.isArray(list) && selectedPerson) {
+        const updated = list.find((p: any) => p.person_id === selectedPerson.person_id);
+        if (updated) setSelectedPerson(updated);
+      }
+      // Cache-bust: el avatar.jpg se reescribe en el mismo path.
+      setAvatarBust(b => b + 1);
     } catch (err: any) {
       setError(err.message || 'Error');
     }
@@ -801,22 +885,41 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                 {reidJob.status === 'cancelled' && 'Re-identificacion cancelada'}
               </span>
             </div>
-            <span className="text-xs text-lavanda-archivo">
-              {reidJob.total > 0 ? `${reidJob.done}/${reidJob.total}` : 'preparando...'}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-lavanda-archivo">
+                {reidJob.total > 0 ? `${reidJob.done}/${reidJob.total}` : 'preparando...'}
+                {reidJob.status === 'running' && reidEtaText() ? ` · ${reidEtaText()}` : ''}
+              </span>
+              {reidJob.status === 'running' && reidJob.jobId && (
+                <button onClick={handleCancelReidentify} className="text-xs text-estado-error hover:underline">
+                  Cancelar
+                </button>
+              )}
+            </div>
           </div>
           {reidJob.total > 0 && reidJob.status === 'running' && (
-            <div className="w-full bg-grafito rounded-full h-2 overflow-hidden mb-2">
-              <div
-                className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
-                style={{ width: `${Math.round((reidJob.done / reidJob.total) * 100)}%` }}
-              />
-            </div>
+            <>
+              <div className="w-full bg-grafito rounded-full h-2 overflow-hidden mb-1">
+                <div
+                  className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
+                  style={{ width: `${Math.round((reidJob.done / reidJob.total) * 100)}%` }}
+                />
+              </div>
+              {reidJob.folder && (
+                <p className="text-xs text-bruma truncate">en {reidJob.folder.split(/[\\/]/).pop()}</p>
+              )}
+            </>
           )}
           {(reidJob.status === 'done' || reidJob.status === 'cancelled') && (
             <div className="text-xs text-lavanda-archivo space-y-0.5">
               <p>{reidJob.changed} {reidJob.changed === 1 ? 'foto actualizada' : 'fotos actualizadas'} con nuevos matches.</p>
               <p>{reidJob.catalogsWritten} {reidJob.catalogsWritten === 1 ? 'carpeta reescrita' : 'carpetas reescritas'}.</p>
+              {reidJob.perPerson && Object.keys(reidJob.perPerson).length > 0 && (
+                <p className="text-marfil">
+                  Nuevas caras: {Object.entries(reidJob.perPerson).sort((a, b) => b[1] - a[1]).slice(0, 6)
+                    .map(([pid, n]) => `${persons.find((p: any) => p.person_id === pid)?.display_name || pid} (${n})`).join(', ')}
+                </p>
+              )}
               {reidJob.skippedNoDetections > 0 && (
                 <p className="text-bruma">
                   {reidJob.skippedNoDetections} {reidJob.skippedNoDetections === 1 ? 'entrada antigua' : 'entradas antiguas'} sin embeddings persistidos — necesitan re-escaneo (Rutas → escanear con IA) para entrar en la re-identificacion.
@@ -825,11 +928,11 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             </div>
           )}
           {reidJob.status === 'error' && reidJob.errorMessage && (
-            <p className="text-xs text-red-400">{reidJob.errorMessage}</p>
+            <p className="text-xs text-estado-error">{reidJob.errorMessage}</p>
           )}
           {(reidJob.status === 'done' || reidJob.status === 'error' || reidJob.status === 'cancelled') && (
             <button
-              onClick={() => setReidJob({ jobId: null, status: 'idle', total: 0, done: 0, changed: 0, skippedNoDetections: 0, catalogsWritten: 0 })}
+              onClick={() => setReidJob(IDLE_REID_JOB)}
               className="mt-2 text-xs text-lavanda-archivo hover:text-marfil"
             >
               Cerrar
@@ -1303,11 +1406,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                         ? 'ring-2 ring-lavanda ring-offset-2 ring-offset-noche bg-pizarra'
                         : 'bg-pizarra hover:ring-2 hover:ring-lavanda-archivo hover:ring-offset-2 hover:ring-offset-noche'
                     }`}>
-                      {avatarSrc(person) ? (
-                        <img src={avatarSrc(person)!} alt={person.display_name} className="w-full h-full object-cover" />
-                      ) : (
-                        <User className="w-7 h-7 text-lavanda-archivo" />
-                      )}
+                      <Avatar url={avatarSrc(person)} name={person.display_name} bust={avatarBust} />
                     </div>
                     <p className={`text-xs font-medium truncate w-full text-center ${
                       selected ? 'text-lavanda' : 'text-marfil'
@@ -1328,11 +1427,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               <div className="flex items-start justify-between mb-6">
                 <div className="flex items-center gap-4">
                   <div className="w-16 h-16 rounded-full bg-pizarra overflow-hidden flex items-center justify-center">
-                    {avatarSrc(selectedPerson) ? (
-                      <img src={avatarSrc(selectedPerson)!} alt={selectedPerson.display_name} className="w-full h-full object-cover" />
-                    ) : (
-                      <User className="w-7 h-7 text-lavanda-archivo" />
-                    )}
+                    <Avatar url={avatarSrc(selectedPerson)} name={selectedPerson.display_name} bust={avatarBust} />
                   </div>
                   <div>
                     <DisplayNameEditor
@@ -1560,11 +1655,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                           >
                             <div className="flex items-center gap-3">
                               <div className="w-12 h-12 rounded-full bg-grafito overflow-hidden flex-shrink-0 flex items-center justify-center">
-                                {avatarSrc(person) ? (
-                                  <img src={avatarSrc(person)!} alt={person.display_name} className="w-full h-full object-cover" />
-                                ) : (
-                                  <User className="w-5 h-5 text-lavanda-archivo" />
-                                )}
+                                <Avatar url={avatarSrc(person)} name={person.display_name} bust={avatarBust} iconClassName="w-5 h-5" />
                               </div>
                               <div className="flex-1 min-w-0">
                                 <p className="text-marfil font-medium text-sm truncate">{person.display_name}</p>

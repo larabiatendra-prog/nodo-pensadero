@@ -96,6 +96,12 @@ function loadCacheFromDiskSync() {
       console.log('[faceClusterer] cache de disco con formato anterior (sin faces[]), descartando para recomputar');
       return;
     }
+    // Sellar con la dataVersion ACTUAL del registry: el contador es en-memoria
+    // y se reinicia a 0 por proceso, asi que no es comparable entre arranques.
+    // Confiamos en el cache de disco (ya validado TTL) y lo marcamos fresco para
+    // esta sesion; se volvera stale en cuanto una mutacion del registry suba el
+    // contador.
+    parsed.dataVersion = peopleRegistry.getDataVersion();
     _cache = parsed;
     const ageMin = Math.round((Date.now() - parsed.computedAt) / 60000);
     console.log(`[faceClusterer] cache cargado de disco: ${parsed.clusters.length} clusters (computado hace ${ageMin} min)`);
@@ -352,6 +358,11 @@ async function clusterAll(opts = {}) {
         avg_score: c.count > 0 ? c.scoreSum / c.count : 0,
         dominant_age: dominantAge,
         dominant_gender: dominantGender,
+        // Persistir los counts por bucket (mapas lite de enteros) para que
+        // mergeClusters pueda sumar y recomputar la moda real, en vez de copiar
+        // la del cluster mas grande.
+        ageCounts: c.ageCounts,
+        genderCounts: c.genderCounts,
         samples: c.samples,
         faces: c.faces, // lista lite con TODAS las caras del cluster
         centroid_b64: encodeEmbedding(c.centroid),
@@ -364,7 +375,7 @@ async function clusterAll(opts = {}) {
 
   // Cachear (solo si no fue cancelado)
   if (!job.cancelRequested) {
-    _cache = { computedAt: Date.now(), clusters: usable };
+    _cache = { computedAt: Date.now(), clusters: usable, dataVersion: peopleRegistry.getDataVersion() };
     saveCacheToDisk();
   }
 
@@ -384,7 +395,18 @@ async function clusterAll(opts = {}) {
 function getCached() {
   if (!_cache) return null;
   if (Date.now() - _cache.computedAt > CACHE_TTL_MS) return null;
+  // Stale si el registry cambio (alta/baja/edicion/retrain) desde que se
+  // computo: "Descubrir caras" no debe seguir mostrando clusters de gente ya
+  // registrada (promote duplicado) ni ocultar caras de un borrado.
+  if (_cache.dataVersion !== peopleRegistry.getDataVersion()) return null;
   return _cache;
+}
+
+// Re-sella el cache con la dataVersion actual. Lo usan las operaciones de
+// SESION sobre el propio cache (promote, merge, seed): cambian el registry o el
+// cache pero no deben auto-invalidar la vista de descubrimiento en curso.
+function restampCacheVersion() {
+  if (_cache) _cache.dataVersion = peopleRegistry.getDataVersion();
 }
 
 function invalidateCache() {
@@ -402,6 +424,9 @@ function removeClusterFromCache(clusterId) {
   const before = _cache.clusters.length;
   _cache.clusters = _cache.clusters.filter(c => c.cluster_id !== clusterId);
   const changed = _cache.clusters.length < before;
+  // promote() llama aqui tras upsertPerson (que subio dataVersion). Re-sellar
+  // para que el resto del cache siga siendo valido en esta sesion de curado.
+  restampCacheVersion();
   if (changed) saveCacheToDisk();
   return changed;
 }
@@ -439,24 +464,52 @@ function mergeClusters(clusterIds) {
   if (!Array.isArray(clusterIds) || clusterIds.length < 2) return null;
 
   const uniqueIds = Array.from(new Set(clusterIds));
-  const sources = uniqueIds.map(id => _cache.clusters.find(c => c.cluster_id === id));
-  if (sources.some(c => !c)) return null;
+  // Tolerante a ids obsoletos: si alguno ya no existe (promovido/fusionado
+  // antes), se ignora y se fusionan los supervivientes, en vez de fallar el
+  // grupo entero. Solo se aborta si quedan menos de 2 validos.
+  const sources = uniqueIds.map(id => _cache.clusters.find(c => c.cluster_id === id)).filter(Boolean);
+  if (sources.length < 2) return null;
 
+  // DEDUP por (folder|basename|face_index): un cluster "seed" (ad-hoc) puede
+  // compartir caras con un cluster normal. Sin dedup, esas caras se contaban
+  // dos veces → face_count inflado, centroide sesgado hacia las repetidas y
+  // entradas duplicadas en faces[]. Cada cara cuenta UNA vez; el centroide de
+  // cada fuente se pondera por su contribucion UNICA (caras aun no vistas).
+  const faceKey = (f) => `${f.folder}|${f.basename}|${f.face_index}`;
   const merged = new Float32Array(512);
   let totalCount = 0;
   let weightedScoreSum = 0;
-  const allSamples = [];
+  const seenFaces = new Set();
   const allFaces = [];
+  const seenSamples = new Set();
+  const allSamples = [];
 
   for (const c of sources) {
     const cen = decodeEmbedding(c.centroid_b64);
     if (!cen || cen.length !== 512) return null;
-    const w = c.face_count;
-    for (let i = 0; i < 512; i++) merged[i] += cen[i] * w;
-    totalCount += w;
-    weightedScoreSum += (c.avg_score || 0) * w;
-    for (const s of (c.samples || [])) allSamples.push(s);
-    for (const f of (c.faces || [])) allFaces.push(f);
+
+    // Peso = nº de caras de esta fuente que NO habiamos visto ya.
+    let uniqueW = 0;
+    for (const f of (c.faces || [])) {
+      const k = faceKey(f);
+      if (seenFaces.has(k)) continue;
+      seenFaces.add(k);
+      allFaces.push(f);
+      uniqueW++;
+    }
+
+    if (uniqueW > 0) {
+      for (let i = 0; i < 512; i++) merged[i] += cen[i] * uniqueW;
+      totalCount += uniqueW;
+      weightedScoreSum += (c.avg_score || 0) * uniqueW;
+    }
+
+    for (const s of (c.samples || [])) {
+      const k = faceKey(s);
+      if (seenSamples.has(k)) continue;
+      seenSamples.add(k);
+      allSamples.push(s);
+    }
   }
 
   if (totalCount === 0) return null;
@@ -466,22 +519,42 @@ function mergeClusters(clusterIds) {
   allSamples.sort((a, b) => (b.det_score || 0) - (a.det_score || 0));
   const samples = allSamples.slice(0, MAX_SAMPLES_PER_CLUSTER);
 
-  // Demografia: del cluster mas grande (proxy razonable sin tener counts originales)
+  // Demografia: sumar los counts por bucket de todas las fuentes y tomar la moda
+  // REAL. Fallback al cluster mas grande si alguna fuente viene de cache viejo
+  // sin counts. Se persisten los counts mezclados para que un merge posterior
+  // siga siendo correcto.
+  const mAge = {};
+  const mGender = {};
+  let hasCounts = true;
+  for (const c of sources) {
+    if (c.ageCounts) for (const [k, v] of Object.entries(c.ageCounts)) mAge[k] = (mAge[k] || 0) + v;
+    else hasCounts = false;
+    if (c.genderCounts) for (const [k, v] of Object.entries(c.genderCounts)) mGender[k] = (mGender[k] || 0) + v;
+  }
   const biggest = sources.slice().sort((a, b) => b.face_count - a.face_count)[0];
+  const dominantAge = (hasCounts && Object.keys(mAge).length)
+    ? Object.entries(mAge).sort((a, b) => b[1] - a[1])[0][0]
+    : biggest.dominant_age;
+  const dominantGender = (hasCounts && Object.keys(mGender).length)
+    ? Object.entries(mGender).sort((a, b) => b[1] - a[1])[0][0]
+    : biggest.dominant_gender;
 
   const mergedId = `merged_${Date.now().toString(36)}_${sources.length}`;
   const mergedCluster = {
     cluster_id: mergedId,
-    face_count: totalCount,
+    face_count: totalCount, // = allFaces.length (caras unicas)
     avg_score: weightedScoreSum / totalCount,
-    dominant_age: biggest.dominant_age,
-    dominant_gender: biggest.dominant_gender,
+    dominant_age: dominantAge,
+    dominant_gender: dominantGender,
+    ageCounts: mAge,
+    genderCounts: mGender,
     samples,
     faces: allFaces,
     centroid_b64: encodeEmbedding(merged),
   };
 
   _cache.clusters = [mergedCluster, ..._cache.clusters.filter(c => !uniqueIds.includes(c.cluster_id))];
+  restampCacheVersion();
   saveCacheToDisk();
   return mergedCluster;
 }
@@ -694,6 +767,8 @@ async function seedClusterFromFace({ folder, basename, face_index, threshold, ro
     avg_score: count > 0 ? scoreSum / count : 0,
     dominant_age: dominantAge,
     dominant_gender: dominantGender,
+    ageCounts,
+    genderCounts,
     samples,
     faces: facesList,
     centroid_b64: encodeEmbedding(sumEmb),
@@ -705,6 +780,7 @@ async function seedClusterFromFace({ folder, basename, face_index, threshold, ro
   } else {
     _cache.clusters = [cluster, ..._cache.clusters];
   }
+  restampCacheVersion();
   saveCacheToDisk();
 
   return cluster;

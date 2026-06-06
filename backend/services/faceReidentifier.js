@@ -23,19 +23,29 @@ const path = require('path');
 const { getInstance: getFaceService } = require('./faceService');
 const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
+const { atomicWriteFile } = require('../utils/jsonStore');
+const { computeFaceCount, rebuildFaces, inferDemographics } = require('../utils/faceCatalog');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
-const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
 
-function ageBucket(age) {
-  if (typeof age !== 'number' || !isFinite(age)) return null;
-  if (age < 16) return 'niño';
-  if (age < 30) return 'joven';
-  if (age < 60) return 'adulto';
-  return 'senior';
-}
+// Yield al event-loop cada N entradas: el matching es CPU sincrono; sin esto un
+// catalogo grande congela el server (otras requests, heartbeats WS y los
+// propios frames de progreso se encolan y salen a golpes).
+const YIELD_EVERY = 200;
+const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
 const activeJobs = new Map();
+
+// Single-flight: solo un re-id global a la vez. Un segundo disparo mientras hay
+// uno en curso no lanza un re-walk redundante del arbol entero; se marca como
+// "rerun pendiente" y se ejecuta una sola vez al terminar el actual.
+let _activeJobId = null;
+let _pendingRerun = false;
+// Debounce del disparo en background (assign-face): coalescer rafagas de
+// asignaciones manuales en un unico re-id tras unos segundos de calma.
+let _bgTimer = null;
+let _bgOpts = null;
+const BG_DEBOUNCE_MS = 4000;
 
 function makeJobId() {
   return `reid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -72,10 +82,10 @@ async function findCatalogs(rootDir) {
  * Devuelve { changed, hadDetections } indicando si la entry se modifico.
  */
 function reidentifyEntry(entry, faceSvc) {
-  if (!entry || !entry.identity) return { changed: false, hadDetections: false };
+  if (!entry || !entry.identity) return { changed: false, hadDetections: false, newlyTagged: [] };
   const detections = entry.identity.detections;
   if (!Array.isArray(detections) || detections.length === 0) {
-    return { changed: false, hadDetections: false };
+    return { changed: false, hadDetections: false, newlyTagged: [] };
   }
 
   // Snapshot de los person_id actuales antes de mutar — para detectar cambio
@@ -86,6 +96,7 @@ function reidentifyEntry(entry, faceSvc) {
 
   // Actualizar el person_id por detección (uno-a-uno con cada cara fisica)
   // para que el visor pueda etiquetar cada bbox.
+  const newlyTagged = [];
   for (let i = 0; i < detections.length; i++) {
     const det = detections[i];
     // Respetar asignaciones manuales: el usuario las fijo a mano (assign-face).
@@ -103,33 +114,15 @@ function reidentifyEntry(entry, faceSvc) {
       delete det.display_name;
       delete det.confidence;
     }
+    // Etiqueta nueva: esta cara gano (o cambio a) un person_id que antes no
+    // tenia. Sirve para el resumen "que cambio" por persona.
+    const now = det.person_id || null;
+    if (now && now !== prevPersonIds[i]) newlyTagged.push(now);
   }
 
-  // faces[]: deduplicar por person_id sobre el estado FINAL de las detecciones
-  // (mayor confidence). Se construye desde detections — no desde `identified` —
-  // para incluir las caras asignadas manualmente, que identifyFaces no recupera.
-  const byId = new Map();
-  for (const d of detections) {
-    if (!d.person_id) continue;
-    const prev = byId.get(d.person_id);
-    if (!prev || (d.confidence || 0) > (prev.confidence || 0)) {
-      byId.set(d.person_id, {
-        person_id: d.person_id,
-        display_name: d.display_name || peopleRegistry.getDisplayName(d.person_id) || d.person_id,
-        confidence: d.confidence || 0,
-      });
-    }
-  }
-  const newFaces = Array.from(byId.values());
-
-  // Demografia inferida de TODAS las detecciones
-  const ageRanges = new Set();
-  const genders = new Set();
-  for (const f of detections) {
-    const a = ageBucket(f.age);
-    if (a) ageRanges.add(a);
-    if (f.gender != null && GENDER_MAP[f.gender]) genders.add(GENDER_MAP[f.gender]);
-  }
+  // faces[]: deduplicado por person_id (mayor confidence), incluyendo las
+  // asignadas a mano. Misma definicion que scan/promote/assign (faceCatalog).
+  const newFaces = rebuildFaces(detections, peopleRegistry.getDisplayName);
 
   // Cambio real: bien el set agregado faces[] cambia, bien alguna detection
   // tiene person_id distinto del previo (caso: una segunda aparicion de la
@@ -140,12 +133,13 @@ function reidentifyEntry(entry, faceSvc) {
   const detectionsChanged = detections.some((det, i) => (det.person_id || null) !== prevPersonIds[i]);
 
   entry.identity.faces = newFaces;
-  entry.identity.face_count = detections.length;
+  entry.identity.face_count = computeFaceCount(detections);
+  const demo = inferDemographics(detections);
   entry.demographics = entry.demographics || {};
-  if (ageRanges.size > 0) entry.demographics.age_ranges = Array.from(ageRanges);
-  if (genders.size > 0) entry.demographics.genders = Array.from(genders);
+  if (demo.age_ranges) entry.demographics.age_ranges = demo.age_ranges;
+  if (demo.genders) entry.demographics.genders = demo.genders;
 
-  return { changed: !sameFaces || detectionsChanged, hadDetections: true };
+  return { changed: !sameFaces || detectionsChanged, hadDetections: true, newlyTagged };
 }
 
 /**
@@ -163,6 +157,22 @@ async function reidentifyAll(opts = {}) {
     jobId = makeJobId(),
   } = opts;
 
+  // Single-flight: si ya hay un re-id en curso, no lanzamos un re-walk completo
+  // en paralelo (desperdicio de I/O en discos externos y ventana de escritura
+  // pisada). Marcamos rerun y devolvemos el job activo. Registramos el jobId
+  // entrante como ALIAS del job activo para que el polling de estado del cliente
+  // funcione (sin esto, el jobId que devolvio la ruta manual daria 404 para
+  // siempre cuando coincide con un re-id de fondo ya en curso).
+  if (_activeJobId) {
+    _pendingRerun = true;
+    const active = activeJobs.get(_activeJobId);
+    if (active && jobId !== _activeJobId) {
+      activeJobs.set(jobId, active);
+      setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
+    }
+    return active || { jobId: _activeJobId, status: 'running', coalesced: true };
+  }
+
   const faceSvc = getFaceService();
   const job = {
     jobId,
@@ -174,131 +184,278 @@ async function reidentifyAll(opts = {}) {
     catalogsWritten: 0,
     cancelRequested: false,
     startedAt: Date.now(),
+    perPerson: {}, // person_id → nº de caras recien etiquetadas (resumen "que cambio")
   };
-  activeJobs.set(jobId, job);
 
-  broadcastProgress({ type: 'reidentify_start', jobId, status: 'Cargando embeddings...' });
+  try {
+    // Dentro del try para que el finally limpie _activeJobId pase lo que pase.
+    _activeJobId = jobId;
+    activeJobs.set(jobId, job);
+    broadcastProgress({ type: 'reidentify_start', jobId, status: 'Cargando embeddings...' });
 
-  // Asegurar daemon Python e indice de personas entrenadas en memoria
-  const ok = await faceSvc.init();
-  if (!ok) {
+    // El matching es 100% JS sobre embeddings ya persistidos: NO necesita el
+    // daemon Python. Intentamos arrancarlo best-effort (para display names u
+    // otros usos), pero si falla NO abortamos — el re-id funciona offline.
+    await faceSvc.init().catch(() => {});
+    await faceSvc.loadAllEmbeddings(peopleRegistry.getState().avatarsBase);
+    if (faceSvc.embeddingsCache.size === 0) {
+      job.status = 'done';
+      job.finishedAt = Date.now();
+      job.errorMessage = 'No hay personas entrenadas. Sube fotos de referencia y vuelve a intentar.';
+      broadcastProgress({ type: 'reidentify_done', jobId, total: 0, done: 0, changed: 0, skippedNoDetections: 0, status: job.errorMessage });
+      return job;
+    }
+
+    // Localizar todos los _pensadero.json bajo las rutas configuradas
+    const catalogPaths = [];
+    for (const root of rootDirs) {
+      const found = await findCatalogs(root);
+      catalogPaths.push(...found);
+    }
+
+    if (catalogPaths.length === 0) {
+      job.status = 'done';
+      job.finishedAt = Date.now();
+      broadcastProgress({ type: 'reidentify_done', jobId, total: 0, done: 0, changed: 0, skippedNoDetections: 0, status: 'Sin catalogos para procesar' });
+      return job;
+    }
+
+    // Pre-pasada LIGERA: contar entradas sin retener los catalogos en RAM.
+    // Antes se guardaba cada catalogo parseado (con TODOS los embeddings b64)
+    // en un array para toda la vida del job → footprint proporcional a la
+    // biblioteca entera. Ahora solo guardamos path + nº de entradas; cada
+    // catalogo se relee y libera durante el procesado (memoria acotada a uno).
+    let totalEntries = 0;
+    const catalogMeta = [];
+    for (const cp of catalogPaths) {
+      try {
+        const raw = await fs.readFile(cp, 'utf-8');
+        const catalog = JSON.parse(raw);
+        const photosKey = catalog.photos ? 'photos' : (catalog.clips ? 'clips' : 'photos');
+        const count = Object.keys(catalog[photosKey] || {}).length;
+        totalEntries += count;
+        catalogMeta.push({ catalogPath: cp, photosKey });
+      } catch (err) {
+        console.warn(`[reidentify] no se pudo leer ${cp}: ${err.message}`);
+      }
+    }
+
+    job.total = totalEntries;
+    broadcastProgress({
+      type: 'reidentify_progress',
+      jobId,
+      total: job.total,
+      done: 0,
+      changed: 0,
+      skippedNoDetections: 0,
+      catalogsTotal: catalogMeta.length,
+      status: `Re-identificando ${job.total} entradas en ${catalogMeta.length} carpetas...`,
+      percentage: 0,
+    });
+
+    // Procesar carpeta por carpeta (releyendo cada catalogo justo antes de usarlo)
+    for (const { catalogPath, photosKey } of catalogMeta) {
+      if (job.cancelRequested) { job.status = 'cancelled'; break; }
+
+      let catalog;
+      try {
+        catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
+      } catch (err) {
+        console.warn(`[reidentify] no se pudo releer ${catalogPath}: ${err.message}`);
+        continue;
+      }
+      const folder = path.dirname(catalogPath);
+      const photos = catalog[photosKey] || {};
+      let dirty = false;
+
+      for (const basename of Object.keys(photos)) {
+        if (job.cancelRequested) break;
+        const entry = photos[basename];
+        const { changed, hadDetections, newlyTagged } = reidentifyEntry(entry, faceSvc);
+        if (!hadDetections) job.skippedNoDetections++;
+        if (changed) {
+          dirty = true;
+          job.changed++;
+          for (const pid of newlyTagged) job.perPerson[pid] = (job.perPerson[pid] || 0) + 1;
+        }
+        job.done++;
+        // Yield periodico para no congelar el event-loop en catalogos grandes.
+        if (job.done % YIELD_EVERY === 0) await yieldToLoop();
+        if (job.done % 25 === 0 || job.done === job.total) {
+          broadcastProgress({
+            type: 'reidentify_progress',
+            jobId,
+            total: job.total,
+            done: job.done,
+            changed: job.changed,
+            skippedNoDetections: job.skippedNoDetections,
+            catalogsWritten: job.catalogsWritten,
+            file: basename,
+            folder, // carpeta actual — para mostrar "en qué va"
+            percentage: job.total > 0 ? Math.round((job.done / job.total) * 100) : 100,
+          });
+        }
+      }
+
+      if (dirty) {
+        catalog.processed = new Date().toISOString();
+        try {
+          await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+          catalogReader.invalidateCatalog(folder);
+          job.catalogsWritten++;
+        } catch (err) {
+          console.warn(`[reidentify] error escribiendo ${catalogPath}: ${err.message}`);
+        }
+      }
+    }
+
+    job.status = job.cancelRequested ? 'cancelled' : 'done';
+    job.finishedAt = Date.now();
+    broadcastProgress({
+      type: 'reidentify_done',
+      jobId,
+      total: job.total,
+      done: job.done,
+      changed: job.changed,
+      skippedNoDetections: job.skippedNoDetections,
+      catalogsWritten: job.catalogsWritten,
+      perPerson: job.perPerson,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      status: job.status === 'cancelled' ? 'Re-identificacion cancelada' : 'Re-identificacion completada',
+      percentage: 100,
+    });
+    return job;
+  } catch (err) {
     job.status = 'error';
-    job.errorMessage = faceSvc.getStatus().lastError || 'face service no disponible';
-    broadcastProgress({ type: 'reidentify_error', jobId, error: job.errorMessage });
-    setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
+    job.finishedAt = Date.now();
+    job.errorMessage = err.message;
+    broadcastProgress({ type: 'reidentify_error', jobId, error: err.message });
     return job;
-  }
-  await faceSvc.loadAllEmbeddings(peopleRegistry.getState().avatarsBase);
-  if (faceSvc.embeddingsCache.size === 0) {
-    job.status = 'done';
-    job.errorMessage = 'No hay personas entrenadas. Sube fotos de referencia y vuelve a intentar.';
-    broadcastProgress({ type: 'reidentify_done', jobId, total: 0, done: 0, changed: 0, skippedNoDetections: 0, status: job.errorMessage });
+  } finally {
     setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
-    return job;
+    _activeJobId = null;
+    // Si llegaron disparos mientras corria, ejecutar UNA rerun coalescida.
+    if (_pendingRerun) {
+      _pendingRerun = false;
+      setImmediate(() => reidentifyAll({ rootDirs, broadcastProgress }).catch(e => console.error('[reidentify-rerun]', e)));
+    }
   }
+}
 
-  // Localizar todos los _pensadero.json bajo las rutas configuradas
+/**
+ * Disparo en BACKGROUND con debounce (lo usa assign-face). Coalescer una rafaga
+ * de asignaciones manuales en un unico re-id tras unos segundos de calma, en
+ * vez de lanzar un re-walk completo de la biblioteca por CADA cara asignada.
+ */
+function requestBackgroundReidentify(opts = {}) {
+  _bgOpts = opts;
+  if (_bgTimer) clearTimeout(_bgTimer);
+  _bgTimer = setTimeout(() => {
+    _bgTimer = null;
+    const o = _bgOpts; _bgOpts = null;
+    if (!o || !Array.isArray(o.rootDirs) || o.rootDirs.length === 0) return;
+    // reidentifyAll ya es single-flight: si hay uno corriendo, se coalescer.
+    reidentifyAll(o).catch(err => console.error('[reidentify-bg]', err));
+  }, BG_DEBOUNCE_MS);
+}
+
+/**
+ * Reescribe un person_id en TODOS los catalogos:
+ *   - toId === null  → BORRAR (purga): quita person_id/display_name/confidence/
+ *     assigned_manually de cada deteccion de `fromId`. Lo usa el borrado de
+ *     persona para no dejar etiquetas fantasma.
+ *   - toId definido  → REMAPEAR fromId→toId (conserva assigned_manually). Lo usa
+ *     la fusion de personas para reasignar las caras del perdedor al
+ *     superviviente.
+ * En ambos casos recalcula faces[]/face_count. Job en background con progreso
+ * WebSocket (events reidentify_*).
+ */
+async function rewritePersonInCatalogs(fromId, toId, opts = {}) {
+  const { rootDirs = [], broadcastProgress = () => {}, jobId = makeJobId() } = opts;
+  if (!fromId) return { catalogsWritten: 0, facesUpdated: 0 };
+
   const catalogPaths = [];
   for (const root of rootDirs) {
     const found = await findCatalogs(root);
     catalogPaths.push(...found);
   }
 
-  if (catalogPaths.length === 0) {
-    job.status = 'done';
-    broadcastProgress({ type: 'reidentify_done', jobId, total: 0, done: 0, changed: 0, skippedNoDetections: 0, status: 'Sin catalogos para procesar' });
-    setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
-    return job;
-  }
+  let catalogsWritten = 0;
+  let facesUpdated = 0;
+  let processed = 0;
+  const toName = toId ? peopleRegistry.getDisplayName(toId) : null;
+  const verb = toId ? `Reasignando "${fromId}" → "${toId}"` : `Limpiando "${fromId}"`;
 
-  // Pre-pasada para contar entries totales
-  let totalEntries = 0;
-  const parsed = [];
-  for (const cp of catalogPaths) {
+  broadcastProgress({ type: 'reidentify_start', jobId, status: `${verb} en la biblioteca...` });
+
+  for (const catalogPath of catalogPaths) {
+    let catalog;
     try {
-      const raw = await fs.readFile(cp, 'utf-8');
-      const catalog = JSON.parse(raw);
-      const photos = catalog.photos || catalog.clips || {};
-      const count = Object.keys(photos).length;
-      totalEntries += count;
-      parsed.push({ catalogPath: cp, catalog, photosKey: catalog.photos ? 'photos' : (catalog.clips ? 'clips' : 'photos') });
-    } catch (err) {
-      console.warn(`[reidentify] no se pudo leer ${cp}: ${err.message}`);
-    }
-  }
-
-  job.total = totalEntries;
-  broadcastProgress({
-    type: 'reidentify_progress',
-    jobId,
-    total: job.total,
-    done: 0,
-    changed: 0,
-    skippedNoDetections: 0,
-    status: `Re-identificando ${job.total} entradas en ${parsed.length} carpetas...`,
-    percentage: 0,
-  });
-
-  // Procesar carpeta por carpeta
-  for (const { catalogPath, catalog, photosKey } of parsed) {
-    if (job.cancelRequested) {
-      job.status = 'cancelled';
-      break;
-    }
-    const photos = catalog[photosKey] || {};
+      catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
+    } catch { continue; }
+    const folder = path.dirname(catalogPath);
+    const photos = catalog.photos || catalog.clips || {};
     let dirty = false;
+
     for (const basename of Object.keys(photos)) {
-      if (job.cancelRequested) break;
       const entry = photos[basename];
-      const { changed, hadDetections } = reidentifyEntry(entry, faceSvc);
-      if (!hadDetections) job.skippedNoDetections++;
-      if (changed) {
+      const detections = entry?.identity?.detections;
+      if (!Array.isArray(detections)) continue;
+      let entryChanged = false;
+      for (const det of detections) {
+        if (det.person_id === fromId) {
+          if (toId) {
+            det.person_id = toId;
+            det.display_name = toName || toId;
+            // se conserva confidence y assigned_manually
+          } else {
+            delete det.person_id;
+            delete det.display_name;
+            delete det.confidence;
+            delete det.assigned_manually;
+          }
+          entryChanged = true;
+          facesUpdated++;
+        }
+      }
+      if (entryChanged) {
+        entry.identity.faces = rebuildFaces(detections, peopleRegistry.getDisplayName);
+        entry.identity.face_count = computeFaceCount(detections);
         dirty = true;
-        job.changed++;
       }
-      job.done++;
-      if (job.done % 25 === 0 || job.done === job.total) {
-        broadcastProgress({
-          type: 'reidentify_progress',
-          jobId,
-          total: job.total,
-          done: job.done,
-          changed: job.changed,
-          skippedNoDetections: job.skippedNoDetections,
-          file: basename,
-          percentage: Math.round((job.done / job.total) * 100),
-        });
-      }
+      processed++;
+      if (processed % YIELD_EVERY === 0) await yieldToLoop();
     }
 
     if (dirty) {
       catalog.processed = new Date().toISOString();
       try {
-        await fs.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
-        catalogReader.invalidateCatalog(path.dirname(catalogPath));
-        job.catalogsWritten++;
+        await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+        catalogReader.invalidateCatalog(folder);
+        catalogsWritten++;
       } catch (err) {
-        console.warn(`[reidentify] error escribiendo ${catalogPath}: ${err.message}`);
+        console.warn(`[rewrite-person] error escribiendo ${catalogPath}: ${err.message}`);
       }
     }
   }
 
-  job.status = job.cancelRequested ? 'cancelled' : 'done';
-  job.finishedAt = Date.now();
   broadcastProgress({
-    type: 'reidentify_done',
-    jobId,
-    total: job.total,
-    done: job.done,
-    changed: job.changed,
-    skippedNoDetections: job.skippedNoDetections,
-    catalogsWritten: job.catalogsWritten,
-    status: job.status === 'cancelled' ? 'Re-identificacion cancelada' : 'Re-identificacion completada',
+    type: 'reidentify_done', jobId,
+    total: processed, done: processed, changed: facesUpdated,
+    catalogsWritten, skippedNoDetections: 0,
+    status: toId
+      ? `"${fromId}" reasignado a "${toId}" en ${catalogsWritten} carpeta(s)`
+      : `"${fromId}" eliminado de ${catalogsWritten} carpeta(s)`,
     percentage: 100,
   });
 
-  setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
-  return job;
+  return { catalogsWritten, facesUpdated };
+}
+
+// Purga (borra) un person_id de los catalogos. Wrapper de rewrite con toId=null.
+function purgePersonFromCatalogs(personId, opts = {}) {
+  return rewritePersonInCatalogs(personId, null, opts);
 }
 
 function getJobStatus(jobId) {
@@ -312,4 +469,16 @@ function cancelJob(jobId) {
   return true;
 }
 
-module.exports = { reidentifyAll, getJobStatus, cancelJob };
+function isRunning() {
+  return _activeJobId !== null;
+}
+
+module.exports = {
+  reidentifyAll,
+  requestBackgroundReidentify,
+  purgePersonFromCatalogs,
+  rewritePersonInCatalogs,
+  getJobStatus,
+  cancelJob,
+  isRunning,
+};

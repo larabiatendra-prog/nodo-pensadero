@@ -19,6 +19,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs').promises;
+const { atomicWriteFile } = require('../utils/jsonStore');
+const peopleRegistry = require('../peopleRegistry');
 
 const PYTHON_DIR = path.join(__dirname, '..', 'python');
 const PYTHON_EXE_WIN = path.join(PYTHON_DIR, '.venv', 'Scripts', 'python.exe');
@@ -51,6 +53,7 @@ class FaceService {
     this.proc = null;
     this.queue = [];           // peticiones pendientes
     this.current = null;       // promesa actual en vuelo
+    this.reqSeq = 0;           // contador de id de correlacion peticion↔respuesta
     this.stdoutBuffer = '';
     this.starting = null;      // promesa de inicialización en curso
     this.ready = false;
@@ -166,6 +169,7 @@ class FaceService {
       return;
     }
     const entry = this.queue.shift();
+    entry.id = ++this.reqSeq;
     this.current = entry;
     entry.timer = setTimeout(() => {
       this.current = null;
@@ -173,7 +177,9 @@ class FaceService {
       this._pump();
     }, entry.timeoutMs);
     try {
-      this.proc.stdin.write(JSON.stringify(entry.req) + '\n');
+      // Adjuntar el id de correlacion. El daemon lo devuelve en su respuesta
+      // para poder descartar respuestas tardias de peticiones ya expiradas.
+      this.proc.stdin.write(JSON.stringify({ ...entry.req, id: entry.id }) + '\n');
     } catch (err) {
       clearTimeout(entry.timer);
       this.current = null;
@@ -195,23 +201,41 @@ class FaceService {
   }
 
   _handleResponseLine(line) {
-    if (!this.current) {
-      console.warn('[faceService] respuesta sin petición pendiente:', line.slice(0, 100));
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch (err) {
+      // Línea no-JSON: no se puede correlacionar. Si hay petición en vuelo,
+      // fallarla; si no, ignorar (ruido del daemon).
+      if (this.current) {
+        const entry = this.current;
+        this.current = null;
+        clearTimeout(entry.timer);
+        entry.reject(new Error(`JSON parse: ${err.message} (line: ${line.slice(0, 200)})`));
+        this._pump();
+      } else {
+        console.warn('[faceService] respuesta no-JSON sin petición:', line.slice(0, 100));
+      }
       return;
     }
+
+    // Correlación por id: descartar respuestas TARDÍAS de peticiones que ya
+    // expiraron por timeout. Sin esto, la respuesta atrasada de A se emparejaría
+    // posicionalmente con la siguiente petición B y le asignaría el resultado de
+    // A — caras/identidad de la imagen equivocada, persistente y silencioso.
+    const respId = parsed.id;
+    if (!this.current || (respId !== undefined && this.current.id !== respId)) {
+      console.warn(`[faceService] descartando respuesta huérfana (id=${respId})`);
+      return;
+    }
+
     const entry = this.current;
     this.current = null;
     clearTimeout(entry.timer);
-
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed.ok) {
-        entry.resolve(parsed.result);
-      } else {
-        entry.reject(new Error(parsed.error || 'unknown error'));
-      }
-    } catch (err) {
-      entry.reject(new Error(`JSON parse: ${err.message} (line: ${line.slice(0, 200)})`));
+    if (parsed.ok) {
+      entry.resolve(parsed.result);
+    } else {
+      entry.reject(new Error(parsed.error || 'unknown error'));
     }
     this._pump();
   }
@@ -246,6 +270,17 @@ class FaceService {
   }
 
   /**
+   * Transcodifica una imagen (incl. HEIC, que sharp 0.32.x no decodifica) a un
+   * JPEG orientado en `dstPath`, usando el daemon Python (pillow-heif/cv2). No
+   * carga el modelo InsightFace. Lanza si el daemon no esta disponible.
+   */
+  async convertToJpeg(srcPath, dstPath) {
+    const ok = await this.init();
+    if (!ok) throw new Error(this.lastError || 'face service no disponible');
+    return this._sendCommand({ op: 'convert', src: srcPath, dst: dstPath }, 60_000);
+  }
+
+  /**
    * Entrena los embeddings de una persona desde su carpeta de fotos.
    * Persiste el centroid + metadata en <personDir>/embeddings.json.
    */
@@ -266,7 +301,8 @@ class FaceService {
         trained_at: new Date().toISOString(),
       };
       try {
-        await fsp.writeFile(path.join(personDir, 'embeddings.json'), JSON.stringify(out));
+        // backup: embeddings.json NO es regenerable sin re-correr InsightFace.
+        await atomicWriteFile(path.join(personDir, 'embeddings.json'), JSON.stringify(out), { backup: true });
       } catch (err) {
         console.warn(`[faceService] no se pudo persistir embeddings: ${err.message}`);
       }
@@ -293,9 +329,21 @@ class FaceService {
       return this.embeddingsCache;
     }
     this.embeddingsCache.clear();
+    // Cargar guiado por el registry: una carpeta people/<id>/ cuyo id ya NO
+    // esta registrado (borrado fallido en Windows, o promote a medias) es
+    // huerfana y NO debe seguir matcheando — si no, reaparece como persona
+    // fantasma en scans/re-id. Si el registry esta vacio (p.ej. mal
+    // configurado), cargamos todo como antes para no romper el matching.
+    const regIds = new Set(peopleRegistry.getState().personIds || []);
+    const filterByRegistry = regIds.size > 0;
+    let orphans = 0;
     for (const ent of entries) {
       if (!ent.isDirectory()) continue;
       const personId = ent.name;
+      if (filterByRegistry && !regIds.has(personId)) {
+        orphans++;
+        continue;
+      }
       const embFile = path.join(peopleDir, personId, 'embeddings.json');
       try {
         const raw = await fsp.readFile(embFile, 'utf-8');
@@ -310,7 +358,8 @@ class FaceService {
         // Sin embeddings.json: persona registrada pero no entrenada
       }
     }
-    console.log(`[faceService] embeddings cache: ${this.embeddingsCache.size} personas con entrenamiento`);
+    const orphanNote = orphans > 0 ? ` (${orphans} dir(s) huerfanos ignorados)` : '';
+    console.log(`[faceService] embeddings cache: ${this.embeddingsCache.size} personas con entrenamiento${orphanNote}`);
     return this.embeddingsCache;
   }
 

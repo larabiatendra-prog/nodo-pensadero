@@ -26,12 +26,21 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicWriteFileSync } = require('./utils/jsonStore');
 
 // Estado del módulo. Se rellena con `loadRegistry()`.
 let registryPath = null;       // Ruta absoluta al `people_registry.json`
 let avatarsBase = null;         // Carpeta base para los `avatar_path` relativos
 let peopleById = new Map();     // person_id → entrada original del JSON
 let warnedOnce = false;         // evita spam si el JSON está roto
+
+// Contador de cambios en los datos de personas (alta/baja/edicion/retrain).
+// Lo consume faceClusterer para saber si su cache de "caras desconocidas"
+// quedo obsoleto sin depender solo del TTL de 24h. Se incrementa con
+// bumpDataVersion() desde aqui (upsert/delete) y desde las rutas (train).
+let dataVersion = 0;
+function bumpDataVersion() { dataVersion++; }
+function getDataVersion() { return dataVersion; }
 
 /**
  * Carga el registry desde `filePath`. Si `filePath` es vacío/null, deja el
@@ -262,6 +271,7 @@ function upsertPerson(data) {
           : null),
   };
   peopleById.set(personId, entry);
+  bumpDataVersion();
   saveToDisk();
   return entry;
 }
@@ -272,7 +282,10 @@ function upsertPerson(data) {
 function deletePerson(personId) {
   if (!personId) return false;
   const existed = peopleById.delete(personId);
-  if (existed) saveToDisk();
+  if (existed) {
+    bumpDataVersion();
+    saveToDisk();
+  }
   return existed;
 }
 
@@ -290,10 +303,10 @@ function saveToDisk() {
     version: 1,
     people: Array.from(peopleById.values()),
   };
-  // Asegurar carpeta padre
+  // Escritura atómica (tmp + rename, crea la carpeta padre). people_registry.json
+  // NO es regenerable (display names, aliases, curación manual).
   try {
-    fs.mkdirSync(path.dirname(registryPath), { recursive: true });
-    fs.writeFileSync(registryPath, JSON.stringify(data, null, 2), 'utf-8');
+    atomicWriteFileSync(registryPath, JSON.stringify(data, null, 2), { backup: true });
     return true;
   } catch (err) {
     console.error('❌ Error escribiendo registry:', err.message);
@@ -320,6 +333,9 @@ module.exports = {
   validateAvatarPath,
   getState,
   entries,
+  // Version de datos (para invalidar caches dependientes del registry)
+  getDataVersion,
+  bumpDataVersion,
   // CRUD desde la UI
   listAll,
   upsertPerson,

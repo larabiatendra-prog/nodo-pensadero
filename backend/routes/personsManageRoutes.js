@@ -31,6 +31,8 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
+const { atomicWriteFile } = require('../utils/jsonStore');
+const { computeFaceCount, rebuildFaces } = require('../utils/faceCatalog');
 const { getInstance: getFaceService, decodeEmbedding } = require('../services/faceService');
 const faceReidentifier = require('../services/faceReidentifier');
 const faceClusterer = require('../services/faceClusterer');
@@ -64,7 +66,11 @@ module.exports = function createPersonsManageRoutes(deps) {
    * Sin esta funcion, las caras del cluster siguen en disco como "desconocidas"
    * hasta que se haga re-id global (lento para bibliotecas grandes).
    */
-  async function applyPromoteToCatalogs(clusterFaces, personId) {
+  async function applyPromoteToCatalogs(clusterFaces, personId, opts = {}) {
+    // force: asignar el person_id directamente sin re-verificar contra el
+    // daemon. Lo usa el "attach a persona existente": el usuario afirma que el
+    // cluster ES esa persona, aunque su centroide promediado no quede cerca.
+    const force = !!opts.force;
     if (!Array.isArray(clusterFaces) || clusterFaces.length === 0) {
       return { catalogsWritten: 0, facesUpdated: 0 };
     }
@@ -112,44 +118,40 @@ module.exports = function createPersonsManageRoutes(deps) {
         // que el daemon devuelva otro person_id mas cercano.
         const detsRefs = faceIndices.map(idx => entry.identity.detections[idx]).filter(Boolean);
         if (detsRefs.length === 0) continue;
-        const identified = faceSvc.identifyFaces(detsRefs);
+        const identified = force ? null : faceSvc.identifyFaces(detsRefs);
 
         let entryChanged = false;
         for (let i = 0; i < detsRefs.length; i++) {
           const det = detsRefs[i];
-          const match = identified[i];
-          if (match && match.person_id === personId) {
+          if (force) {
             det.person_id = personId;
             det.display_name = displayName;
-            det.confidence = match.similarity;
+            det.confidence = det.confidence || 0.99;
             entryChanged = true;
             facesUpdated++;
+          } else {
+            const match = identified[i];
+            if (match && match.person_id === personId) {
+              det.person_id = personId;
+              det.display_name = displayName;
+              det.confidence = match.similarity;
+              entryChanged = true;
+              facesUpdated++;
+            }
           }
         }
 
         if (entryChanged) {
-          // Recalcular faces[] del entry deduplicado por mayor confidence
-          const byId = new Map();
-          for (const d of entry.identity.detections) {
-            if (!d.person_id) continue;
-            const prev = byId.get(d.person_id);
-            if (!prev || (d.confidence || 0) > prev.confidence) {
-              byId.set(d.person_id, {
-                person_id: d.person_id,
-                display_name: d.display_name || peopleRegistry.getDisplayName(d.person_id) || d.person_id,
-                confidence: d.confidence || 0,
-              });
-            }
-          }
-          entry.identity.faces = Array.from(byId.values());
-          entry.identity.face_count = entry.identity.detections.length;
+          // Recalcular faces[]/face_count con la definicion canonica compartida
+          entry.identity.faces = rebuildFaces(entry.identity.detections, peopleRegistry.getDisplayName);
+          entry.identity.face_count = computeFaceCount(entry.identity.detections);
           dirty = true;
         }
       }
 
       if (dirty) {
         try {
-          await fsp.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
+          await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
           catalogsWritten++;
         } catch (err) {
           console.warn(`[promote] no se pudo escribir ${catalogPath}: ${err.message}`);
@@ -164,6 +166,34 @@ module.exports = function createPersonsManageRoutes(deps) {
     const state = peopleRegistry.getState();
     if (!state.avatarsBase) return null;
     return path.join(state.avatarsBase, 'people', personId);
+  }
+
+  // Lee el embeddings.json de una persona (o null). centroid validado a 512-d.
+  async function readEmbeddingsJson(personDir) {
+    if (!personDir) return null;
+    try {
+      const data = JSON.parse(await fsp.readFile(path.join(personDir, 'embeddings.json'), 'utf-8'));
+      if (Array.isArray(data.centroid) && data.centroid.length === 512) return data;
+    } catch {}
+    return null;
+  }
+
+  // Copia las fotos de referencia de fromDir a toDir (sin avatar.jpg/embeddings).
+  // Renombra ante colision. Devuelve cuantas copio.
+  async function copyReferencePhotos(fromDir, toDir) {
+    let names = [];
+    try { names = await fsp.readdir(fromDir); } catch { return 0; }
+    await fsp.mkdir(toDir, { recursive: true });
+    let copied = 0;
+    for (const name of names) {
+      const lower = name.toLowerCase();
+      if (lower === 'avatar.jpg' || lower === 'embeddings.json') continue;
+      if (!ALLOWED_EXTS.has(path.extname(name).toLowerCase())) continue;
+      let dst = path.join(toDir, name);
+      if (fs.existsSync(dst)) dst = path.join(toDir, `merged_${Date.now()}_${name}`);
+      try { await fsp.copyFile(path.join(fromDir, name), dst); copied++; } catch {}
+    }
+    return copied;
   }
 
   // GET — lista de personas registradas
@@ -192,13 +222,44 @@ module.exports = function createPersonsManageRoutes(deps) {
     const existed = peopleRegistry.deletePerson(personId);
     if (!existed) return res.status(404).json({ success: false, error: 'no existe' });
 
-    // Borrar fotos (best-effort, no bloqueante)
+    // Borrar fotos + embeddings (best-effort, no bloqueante)
     if (dir) {
       try { await fsp.rm(dir, { recursive: true, force: true }); } catch (err) {
         console.warn(`[persons] no se pudo borrar ${dir}: ${err.message}`);
       }
     }
+
+    // Evitar que la persona borrada siga matcheando: sacar su centroide del
+    // cache en memoria y recargar (por si el rm del dir fallo en Windows, la
+    // carga registry-driven ya ignora el dir huerfano).
+    const faceSvc = getFaceService();
+    faceSvc.embeddingsCache.delete(personId);
+    faceSvc.loadAllEmbeddings(peopleRegistry.getState().avatarsBase).catch(() => {});
+
+    // Las caras del borrado vuelven a ser "desconocidas": invalidar discovery.
+    faceClusterer.invalidateCache();
+
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+
+    // Barrer catalogos en background para quitar etiquetas fantasma (incluidas
+    // las assigned_manually, que el re-id normal nunca limpia). Tras escribir,
+    // refrescar mediaFiles para que desaparezca de home/galeria.
+    setImmediate(async () => {
+      try {
+        const rootDirs = await getActiveRoots();
+        if (rootDirs.length === 0) return;
+        const r = await faceReidentifier.purgePersonFromCatalogs(personId, {
+          rootDirs,
+          broadcastProgress: broadcastProgress || (() => {}),
+        });
+        if (r.catalogsWritten > 0 && typeof syncFiles === 'function') {
+          syncFiles().catch(() => {});
+        }
+      } catch (err) {
+        console.error('[persons-delete] purge background:', err.message);
+      }
+    });
+
     res.json({ success: true, deleted: true });
   });
 
@@ -214,6 +275,8 @@ module.exports = function createPersonsManageRoutes(deps) {
       const entries = await fsp.readdir(dir, { withFileTypes: true });
       files = entries
         .filter(e => e.isFile() && ALLOWED_EXTS.has(path.extname(e.name).toLowerCase()))
+        // 'avatar.jpg' es el recorte de cara DERIVADO, no una foto de referencia.
+        .filter(e => e.name.toLowerCase() !== 'avatar.jpg')
         .map(e => e.name)
         .sort();
     } catch {
@@ -270,16 +333,32 @@ module.exports = function createPersonsManageRoutes(deps) {
 
       if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
 
-      // Auto-train: si InsightFace está disponible, re-entrenar los
-      // embeddings de la persona en background. No bloquea la respuesta.
+      // Auto-train + avatar derivado en background. No bloquea la respuesta.
       const faceSvc = getFaceService();
-      faceSvc.init().then(ok => {
+      const rawAvatarRel = path.posix.join('people', personId, filename);
+      faceSvc.init().then(async ok => {
         if (!ok) return;
-        return faceSvc.trainPerson(dir).then(result => {
+        try {
+          const result = await faceSvc.trainPerson(dir);
+          peopleRegistry.bumpDataVersion(); // centroide nuevo → discovery stale
           console.log(`[persons] auto-train ${personId}: count=${result?.count} mean_sim=${result?.mean_similarity_to_centroid?.toFixed(3)}`);
-        }).catch(err => {
+        } catch (err) {
           console.warn(`[persons] auto-train ${personId} falló:`, err.message);
-        });
+        }
+        // Si el avatar sigue siendo la foto CRUDA recien subida, derivar un
+        // recorte de cara limpio (mejor encuadre que object-cover de la cruda).
+        try {
+          const me = peopleRegistry.listAll().find(p => p.person_id === personId);
+          if (me && me.avatar_path === rawAvatarRel) {
+            const rel = await generateAvatarFromPhoto(personId, filename);
+            if (rel) {
+              peopleRegistry.upsertPerson({ person_id: personId, avatar_path: rel });
+              if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+            }
+          }
+        } catch (err) {
+          console.warn(`[persons] avatar derivado ${personId} falló:`, err.message);
+        }
       });
 
       res.json({
@@ -308,6 +387,8 @@ module.exports = function createPersonsManageRoutes(deps) {
     if (!ok) return res.status(503).json({ success: false, error: faceSvc.getStatus().lastError || 'face service no disponible' });
     try {
       const result = await faceSvc.trainPerson(dir);
+      // El centroide cambio: marcar discovery como stale (cluster cache).
+      peopleRegistry.bumpDataVersion();
       res.json({ success: true, data: result });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
@@ -363,24 +444,12 @@ module.exports = function createPersonsManageRoutes(deps) {
     det.confidence = 1.0;
     det.assigned_manually = true;
 
-    // Recalcular identity.faces deduplicado por persona (mayor confidence)
-    const byId = new Map();
-    for (const d of detections) {
-      if (!d.person_id) continue;
-      const prev = byId.get(d.person_id);
-      if (!prev || (d.confidence || 0) > (prev.confidence || 0)) {
-        byId.set(d.person_id, {
-          person_id: d.person_id,
-          display_name: d.display_name || peopleRegistry.getDisplayName(d.person_id) || d.person_id,
-          confidence: d.confidence || 0,
-        });
-      }
-    }
-    entry.identity.faces = Array.from(byId.values());
-    entry.identity.face_count = detections.length;
+    // Recalcular identity.faces/face_count con la definicion canonica compartida
+    entry.identity.faces = rebuildFaces(detections, peopleRegistry.getDisplayName);
+    entry.identity.face_count = computeFaceCount(detections);
 
     try {
-      await fsp.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
+      await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
     } catch (err) {
       return res.status(500).json({ success: false, error: `error escribiendo catalogo: ${err.message}` });
     }
@@ -405,7 +474,7 @@ module.exports = function createPersonsManageRoutes(deps) {
             existing.centroid = Array.from(blended);
             existing.count = n + 1;
             existing.trained_at = new Date().toISOString();
-            await fsp.writeFile(embFile, JSON.stringify(existing), 'utf-8');
+            await atomicWriteFile(embFile, JSON.stringify(existing), { backup: true });
             // Invalidar cache en faceService para que el proximo identifyFaces use el centroid actualizado
             getFaceService().embeddingsCache.delete(personId);
           }
@@ -418,22 +487,115 @@ module.exports = function createPersonsManageRoutes(deps) {
     // Invalidar cluster cache (la cara ya no es desconocida)
     faceClusterer.invalidateCache();
 
-    // Re-identificacion global en background para que otras apariciones sin matchear se asocien
+    // Re-id en background DEBOUNCED para asociar otras apariciones sin matchear.
+    // Antes cada assign-face lanzaba un re-walk completo de la biblioteca; al
+    // etiquetar varias caras seguidas se acumulaban re-ids solapados (causa
+    // principal de "lento"). Ahora se coalescen en uno solo tras la rafaga.
     setImmediate(async () => {
       try {
         const rootDirs = await getActiveRoots();
         if (rootDirs.length > 0) {
-          await faceReidentifier.reidentifyAll({
+          faceReidentifier.requestBackgroundReidentify({
             rootDirs,
             broadcastProgress: broadcastProgress || (() => {}),
           });
         }
       } catch (err) {
-        console.error('[assign-face] error en re-identify background:', err);
+        console.error('[assign-face] error programando re-identify:', err);
       }
     });
 
     res.json({ success: true, person_id: personId, display_name: displayName });
+  });
+
+  // POST — FUSIONAR dos personas del registry en una. El "perdedor" (loser_id)
+  // se funde en el "superviviente" (survivor_id): se mezclan los centroides
+  // (ponderado por count), se copian sus fotos de referencia, se reasignan
+  // todas sus caras en los catalogos al superviviente y se borra el perdedor.
+  router.post('/persons/registry/merge', async (req, res) => {
+    const { survivor_id, loser_id } = req.body || {};
+    if (!assertValidPersonId(survivor_id) || !assertValidPersonId(loser_id)) {
+      return res.status(400).json({ success: false, error: 'survivor_id y loser_id requeridos y validos' });
+    }
+    if (survivor_id === loser_id) {
+      return res.status(400).json({ success: false, error: 'no se puede fusionar una persona consigo misma' });
+    }
+    const state = peopleRegistry.getState();
+    if (!state.personIds.includes(survivor_id)) return res.status(404).json({ success: false, error: `"${survivor_id}" no existe` });
+    if (!state.personIds.includes(loser_id)) return res.status(404).json({ success: false, error: `"${loser_id}" no existe` });
+
+    const survivorDir = getPersonDir(survivor_id);
+    const loserDir = getPersonDir(loser_id);
+
+    // 1) Mezclar centroides (ponderado por count). Si solo uno tiene embeddings,
+    //    se conserva ese. El retrain posterior (si hay fotos) lo recalcula exacto.
+    try {
+      const survEmb = await readEmbeddingsJson(survivorDir);
+      const loseEmb = await readEmbeddingsJson(loserDir);
+      let blended = null;
+      let count = 0;
+      if (survEmb && loseEmb) {
+        const n1 = survEmb.count || 1;
+        const n2 = loseEmb.count || 1;
+        blended = new Float32Array(512);
+        for (let i = 0; i < 512; i++) blended[i] = (survEmb.centroid[i] * n1 + loseEmb.centroid[i] * n2) / (n1 + n2);
+        let norm = 0; for (let i = 0; i < 512; i++) norm += blended[i] * blended[i]; norm = Math.sqrt(norm);
+        if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
+        count = n1 + n2;
+      } else if (loseEmb && !survEmb) {
+        blended = Float32Array.from(loseEmb.centroid);
+        count = loseEmb.count || 1;
+      }
+      if (blended) {
+        const out = {
+          person_id: survivor_id, version: 1, count,
+          photos_used: [], mean_similarity_to_centroid: null, min_similarity_to_centroid: null,
+          centroid: Array.from(blended), trained_at: new Date().toISOString(), source: 'person_merge',
+        };
+        await fsp.mkdir(survivorDir, { recursive: true });
+        await atomicWriteFile(path.join(survivorDir, 'embeddings.json'), JSON.stringify(out), { backup: true });
+      }
+    } catch (err) {
+      console.warn('[person-merge] blend centroides:', err.message);
+    }
+
+    // 2) Copiar fotos de referencia del perdedor al superviviente (para retrain).
+    let photosCopied = 0;
+    try { photosCopied = await copyReferencePhotos(loserDir, survivorDir); } catch {}
+
+    // 3) Borrar el perdedor del registry + su carpeta.
+    peopleRegistry.deletePerson(loser_id);
+    if (loserDir) { try { await fsp.rm(loserDir, { recursive: true, force: true }); } catch {} }
+
+    // 4) Sincronizar caches: quitar el perdedor, recargar, invalidar discovery.
+    const faceSvc = getFaceService();
+    faceSvc.embeddingsCache.delete(loser_id);
+    await faceSvc.loadAllEmbeddings(state.avatarsBase).catch(() => {});
+    faceClusterer.invalidateCache();
+    if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+
+    // 5) Background: reasignar caras del perdedor en catalogos + retrain + sync.
+    setImmediate(async () => {
+      try {
+        const rootDirs = await getActiveRoots();
+        if (rootDirs.length > 0) {
+          await faceReidentifier.rewritePersonInCatalogs(loser_id, survivor_id, {
+            rootDirs,
+            broadcastProgress: broadcastProgress || (() => {}),
+          });
+        }
+        // Retrain del superviviente si tiene fotos (recalcula centroide exacto).
+        if (fs.existsSync(survivorDir)) {
+          const ok = await faceSvc.init();
+          if (ok) { await faceSvc.trainPerson(survivorDir).then(() => peopleRegistry.bumpDataVersion()).catch(() => {}); }
+        }
+        if (typeof syncFiles === 'function') syncFiles().catch(() => {});
+      } catch (err) {
+        console.error('[person-merge] background:', err.message);
+      }
+    });
+
+    res.json({ success: true, data: { survivor_id, loser_id, photos_copied: photosCopied } });
   });
 
   // GET — estado del servicio de reconocimiento facial.
@@ -671,20 +833,109 @@ module.exports = function createPersonsManageRoutes(deps) {
    * un Buffer JPEG redimensionado a tam max.
    */
   async function cropFaceFromImage(srcPath, bbox, size = 200) {
-    const img = sharp(srcPath);
-    const meta = await img.metadata();
-    if (!meta.width || !meta.height) throw new Error('imagen sin dimensiones');
-    const [x1, y1, x2, y2] = bbox;
-    const w = Math.max(1, x2 - x1);
-    const h = Math.max(1, y2 - y1);
-    const padX = w * 0.3;
-    const padY = h * 0.3;
-    let left = Math.max(0, Math.floor(x1 - padX));
-    let top = Math.max(0, Math.floor(y1 - padY));
-    let width = Math.min(meta.width - left, Math.ceil(w + padX * 2));
-    let height = Math.min(meta.height - top, Math.ceil(h + padY * 2));
-    if (width < 4 || height < 4) throw new Error('crop demasiado pequeño');
-    return img.extract({ left, top, width, height }).resize(size, size, { fit: 'cover' }).jpeg({ quality: 82 }).toBuffer();
+    // HEIC/HEIF: sharp 0.32.x no los decodifica. Transcodificar a un JPEG temp
+    // (orientado) via daemon antes de recortar. El jpeg resultante ya no lleva
+    // EXIF de orientacion (cv2 escribe pixeles orientados).
+    const ext = path.extname(srcPath).toLowerCase();
+    let workPath = srcPath;
+    let tmpJpeg = null;
+    if (ext === '.heic' || ext === '.heif') {
+      const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pensadero-heic-'));
+      tmpJpeg = path.join(tmpDir, 'src.jpg');
+      await getFaceService().convertToJpeg(srcPath, tmpJpeg);
+      workPath = tmpJpeg;
+    }
+    try {
+      const img = sharp(workPath, { failOn: 'none' });
+      const meta = await img.metadata();
+      if (!meta.width || !meta.height) throw new Error('imagen sin dimensiones');
+      // Las bbox vienen del detector, que trabaja en espacio YA orientado por EXIF
+      // (cv2 auto-rota; HEIC via exif_transpose). sharp lee pixeles crudos: hay que
+      // auto-orientar con .rotate() y recortar en las dimensiones orientadas. Sin
+      // esto, fotos verticales de movil daban recortes fuera de sitio o 500.
+      const orientation = meta.orientation || 1;
+      const swap = orientation >= 5; // 5,6,7,8 → ancho/alto intercambiados
+      const oW = swap ? meta.height : meta.width;
+      const oH = swap ? meta.width : meta.height;
+      const [x1, y1, x2, y2] = bbox;
+      const w = Math.max(1, x2 - x1);
+      const h = Math.max(1, y2 - y1);
+      const padX = w * 0.3;
+      const padY = h * 0.3;
+      let left = Math.max(0, Math.floor(x1 - padX));
+      let top = Math.max(0, Math.floor(y1 - padY));
+      let width = Math.min(oW - left, Math.ceil(w + padX * 2));
+      let height = Math.min(oH - top, Math.ceil(h + padY * 2));
+      if (width < 4 || height < 4) throw new Error('crop demasiado pequeño');
+      return await img.rotate().extract({ left, top, width, height }).resize(size, size, { fit: 'cover' }).jpeg({ quality: 82 }).toBuffer();
+    } finally {
+      if (tmpJpeg) {
+        try { await fsp.unlink(tmpJpeg); } catch {}
+        try { await fsp.rmdir(path.dirname(tmpJpeg)); } catch {}
+      }
+    }
+  }
+
+  /**
+   * Recorta la cara de una fuente (foto o video) a un Buffer JPEG. Centraliza
+   * el manejo de video (extraer frame en frameTime) + HEIC (lo hace
+   * cropFaceFromImage). Devuelve el Buffer recortado.
+   */
+  async function renderFaceCrop(srcPath, bbox, frameTime, size = 200) {
+    const ext = path.extname(srcPath).toLowerCase();
+    let cropSrc = srcPath;
+    let tmpFrame = null;
+    try {
+      if (VIDEO_EXTS.has(ext)) {
+        const framePath = await extractVideoFrame(srcPath, typeof frameTime === 'number' ? frameTime : null);
+        if (!framePath) throw new Error('no se pudo extraer frame del video');
+        cropSrc = framePath;
+        tmpFrame = framePath;
+      }
+      return await cropFaceFromImage(cropSrc, bbox, size);
+    } finally {
+      if (tmpFrame) {
+        try { await fsp.unlink(tmpFrame); } catch {}
+        try { await fsp.rmdir(path.dirname(tmpFrame)); } catch {}
+      }
+    }
+  }
+
+  // Escribe un Buffer como people/<id>/avatar.jpg y devuelve la ruta relativa.
+  async function writeAvatarFile(personId, buf) {
+    const dir = getPersonDir(personId);
+    if (!dir) throw new Error('avatarsBase no configurado');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(path.join(dir, 'avatar.jpg'), buf);
+    return path.posix.join('people', personId, 'avatar.jpg');
+  }
+
+  /**
+   * Genera un avatar recortando la cara MAS GRANDE de una foto de referencia.
+   * Devuelve la ruta relativa del avatar derivado, o null si no se pudo
+   * (daemon caido, sin caras) — el caller cae entonces a usar la imagen cruda.
+   */
+  async function generateAvatarFromPhoto(personId, filename) {
+    const dir = getPersonDir(personId);
+    if (!dir) return null;
+    const srcPath = path.join(dir, filename);
+    const faceSvc = getFaceService();
+    const ok = await faceSvc.init();
+    if (!ok) return null;
+    let faces = [];
+    try { faces = await faceSvc.detectFaces(srcPath); } catch { return null; }
+    if (!Array.isArray(faces) || faces.length === 0) return null;
+    // Cara de mayor area (la principal de la foto de referencia)
+    faces.sort((a, b) =>
+      ((b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1])) -
+      ((a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1])));
+    try {
+      const buf = await renderFaceCrop(srcPath, faces[0].bbox, null, 400);
+      return await writeAvatarFile(personId, buf);
+    } catch (err) {
+      console.warn(`[avatar] no se pudo recortar avatar de ${filename}: ${err.message}`);
+      return null;
+    }
   }
 
   // GET — thumbnail recortado de una cara concreta del cluster
@@ -697,28 +948,14 @@ module.exports = function createPersonsManageRoutes(deps) {
     }
     const sample = cluster.samples[idx];
     const srcPath = path.join(sample.folder, sample.basename);
-    const ext = path.extname(sample.basename).toLowerCase();
-    let cropSrc = srcPath;
-    let tmpToCleanup = null;
     try {
-      if (VIDEO_EXTS.has(ext)) {
-        const framePath = await extractVideoFrame(srcPath, typeof sample.frame_time === 'number' ? sample.frame_time : null);
-        if (!framePath) return res.status(500).json({ success: false, error: 'no se pudo extraer frame del video' });
-        cropSrc = framePath;
-        tmpToCleanup = framePath;
-      }
-      const buf = await cropFaceFromImage(cropSrc, sample.bbox, 200);
+      const buf = await renderFaceCrop(srcPath, sample.bbox, sample.frame_time, 200);
       res.setHeader('Content-Type', 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=300');
       res.end(buf);
     } catch (err) {
       console.warn('[cluster-thumb]', err.message);
       res.status(500).json({ success: false, error: err.message });
-    } finally {
-      if (tmpToCleanup) {
-        try { await fsp.unlink(tmpToCleanup); } catch {}
-        try { await fsp.rmdir(path.dirname(tmpToCleanup)); } catch {}
-      }
     }
   });
 
@@ -726,7 +963,7 @@ module.exports = function createPersonsManageRoutes(deps) {
   router.post('/persons/clusters/:cluster_id/promote', async (req, res) => {
     const cluster = faceClusterer.getCluster(req.params.cluster_id);
     if (!cluster) return res.status(404).json({ success: false, error: 'cluster no encontrado (cache expirado?)' });
-    const { person_id, display_name, aliases, excluded_sample_indices } = req.body || {};
+    const { person_id, display_name, aliases, excluded_sample_indices, avatar_sample_index, attach_to_existing } = req.body || {};
     if (!person_id || typeof person_id !== 'string') {
       return res.status(400).json({ success: false, error: 'person_id requerido' });
     }
@@ -749,11 +986,17 @@ module.exports = function createPersonsManageRoutes(deps) {
     const state = peopleRegistry.getState();
     if (!state.avatarsBase) return res.status(500).json({ success: false, error: 'avatarsBase no configurado' });
 
-    // Validar que el person_id no choque con uno existente. Si choca, salir
-    // por seguridad — no queremos sobreescribir embeddings.json del usuario.
-    if (state.personIds.includes(person_id)) {
-      return res.status(409).json({ success: false, error: `person_id "${person_id}" ya existe` });
+    // Si el person_id ya existe: por defecto 409 (no pisar embeddings del
+    // usuario). Pero si attach_to_existing===true, ATTACH: el usuario afirma que
+    // este cluster ES esa persona ya registrada → mezclamos centroides y
+    // etiquetamos sus caras, sin crear duplicado.
+    const isAttach = state.personIds.includes(person_id);
+    if (isAttach && !attach_to_existing) {
+      return res.status(409).json({ success: false, error: `person_id "${person_id}" ya existe`, code: 'EXISTS' });
     }
+    const existingEntry = isAttach
+      ? peopleRegistry.listAll().find(p => p.person_id === person_id)
+      : null;
 
     const personDir = path.join(state.avatarsBase, 'people', person_id);
     await fsp.mkdir(personDir, { recursive: true });
@@ -806,6 +1049,23 @@ module.exports = function createPersonsManageRoutes(deps) {
       storedAvgScore = scoreSum / used;
     }
 
+    // ATTACH: mezclar el centroide del cluster con el de la persona existente
+    // (ponderado por count) en vez de sobrescribirlo.
+    if (isAttach) {
+      const existing = await readEmbeddingsJson(personDir);
+      if (existing) {
+        const n1 = existing.count || 1;
+        const n2 = storedCount || 1;
+        const blended = new Float32Array(512);
+        for (let i = 0; i < 512; i++) blended[i] = (existing.centroid[i] * n1 + centroid[i] * n2) / (n1 + n2);
+        let norm = 0; for (let i = 0; i < 512; i++) norm += blended[i] * blended[i]; norm = Math.sqrt(norm);
+        if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
+        centroid = blended;
+        storedCount = n1 + n2;
+        centroidSource = 'cluster_promote_attach';
+      }
+    }
+
     const embJson = {
       person_id,
       version: 1,
@@ -820,46 +1080,50 @@ module.exports = function createPersonsManageRoutes(deps) {
       cluster_excluded_indices: Array.from(excluded).sort((a, b) => a - b),
     };
     try {
-      await fsp.writeFile(path.join(personDir, 'embeddings.json'), JSON.stringify(embJson), 'utf-8');
+      await atomicWriteFile(path.join(personDir, 'embeddings.json'), JSON.stringify(embJson), { backup: true });
     } catch (err) {
       return res.status(500).json({ success: false, error: `no se pudo escribir embeddings.json: ${err.message}` });
     }
 
-    // 2) Recortar el sample con mejor score (no excluido) como avatar visual
+    // 2) Recortar el avatar visual. Por defecto el sample de mejor score no
+    //    excluido; si el usuario eligio uno concreto (avatar_sample_index) y es
+    //    valido y no esta excluido, se usa ese.
     let avatarRelPath = null;
-    const bestSample = includedSamples[0] || cluster.samples[0]; // ya ordenados desc por score
-    if (bestSample) {
-      const srcPath = path.join(bestSample.folder, bestSample.basename);
-      const ext = path.extname(bestSample.basename).toLowerCase();
-      let cropSrc = srcPath;
-      let tmpToCleanup = null;
+    let bestSample = includedSamples[0] || cluster.samples[0]; // ya ordenados desc por score
+    if (Number.isInteger(avatar_sample_index)
+        && avatar_sample_index >= 0
+        && avatar_sample_index < cluster.samples.length
+        && !excluded.has(avatar_sample_index)) {
+      bestSample = cluster.samples[avatar_sample_index];
+    }
+    // En attach se conserva el avatar existente, salvo que la persona no tenga.
+    const shouldSetAvatar = !isAttach || !(existingEntry && existingEntry.avatar_path);
+    if (bestSample && shouldSetAvatar) {
       try {
-        if (VIDEO_EXTS.has(ext)) {
-          const framePath = await extractVideoFrame(srcPath, typeof bestSample.frame_time === 'number' ? bestSample.frame_time : null);
-          if (framePath) { cropSrc = framePath; tmpToCleanup = framePath; }
-        }
-        const buf = await cropFaceFromImage(cropSrc, bestSample.bbox, 400);
-        const avatarPath = path.join(personDir, 'avatar.jpg');
-        await fsp.writeFile(avatarPath, buf);
-        avatarRelPath = path.posix.join('people', person_id, 'avatar.jpg');
+        const buf = await renderFaceCrop(
+          path.join(bestSample.folder, bestSample.basename),
+          bestSample.bbox, bestSample.frame_time, 400);
+        avatarRelPath = await writeAvatarFile(person_id, buf);
       } catch (err) {
         console.warn('[cluster-promote] no se pudo generar avatar:', err.message);
-      } finally {
-        if (tmpToCleanup) {
-          try { await fsp.unlink(tmpToCleanup); } catch {}
-          try { await fsp.rmdir(path.dirname(tmpToCleanup)); } catch {}
-        }
       }
     }
 
-    // 3) Crear entrada en el registry
+    // 3) Registry: persona nueva → crear con nombre/aliases/avatar. Attach →
+    //    conservar nombre/aliases; solo fijar avatar si se genero uno nuevo.
     try {
-      peopleRegistry.upsertPerson({
-        person_id,
-        display_name: (display_name || '').trim() || person_id,
-        aliases: Array.isArray(aliases) ? aliases : [],
-        avatar_path: avatarRelPath || undefined,
-      });
+      if (!isAttach) {
+        peopleRegistry.upsertPerson({
+          person_id,
+          display_name: (display_name || '').trim() || person_id,
+          aliases: Array.isArray(aliases) ? aliases : [],
+          avatar_path: avatarRelPath || undefined,
+        });
+      } else if (avatarRelPath) {
+        peopleRegistry.upsertPerson({ person_id, avatar_path: avatarRelPath });
+      } else {
+        peopleRegistry.bumpDataVersion(); // attach sin cambio de avatar
+      }
     } catch (err) {
       return res.status(500).json({ success: false, error: `upsert fallo: ${err.message}` });
     }
@@ -877,9 +1141,11 @@ module.exports = function createPersonsManageRoutes(deps) {
     //    de cada cara del cluster. Mucho mas rapido que re-id global y suficiente:
     //    solo las caras del cluster son seguras, las demas se identificaran al
     //    proximo re-id manual o scan.
+    //    En attach forzamos la asignacion (force): el usuario afirma que el
+    //    cluster es esa persona, aunque el centroide promediado no quede cerca.
     let promoteUpdate = { catalogsWritten: 0, facesUpdated: 0 };
     try {
-      promoteUpdate = await applyPromoteToCatalogs(cluster.faces || [], person_id);
+      promoteUpdate = await applyPromoteToCatalogs(cluster.faces || [], person_id, { force: isAttach });
     } catch (err) {
       console.warn('[cluster-promote] applyPromoteToCatalogs:', err.message);
     }
@@ -903,9 +1169,10 @@ module.exports = function createPersonsManageRoutes(deps) {
       success: true,
       data: {
         person_id,
-        display_name: display_name || person_id,
+        display_name: isAttach ? (existingEntry?.display_name || person_id) : (display_name || person_id),
         face_count: cluster.face_count,
         avatar_path: avatarRelPath,
+        attached: isAttach,
         catalogs_written: promoteUpdate.catalogsWritten,
         faces_updated: promoteUpdate.facesUpdated,
       },
@@ -942,15 +1209,19 @@ module.exports = function createPersonsManageRoutes(deps) {
     const faceSvc = getFaceService();
     faceSvc.init().then(ok => {
       if (!ok) return;
-      return faceSvc.trainPerson(dir).catch(() => {});
+      return faceSvc.trainPerson(dir).then(() => peopleRegistry.bumpDataVersion()).catch(() => {});
     });
 
     res.json({ success: true, deleted: true });
   });
 
-  // POST — marcar foto como avatar principal
-  router.post('/persons/registry/:id/avatar', (req, res) => {
-    if (!assertValidPersonId(req.params.id)) {
+  // POST — marcar foto como avatar principal. Recorta la cara de esa foto a un
+  // avatar.jpg derivado (encuadre limpio) en vez de usar la imagen cruda con
+  // CSS object-cover (que mostraba un trozo central, a menudo sin la cara).
+  // Si el daemon esta caido o la foto no tiene cara, cae a la imagen cruda.
+  router.post('/persons/registry/:id/avatar', async (req, res) => {
+    const personId = req.params.id;
+    if (!assertValidPersonId(personId)) {
       return res.status(400).json({ success: false, error: 'person_id inválido' });
     }
     const { filename } = req.body || {};
@@ -958,17 +1229,64 @@ module.exports = function createPersonsManageRoutes(deps) {
     const safe = path.basename(filename);
     if (safe !== filename) return res.status(400).json({ success: false, error: 'filename inválido' });
 
-    const dir = getPersonDir(req.params.id);
+    const dir = getPersonDir(personId);
     if (!dir) return res.status(500).json({ success: false, error: 'avatarsBase no configurado' });
     if (!fs.existsSync(path.join(dir, safe))) {
       return res.status(404).json({ success: false, error: 'la foto no existe' });
     }
-    peopleRegistry.upsertPerson({
-      person_id: req.params.id,
-      avatar_path: path.posix.join('people', req.params.id, safe),
-    });
+
+    let avatarRel = null;
+    let faceCropped = false;
+    try {
+      avatarRel = await generateAvatarFromPhoto(personId, safe);
+      faceCropped = !!avatarRel;
+    } catch (err) {
+      console.warn('[avatar] generateAvatarFromPhoto:', err.message);
+    }
+    // Fallback: imagen cruda (compat con el comportamiento anterior).
+    if (!avatarRel) avatarRel = path.posix.join('people', personId, safe);
+
+    peopleRegistry.upsertPerson({ person_id: personId, avatar_path: avatarRel });
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
-    res.json({ success: true });
+    res.json({ success: true, data: { avatar_path: avatarRel, face_cropped: faceCropped } });
+  });
+
+  // POST — fijar avatar desde una DETECCION de la biblioteca (folder/basename/
+  // face_index). Permite elegir como avatar cualquier aparicion visible, sin
+  // tener que subir una foto de referencia.
+  router.post('/persons/registry/:id/avatar-from-detection', async (req, res) => {
+    const personId = req.params.id;
+    if (!assertValidPersonId(personId)) {
+      return res.status(400).json({ success: false, error: 'person_id inválido' });
+    }
+    const state = peopleRegistry.getState();
+    if (!state.personIds.includes(personId)) {
+      return res.status(404).json({ success: false, error: 'persona no encontrada' });
+    }
+    const { folder, basename, face_index } = req.body || {};
+    if (!folder || !basename || typeof face_index !== 'number') {
+      return res.status(400).json({ success: false, error: 'folder, basename y face_index requeridos' });
+    }
+    let catalog;
+    try {
+      catalog = JSON.parse(await fsp.readFile(path.join(folder, '_pensadero.json'), 'utf-8'));
+    } catch (err) {
+      return res.status(404).json({ success: false, error: `catalogo no encontrado: ${err.message}` });
+    }
+    const photos = catalog.photos || catalog.clips || {};
+    const det = photos[basename]?.identity?.detections?.[face_index];
+    if (!det || !Array.isArray(det.bbox)) {
+      return res.status(404).json({ success: false, error: 'deteccion no encontrada' });
+    }
+    try {
+      const buf = await renderFaceCrop(path.join(folder, basename), det.bbox, det.frame_time, 400);
+      const avatarRel = await writeAvatarFile(personId, buf);
+      peopleRegistry.upsertPerson({ person_id: personId, avatar_path: avatarRel });
+      if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+      res.json({ success: true, data: { avatar_path: avatarRel } });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   return router;

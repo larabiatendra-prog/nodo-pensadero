@@ -35,6 +35,8 @@ const peopleRegistry = require('../peopleRegistry');
 const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
+const { atomicWriteFile } = require('../utils/jsonStore');
+const { computeFaceCount } = require('../utils/faceCatalog');
 
 // Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
 const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
@@ -376,7 +378,6 @@ async function scanFolder(folderPath, opts = {}) {
       let technical = {};
       let faceDetections = [];
       let videoFrameTime = null; // segundo del frame con mas caras (default del visor)
-      let videoFaceCount = null; // video: max caras en un solo frame (para face_count)
 
       // Componer el contexto de la carpeta (con herencia desde la raíz del
       // scan). Si no hay `_contexto.md` en ningún nivel, devolverá string
@@ -413,7 +414,6 @@ async function scanFolder(folderPath, opts = {}) {
               // suma: la misma persona en 3 frames no son 3 personas).
               if (dets.length > maxCount) { maxCount = dets.length; videoFrameTime = fr.timestamp; }
             }
-            videoFaceCount = maxCount > 0 ? maxCount : 0;
           }
 
           // 2) Color + CLIP sobre el frame CENTRAL (uno representa bien el clip;
@@ -529,11 +529,6 @@ async function scanFolder(folderPath, opts = {}) {
         }
         entry.identity = entry.identity || {};
         entry.identity.faces = Array.from(byId.values());
-        // En video face_count = max caras en un solo frame (videoFaceCount);
-        // en foto = numero de caras detectadas.
-        entry.identity.face_count = (isVideo && videoFaceCount != null)
-          ? videoFaceCount
-          : faceDetections.length;
 
         // Persistir TODAS las detecciones (con embeddings base64) para que la
         // re-identificación retroactiva pueda recalcular matches al añadir
@@ -564,6 +559,12 @@ async function scanFolder(folderPath, opts = {}) {
             return out;
           })
           .filter(Boolean);
+
+        // face_count canonico: se deriva de las detecciones ya persistidas
+        // (con frame_time), igual que en re-id/promote/assign. Para video es el
+        // maximo de caras en un mismo frame; para foto, el numero de caras. Asi
+        // el significado del campo no depende de quien lo escriba el ultimo.
+        entry.identity.face_count = computeFaceCount(entry.identity.detections);
 
         // En videos: persistir el segundo donde se hizo la detección. El visor
         // usa esto para mostrar los bboxes solo cuando el reproductor pasa cerca
@@ -630,7 +631,10 @@ async function scanFolder(folderPath, opts = {}) {
     if (!c.dirty) continue;
     const targetFile = path.join(dir, PENSADERO_CATALOG_FILENAME);
     try {
-      await fs.writeFile(targetFile, JSON.stringify(c.catalog, null, 2), 'utf-8');
+      // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
+      // verdad y guarda embeddings NO regenerables. Un crash a media escritura
+      // ya no lo trunca. (Antes era el unico writer con fs.writeFile directo.)
+      await atomicWriteFile(targetFile, JSON.stringify(c.catalog, null, 2));
       catalogReader.invalidateCatalog(dir);
       written++;
     } catch (err) {

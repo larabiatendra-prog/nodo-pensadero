@@ -9,9 +9,9 @@
  *   2. sidecar `<archivo>.json`
  *   3. entrada en catálogo `_marina.json`/`_pensadero.json`
  *
- *  Catálogo por carpeta: `_marina.json` o `_pensadero.json` con
+ *  Catálogo por carpeta: `_pensadero.json` o `_marina.json` con
  *     estructura `{ clips | photos | audios: { <basename>: {...} } }`. El
- *     orden de búsqueda es `_marina.json` primero, luego `_pensadero.json`.
+ *     orden de búsqueda es `_pensadero.json` primero, luego `_marina.json`.
  *     La clave de envoltorio depende del tipo de media; el primer match gana.
  *  2. Sidecar individual por archivo: `<archivo.ext>.json` o `<archivo>.json`
  *     junto al archivo. Mismo schema (puede ser un clip directo sin envoltorio
@@ -40,12 +40,23 @@ const fs = require('fs').promises;
 const peopleRegistry = require('./peopleRegistry');
 
 // Nombres de catálogo por carpeta (orden de prioridad).
-const CATALOG_FILENAMES = ['_marina.json', '_pensadero.json'];
+// `_pensadero.json` PRIMERO: es lo que escribe todo el pipeline (scan, re-id,
+// promote, clustering). El `_marina.json` legado queda como fallback para
+// carpetas que aun no se han re-escaneado. Antes iba al reves, y en carpetas
+// con ambos el `_marina.json` viejo TAPABA la data facial fresca → invisible
+// en la UI.
+const CATALOG_FILENAMES = ['_pensadero.json', '_marina.json'];
 // Mantengo esta constante exportada por compat con código legacy del server.
-const CATALOG_FILENAME = '_marina.json';
+const CATALOG_FILENAME = '_pensadero.json';
 
 // Map<dirPath, { mtime: number, catalog: object|null, source: string|null }>
 const catalogCache = new Map();
+
+// Map<catalogPath, mtime> de catálogos ilegibles/corruptos a un mtime dado.
+// Evita re-leer en cada request un JSON que no parsea, pero —a diferencia del
+// cache de null anterior— NO bloquea probar el siguiente candidato de la lista
+// (un `_marina.json` roto ya no impide leer `_pensadero.json`).
+const corruptCatalogs = new Map();
 
 // Map<filePath_sin_ext_o_con_ext, { mtime, clip }>  para sidecars individuales.
 // Clave = ruta absoluta del JSON sidecar concreto leído.
@@ -68,20 +79,26 @@ async function getCatalogForDir(dirPath) {
     }
 
     const mtime = stats.mtime.getTime();
+
+    // Marcado corrupto a este mtime: saltar al siguiente candidato sin re-leer.
+    if (corruptCatalogs.get(catalogPath) === mtime) continue;
+
     const cached = catalogCache.get(dirPath);
-    if (cached && cached.source === catalogPath && cached.mtime === mtime) {
+    if (cached && cached.source === catalogPath && cached.mtime === mtime && cached.catalog) {
       return cached.catalog;
     }
 
     try {
       const raw = await fs.readFile(catalogPath, 'utf-8');
       const parsed = JSON.parse(raw);
+      corruptCatalogs.delete(catalogPath);
       catalogCache.set(dirPath, { mtime, catalog: parsed, source: catalogPath });
       return parsed;
     } catch (err) {
-      console.warn(`⚠️ Error leyendo ${catalogPath}: ${err.message}`);
-      catalogCache.set(dirPath, { mtime, catalog: null, source: catalogPath });
-      return null;
+      // No abortar: un catálogo corrupto no debe ocultar el siguiente candidato.
+      console.warn(`⚠️ Error leyendo ${catalogPath}: ${err.message}. Probando siguiente catálogo.`);
+      corruptCatalogs.set(catalogPath, mtime);
+      continue;
     }
   }
 
@@ -122,7 +139,10 @@ async function getSidecarForFile(filePath) {
     const mtime = stats.mtime.getTime();
     const cached = sidecarCache.get(sidecarPath);
     if (cached && cached.mtime === mtime) {
-      return cached.clip;
+      // Si está cacheado como corrupto/sin-clip, probar el siguiente candidato
+      // en vez de devolver null y abortar la búsqueda del otro sidecar.
+      if (cached.clip) return cached.clip;
+      continue;
     }
 
     try {
@@ -148,11 +168,13 @@ async function getSidecarForFile(filePath) {
       }
 
       sidecarCache.set(sidecarPath, { mtime, clip });
-      return clip;
+      if (clip) return clip;
+      continue; // sidecar válido pero sin clip utilizable: probar el siguiente
     } catch (err) {
-      console.warn(`⚠️ Error leyendo ${sidecarPath}: ${err.message}`);
+      // No abortar: probar el siguiente candidato de sidecar.
+      console.warn(`⚠️ Error leyendo ${sidecarPath}: ${err.message}. Probando siguiente sidecar.`);
       sidecarCache.set(sidecarPath, { mtime, clip: null });
-      return null;
+      continue;
     }
   }
 
@@ -164,6 +186,11 @@ async function getSidecarForFile(filePath) {
  */
 function invalidateCatalog(dirPath) {
   catalogCache.delete(dirPath);
+  // Olvidar el marcado de corrupto para los candidatos de esta carpeta, así un
+  // catálogo reparado fuera de banda se vuelve a intentar leer.
+  for (const filename of CATALOG_FILENAMES) {
+    corruptCatalogs.delete(path.join(dirPath, filename));
+  }
 }
 
 /**
@@ -179,6 +206,7 @@ function invalidateSidecar(sidecarPath) {
 function clearCatalogCache() {
   catalogCache.clear();
   sidecarCache.clear();
+  corruptCatalogs.clear();
 }
 
 /**

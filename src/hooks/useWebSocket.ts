@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface ProgressData {
-  type: 'sync_start' | 'sync_progress' | 'scan_progress' | 'sync_complete' | 'sync_error';
+  type:
+    | 'sync_start' | 'sync_progress' | 'scan_progress' | 'sync_complete' | 'sync_error'
+    // Re-identificacion facial retroactiva
+    | 'reidentify_start' | 'reidentify_progress' | 'reidentify_done' | 'reidentify_error'
+    // Clustering de caras desconocidas
+    | 'cluster_start' | 'cluster_progress' | 'cluster_done' | 'cluster_error';
   percentage: number;
   status: string;
   current?: number;
@@ -14,6 +19,23 @@ export interface ProgressData {
     total?: number;
   };
   error?: string;
+  // --- Campos de jobs de caras (reidentify_* / cluster_*) ---
+  jobId?: string;
+  done?: number;
+  changed?: number;
+  skippedNoDetections?: number;
+  catalogsWritten?: number;
+  catalogsTotal?: number;
+  file?: string;        // archivo actual
+  folder?: string;      // carpeta actual (re-id)
+  perPerson?: Record<string, number>; // person_id → caras recien etiquetadas
+  startedAt?: number;
+  finishedAt?: number;
+  // cluster_*
+  processed?: number;
+  unknown?: number;
+  clusters?: number;
+  clustersCount?: number;
 }
 
 export function useWebSocket(url: string) {
@@ -112,9 +134,12 @@ export function useWebSocket(url: string) {
     };
   }, [url]);
 
-  const clearProgress = () => {
+  // useCallback: referencia estable. Si se recreara en cada render, los efectos
+  // de consumidores que la incluyen en sus deps se re-ejecutarían en cada render
+  // (recargas duplicadas, timeouts reprogramados).
+  const clearProgress = useCallback(() => {
     setProgressData(null);
-  };
+  }, []);
 
   return {
     isConnected,

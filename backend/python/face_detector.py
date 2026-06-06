@@ -190,7 +190,7 @@ def _load_image_bgr(path: str):
 
     # 3) HEIC/HEIF via Pillow + pillow-heif. opencv no trae soporte HEIF.
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         try:
             import pillow_heif
             pillow_heif.register_heif_opener()
@@ -200,6 +200,10 @@ def _load_image_bgr(path: str):
             # (jpg/png/tiff) seguimos pudiendo abrirlos.
             pass
         with Image.open(path) as im:
+            # cv2.imread/imdecode auto-rotan por EXIF; Pillow NO. Aplicar
+            # exif_transpose para que las bbox de HEIC queden en el MISMO espacio
+            # orientado que el resto, y el recorte (sharp con .rotate()) cuadre.
+            im = ImageOps.exif_transpose(im)
             rgb = np.array(im.convert("RGB"))
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     except Exception as e:
@@ -243,7 +247,10 @@ def train_person(person_dir: str) -> dict:
         raise RuntimeError(f"No es una carpeta: {person_dir}")
 
     exts = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
-    photos = sorted([f for f in p.iterdir() if f.is_file() and f.suffix.lower() in exts])
+    # Excluir 'avatar.jpg': es el recorte de cara DERIVADO (visual), no una foto
+    # de referencia. Entrenar sobre el sesgaria el centroide hacia un solo crop.
+    photos = sorted([f for f in p.iterdir()
+                     if f.is_file() and f.suffix.lower() in exts and f.name.lower() != "avatar.jpg"])
 
     if not photos:
         return {
@@ -359,25 +366,47 @@ def stream_loop():
             continue
 
         op = req.get("op")
+        # Eco del id de correlacion: Node lo usa para descartar respuestas
+        # tardias de peticiones que ya expiraron por timeout y evitar asi
+        # emparejar una respuesta con la peticion equivocada.
+        req_id = req.get("id")
+
+        def emit(payload):
+            if req_id is not None:
+                payload["id"] = req_id
+            print(json.dumps(payload), flush=True)
+
         try:
             if op == "exit":
-                print(json.dumps({"ok": True, "result": "bye"}), flush=True)
+                emit({"ok": True, "result": "bye"})
                 break
             elif op == "detect":
                 path = req.get("path")
                 r = detect_in_image(path)
-                print(json.dumps({"ok": True, "result": r}), flush=True)
+                emit({"ok": True, "result": r})
             elif op == "train":
                 d = req.get("dir")
                 r = train_person(d)
-                print(json.dumps({"ok": True, "result": r}), flush=True)
+                emit({"ok": True, "result": r})
+            elif op == "convert":
+                # Transcodifica cualquier imagen (incl. HEIC via pillow-heif) a
+                # JPEG orientado. No necesita el modelo InsightFace: solo carga y
+                # escribe. Lo usa Node porque sharp 0.32.x no decodifica HEIC.
+                import cv2
+                src = req.get("src"); dst = req.get("dst")
+                img = _load_image_bgr(src)  # ya orientado (cv2 auto / exif_transpose)
+                if img is None:
+                    raise RuntimeError("imagen ilegible")
+                if not cv2.imwrite(dst, img, [cv2.IMWRITE_JPEG_QUALITY, 92]):
+                    raise RuntimeError("no se pudo escribir jpeg")
+                emit({"ok": True, "result": {"dst": dst}})
             elif op == "ping":
-                print(json.dumps({"ok": True, "result": "pong"}), flush=True)
+                emit({"ok": True, "result": "pong"})
             else:
-                print(json.dumps({"ok": False, "error": f"unknown op: {op}"}), flush=True)
+                emit({"ok": False, "error": f"unknown op: {op}"})
         except Exception as e:
             tb = traceback.format_exc(limit=3)
-            print(json.dumps({"ok": False, "error": str(e), "trace": tb}), flush=True)
+            emit({"ok": False, "error": str(e), "trace": tb})
 
 
 if __name__ == "__main__":

@@ -9,6 +9,16 @@ export interface ApiResponse<T> {
   count?: number;
 }
 
+// Entrada del catalogo VLM que devuelve GET /scan/models. tier:
+// produccion | experimento | legacy | otro. installed=false → "pendiente de descarga".
+export interface VlmModel {
+  name: string;
+  tier: 'produccion' | 'experimento' | 'legacy' | 'otro';
+  label: string;
+  notes: string;
+  installed: boolean;
+}
+
 class ApiService {
   private async fetchWithErrorHandling<T>(url: string, options?: RequestInit): Promise<T> {
     try {
@@ -564,7 +574,7 @@ class ApiService {
   }
 
   async scanModels() {
-    return this.fetchWithErrorHandling<ApiResponse<{ models: string[]; current: string }>>(`${API_BASE_URL}/scan/models`);
+    return this.fetchWithErrorHandling<ApiResponse<{ models: VlmModel[]; current: string; filtered: boolean }>>(`${API_BASE_URL}/scan/models`);
   }
 
   async setScanModel(model: string) {
@@ -672,6 +682,34 @@ class ApiService {
   async assignFace(personId: string, payload: { folder: string; basename: string; face_index: number }) {
     return this.fetchWithErrorHandling<ApiResponse<{ person_id: string; display_name: string }>>(
       `${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/assign-face`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  /**
+   * Fusiona dos personas: `loserId` se funde en `survivorId` (mezcla centroides,
+   * copia fotos, reasigna caras en catalogos, borra el perdedor).
+   */
+  async mergePersons(survivorId: string, loserId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ survivor_id: string; loser_id: string; photos_copied: number }>>(
+      `${API_BASE_URL}/persons/registry/merge`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ survivor_id: survivorId, loser_id: loserId }),
+      }
+    );
+  }
+
+  /**
+   * Fija el avatar de una persona recortando una deteccion concreta de la
+   * biblioteca (cualquier aparicion visible), sin subir foto de referencia.
+   */
+  async setPersonAvatarFromDetection(personId: string, payload: { folder: string; basename: string; face_index: number }) {
+    return this.fetchWithErrorHandling<ApiResponse<{ avatar_path: string }>>(
+      `${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}/avatar-from-detection`,
       {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -919,8 +957,15 @@ class ApiService {
     return `${API_BASE_URL}/persons/clusters/${encodeURIComponent(clusterId)}/sample/${index}`;
   }
 
-  async promoteFaceCluster(clusterId: string, payload: { person_id: string; display_name?: string; aliases?: string[]; excluded_sample_indices?: number[] }) {
-    return this.fetchWithErrorHandling<ApiResponse<{ person_id: string; display_name: string; face_count: number; avatar_path: string | null }>>(
+  async promoteFaceCluster(clusterId: string, payload: {
+    person_id: string;
+    display_name?: string;
+    aliases?: string[];
+    excluded_sample_indices?: number[];
+    avatar_sample_index?: number;     // sample elegido como avatar
+    attach_to_existing?: boolean;     // adjuntar a persona ya registrada
+  }) {
+    return this.fetchWithErrorHandling<ApiResponse<{ person_id: string; display_name: string; face_count: number; avatar_path: string | null; attached?: boolean }>>(
       `${API_BASE_URL}/persons/clusters/${encodeURIComponent(clusterId)}/promote`,
       {
         method: 'POST',

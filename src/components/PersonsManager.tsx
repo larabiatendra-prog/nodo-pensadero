@@ -70,7 +70,8 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   const [view, setView] = useState<'persons' | 'clusters'>('persons');
   interface FaceCluster {
     cluster_id: string;
-    face_count: number;
+    face_count: number;            // nº de caras (detecciones)
+    file_count?: number;           // nº de archivos distintos (lo que cuenta el home)
     avg_score: number;
     dominant_age: string | null;
     dominant_gender: string | null;
@@ -292,6 +293,18 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     }
   }
 
+  // Busca una persona YA registrada que coincida con el nombre tecleado, por
+  // person_id (slug) o por display_name (case-insensitive). Si hay match, el
+  // promote ADJUNTA el cluster a esa persona en vez de fallar con 409.
+  function findExistingPersonByName(display: string) {
+    const slug = slugifyPersonId(display);
+    const lc = display.trim().toLowerCase();
+    return persons.find((p: any) =>
+      (slug && p.person_id === slug) ||
+      (p.display_name && String(p.display_name).trim().toLowerCase() === lc)
+    ) || null;
+  }
+
   async function handlePromote() {
     if (!promotingCluster) return;
     const display = promoteForm.display_name.trim();
@@ -299,7 +312,8 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       setError('Escribe un nombre para la persona');
       return;
     }
-    const id = slugifyPersonId(display);
+    const matched = findExistingPersonByName(display);
+    const id = matched ? matched.person_id : slugifyPersonId(display);
     if (!id) {
       setError('El nombre debe tener al menos una letra o numero');
       return;
@@ -314,8 +328,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       const aliases = promoteForm.aliases.split(',').map(a => a.trim()).filter(Boolean);
       const r: any = await api.promoteFaceCluster(promotingCluster.cluster_id, {
         person_id: id,
-        display_name: display,
-        aliases,
+        // En attach NO mandamos nombre/aliases: el backend conserva los existentes.
+        display_name: matched ? undefined : display,
+        aliases: matched ? undefined : aliases,
+        attach_to_existing: !!matched,
         excluded_sample_indices: Array.from(excludedIndices).sort((a, b) => a - b),
       });
       if (!r.success) throw new Error(r.error || 'Error promoviendo cluster');
@@ -953,7 +969,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   </div>
                   <div className="p-3">
                     <p className="text-marfil font-medium text-sm">
-                      {c.face_count} {c.face_count === 1 ? 'aparicion' : 'apariciones'}
+                      {c.face_count} {c.face_count === 1 ? 'cara' : 'caras'}
+                      {typeof c.file_count === 'number' && (
+                        <span className="text-lavanda-archivo font-normal"> · {c.file_count} {c.file_count === 1 ? 'archivo' : 'archivos'}</span>
+                      )}
                     </p>
                     <p className="text-xs text-lavanda-archivo mt-0.5">
                       {[c.dominant_gender, c.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
@@ -1112,7 +1131,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               </button>
             </div>
             <div className="mb-4">
-              <p className="text-marfil font-medium text-sm">{promotingCluster.face_count} apariciones en tu archivo</p>
+              <p className="text-marfil font-medium text-sm">
+                {promotingCluster.face_count} {promotingCluster.face_count === 1 ? 'cara' : 'caras'}
+                {typeof promotingCluster.file_count === 'number' && ` en ${promotingCluster.file_count} ${promotingCluster.file_count === 1 ? 'archivo' : 'archivos'}`}
+              </p>
               <p className="text-lavanda-archivo text-xs mt-0.5">
                 {[promotingCluster.dominant_gender, promotingCluster.dominant_age].filter(Boolean).join(' · ') || 'sin demografia'}
                 {promotingCluster.sample_count > 0 && (
@@ -1186,11 +1208,21 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
                   autoFocus
                 />
-                {promoteForm.display_name.trim() && (
-                  <p className="text-xs text-bruma mt-1">
-                    ID interno: <span className="font-mono text-lavanda-archivo">{slugifyPersonId(promoteForm.display_name) || '(invalido)'}</span>
-                  </p>
-                )}
+                {promoteForm.display_name.trim() && (() => {
+                  const m = findExistingPersonByName(promoteForm.display_name);
+                  if (m) {
+                    return (
+                      <p className="text-xs text-salvia mt-1">
+                        Ya existe <span className="font-medium">{m.display_name}</span>: estas {promotingCluster.face_count} {promotingCluster.face_count === 1 ? 'cara' : 'caras'} se <span className="font-medium">añadiran</span> a esa persona (sin crear un duplicado).
+                      </p>
+                    );
+                  }
+                  return (
+                    <p className="text-xs text-bruma mt-1">
+                      ID interno: <span className="font-mono text-lavanda-archivo">{slugifyPersonId(promoteForm.display_name) || '(invalido)'}</span>
+                    </p>
+                  );
+                })()}
               </div>
               <div>
                 <label className="block text-xs font-medium text-lavanda-archivo mb-1">Aliases (separados por coma)</label>
@@ -1213,8 +1245,13 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               </button>
               {(() => {
                 const allExcluded = promotingCluster.sample_count > 0 && excludedIndices.size >= promotingCluster.sample_count;
-                const validName = !!slugifyPersonId(promoteForm.display_name);
+                const matched = findExistingPersonByName(promoteForm.display_name);
+                const validName = matched ? true : !!slugifyPersonId(promoteForm.display_name);
                 const disabled = promoting || !validName || allExcluded;
+                const label = promoting
+                  ? (matched ? 'Añadiendo...' : 'Creando...')
+                  : allExcluded ? 'Incluye al menos una muestra'
+                  : matched ? `Añadir a ${matched.display_name}` : 'Crear persona';
                 return (
                   <button
                     onClick={handlePromote}
@@ -1225,7 +1262,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                         : 'bg-lavanda text-white hover:bg-lavanda-claro'
                     }`}
                   >
-                    {promoting ? 'Creando...' : allExcluded ? 'Incluye al menos una muestra' : 'Crear persona'}
+                    {label}
                   </button>
                 );
               })()}

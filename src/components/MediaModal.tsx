@@ -190,8 +190,7 @@ export default function MediaModal({
       setSeedingError('Escribe un nombre');
       return;
     }
-    const id = slugifyPersonId(display);
-    if (!id) {
+    if (!slugifyPersonId(display)) {
       setSeedingError('El nombre debe tener al menos una letra o numero');
       return;
     }
@@ -202,9 +201,25 @@ export default function MediaModal({
     setSeedingSubmitting(true);
     setSeedingError(null);
     try {
+      // Si el nombre coincide con una persona YA registrada (por slug o por
+      // display_name), adjuntar a ella en vez de fallar con 409.
+      let matched: any = null;
+      try {
+        const pr: any = await api.listPersonsRegistry();
+        if (pr.success && Array.isArray(pr.data)) {
+          const slug = slugifyPersonId(display);
+          const lc = display.toLowerCase();
+          matched = pr.data.find((p: any) =>
+            (slug && p.person_id === slug) ||
+            (p.display_name && String(p.display_name).trim().toLowerCase() === lc)
+          ) || null;
+        }
+      } catch { /* sin lista: seguir como persona nueva */ }
+      const id = matched ? matched.person_id : slugifyPersonId(display);
       const r: any = await api.promoteFaceCluster(seedingCluster.cluster_id, {
         person_id: id,
-        display_name: display,
+        display_name: matched ? undefined : display,
+        attach_to_existing: !!matched,
         excluded_sample_indices: Array.from(seedingExcludedIndices).sort((a, b) => a - b),
       });
       if (!r.success) throw new Error(r.error || 'Error creando persona');
@@ -545,7 +560,7 @@ export default function MediaModal({
         return (
           <div className="bg-gradient-to-br from-green-400 to-green-600 rounded-lg p-8 flex flex-col items-center justify-center text-white">
             <Volume2 className="w-20 h-20 mb-4 opacity-80" />
-            <h3 className="text-xl font-semibold mb-4">{file.name}</h3>
+            <h3 className="text-xl font-semibold mb-4" title={file.name}>{file.displayName || file.name}</h3>
             <audio
               key={file.id}
               controls
@@ -675,7 +690,7 @@ export default function MediaModal({
               file.type === 'export' ? 'bg-orange-500' :
               'bg-blue-500'
             }`}></div>
-            <h2 className="text-base md:text-xl font-semibold text-slate-900 truncate max-w-[40vw] md:max-w-none">{file.name}</h2>
+            <h2 className="text-base md:text-xl font-semibold text-slate-900 truncate max-w-[40vw] md:max-w-none" title={file.displayName ? `Archivo: ${file.name}` : file.name}>{file.displayName || file.name}</h2>
           </div>
           <button
             onClick={onClose}

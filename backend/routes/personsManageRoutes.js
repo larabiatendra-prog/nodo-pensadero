@@ -55,7 +55,7 @@ const upload = multer({
 });
 
 module.exports = function createPersonsManageRoutes(deps) {
-  const { recomputePersonsAggregate, broadcastProgress, getScanPaths, syncFiles } = deps || {};
+  const { recomputePersonsAggregate, broadcastProgress, getScanPaths, syncFiles, refreshDir } = deps || {};
   const router = express.Router();
 
   /**
@@ -87,6 +87,7 @@ module.exports = function createPersonsManageRoutes(deps) {
 
     let catalogsWritten = 0;
     let facesUpdated = 0;
+    const writtenFolders = [];
 
     for (const [folder, faces] of byFolder) {
       const catalogPath = path.join(folder, '_pensadero.json');
@@ -153,13 +154,14 @@ module.exports = function createPersonsManageRoutes(deps) {
         try {
           await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
           catalogsWritten++;
+          writtenFolders.push(folder);
         } catch (err) {
           console.warn(`[promote] no se pudo escribir ${catalogPath}: ${err.message}`);
         }
       }
     }
 
-    return { catalogsWritten, facesUpdated };
+    return { catalogsWritten, facesUpdated, folders: writtenFolders };
   }
 
   function getPersonDir(personId) {
@@ -683,7 +685,12 @@ module.exports = function createPersonsManageRoutes(deps) {
     // el frontend pueda resolver cada cara a su archivo en la biblioteca y abrirlo.
     return {
       cluster_id: c.cluster_id,
-      face_count: c.face_count,
+      face_count: c.face_count, // nº de CARAS (detecciones) — no de archivos
+      // file_count: nº de ARCHIVOS distintos. El home cuenta archivos, no caras;
+      // exponerlo evita la confusion "6 apariciones en cluster vs 2 en home".
+      file_count: Array.isArray(c.faces)
+        ? new Set(c.faces.map(f => `${f.folder}|${f.basename}`)).size
+        : c.face_count,
       avg_score: c.avg_score,
       dominant_age: c.dominant_age,
       dominant_gender: c.dominant_gender,
@@ -808,16 +815,21 @@ module.exports = function createPersonsManageRoutes(deps) {
     if (typeof frameTime === 'number' && frameTime >= 0) {
       seekSec = frameTime;
     } else {
-      // Fallback: 30% de duracion via ffprobe, o 5s si falla.
+      // Fallback: 30% de duracion via ffprobe, o 5s si falla. Con timeout duro:
+      // en un disco externo lento/desconectado, ffprobe podia colgarse sin fin
+      // (no tenia clock), bloqueando el recorte de avatar indefinidamente.
       seekSec = await new Promise(resolve => {
         const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoPath]);
         let buf = '';
+        let settled = false;
+        const done = (v) => { if (settled) return; settled = true; clearTimeout(t); resolve(v); };
+        const t = setTimeout(() => { try { ff.kill('SIGKILL'); } catch {} done(5); }, 15_000);
         ff.stdout.on('data', d => { buf += d.toString(); });
         ff.on('close', () => {
           const dur = parseFloat(buf.trim());
-          resolve(isFinite(dur) && dur > 1 ? dur * 0.3 : 5);
+          done(isFinite(dur) && dur > 1 ? dur * 0.3 : 5);
         });
-        ff.on('error', () => resolve(5));
+        ff.on('error', () => done(5));
       });
     }
     return new Promise((resolve) => {
@@ -1157,10 +1169,19 @@ module.exports = function createPersonsManageRoutes(deps) {
     //    siguen siendo desconocidos hasta que el usuario re-clusterice.
     faceClusterer.removeClusterFromCache(cluster.cluster_id);
 
-    // 7) Refrescar mediaFiles en memoria para que las nuevas asociaciones
-    //    aparezcan en home/galeria sin tener que reiniciar. Best-effort.
-    if (promoteUpdate.catalogsWritten > 0 && typeof syncFiles === 'function') {
-      syncFiles().catch(err => console.warn('[cluster-promote] post-sync:', err.message));
+    // 7) Refrescar en memoria SOLO las carpetas afectadas. Antes se lanzaba un
+    //    syncFiles() de biblioteca COMPLETA (~miles de archivos en discos
+    //    externos): lento y, con la barra de progreso compartida, se quedaba
+    //    "sincronizando sin avanzar". Los catalogos ya estan escritos en disco;
+    //    refreshDir re-aplica solo esas carpetas (emite catalog_refresh, no
+    //    sync_*), asi que es instantaneo y no dispara la barra global.
+    if (promoteUpdate.catalogsWritten > 0 && typeof refreshDir === 'function') {
+      for (const folder of (promoteUpdate.folders || [])) {
+        try { await refreshDir(folder); } catch (err) { console.warn('[cluster-promote] refreshDir:', err.message); }
+      }
+      if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+    } else if (promoteUpdate.catalogsWritten > 0 && typeof syncFiles === 'function') {
+      syncFiles().catch(err => console.warn('[cluster-promote] post-sync:', err.message)); // fallback legacy
     } else if (typeof recomputePersonsAggregate === 'function') {
       recomputePersonsAggregate();
     }

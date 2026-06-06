@@ -456,6 +456,16 @@ module.exports = function createPersonsManageRoutes(deps) {
       return res.status(500).json({ success: false, error: `error escribiendo catalogo: ${err.message}` });
     }
 
+    // Refrescar YA el mediaFile en memoria de esta carpeta (+ agregado) para que
+    // la asignacion aparezca AL INSTANTE en home/galeria, sin esperar al re-id de
+    // fondo. Sin esto, /api/files seguia sirviendo el estado viejo (solo se veia
+    // tras un sync/restart). Es el bug de "asigne la cara pero no aparece".
+    if (typeof refreshDir === 'function') {
+      try { await refreshDir(folder); } catch (err) { console.warn('[assign-face] refreshDir:', err.message); }
+    } else if (typeof recomputePersonsAggregate === 'function') {
+      recomputePersonsAggregate();
+    }
+
     // Fusionar embedding en el centroid de la persona (media ponderada + re-L2-normalize)
     const personDir = getPersonDir(personId);
     if (personDir) {

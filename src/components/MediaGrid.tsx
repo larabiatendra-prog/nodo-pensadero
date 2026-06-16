@@ -1,12 +1,12 @@
-import React from 'react';
-import { Play, Download, Heart, MoreHorizontal, Clock, Eye, Plus, X, FolderOpen, Sparkles } from 'lucide-react';
-import { MediaFile, VideoItem } from '../types';
+import React, { useMemo } from 'react';
+import { Play, Download, Heart, MoreHorizontal, Clock, Eye, Plus, X } from 'lucide-react';
+import { MediaFile } from '../types';
 import { formatDate } from '../utils/dateUtils';
 import Masonry from 'react-masonry-css';
-import VideoThumbnail from './VideoThumbnail';
 import { SessionItem } from '../hooks/useSessionGroups';
-import { SessionCard, SessionHeader, SessionShowMore } from './SessionCard';
+import { SessionCard, SessionHeader, SessionShowMore, SessionBoundaryCard } from './SessionCard';
 import { normalizePath } from '../utils/formatData';
+import MediaCard, { formatFileSize, formatDuration } from './MediaCard';
 
 interface MediaGridProps {
   files: MediaFile[];
@@ -17,6 +17,12 @@ interface MediaGridProps {
   onCollapseGroup?: (key: string) => void;
   onShowMoreGroup?: (key: string) => void;
   onSelectSessionFiles?: (files: MediaFile[]) => void;
+  // Notas humanas por sesion: mapa session key -> nota, y callback de edicion.
+  sessionNotes?: Record<string, string>;
+  onEditSessionNote?: (key: string, label: { line1: string; line2: string }) => void;
+  // Notas humanas por archivo: mapa file.id -> nota. Se muestran en el hover
+  // de la tarjeta en lugar del nombre del archivo.
+  fileNotes?: Record<string, string>;
   onFileClick: (file: MediaFile, event?: React.MouseEvent) => void;
   onToggleFavorite: (fileId: string) => void;
   onDownload: (file: MediaFile) => void;
@@ -57,45 +63,31 @@ export default function MediaGrid({
   onCollapseGroup,
   onShowMoreGroup,
   onSelectSessionFiles,
+  sessionNotes,
+  onEditSessionNote,
+  fileNotes,
   isAdmin = false,
   updatingFavs = false,
   secondaryStartIndex
 }: MediaGridProps) {
-  // Determina si hay split en dos tramos (primary / secondary).
-  const hasTwoTiers = typeof secondaryStartIndex === 'number'
-    && secondaryStartIndex > 0
-    && secondaryStartIndex < files.length;
-  const primaryFiles = hasTwoTiers ? files.slice(0, secondaryStartIndex) : files;
-  const secondaryFiles = hasTwoTiers ? files.slice(secondaryStartIndex) : [];
-  const formatFileSize = (bytes: number) => {
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    if (bytes === 0) return '0 Bytes';
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${Math.round(bytes / Math.pow(1024, i) * 100) / 100} ${sizes[i]}`;
-  };
+  // Determina si hay split en dos tramos (primary / secondary). Memoizado para
+  // no recrear los slices (y forzar relayout de Masonry) en cada render cuando
+  // `files` no ha cambiado.
+  const hasTwoTiers = useMemo(
+    () => typeof secondaryStartIndex === 'number' && secondaryStartIndex > 0 && secondaryStartIndex < files.length,
+    [secondaryStartIndex, files.length]
+  );
+  const primaryFiles = useMemo(
+    () => (hasTwoTiers ? files.slice(0, secondaryStartIndex) : files),
+    [files, hasTwoTiers, secondaryStartIndex]
+  );
+  const secondaryFiles = useMemo(
+    () => (hasTwoTiers ? files.slice(secondaryStartIndex) : []),
+    [files, hasTwoTiers, secondaryStartIndex]
+  );
 
   const isStoriesFormat = (file: MediaFile) => {
     return file.dimensions && file.dimensions.height > file.dimensions.width;
-  };
-
-  const convertToVideoItem = (file: MediaFile): VideoItem => {
-    return {
-      id: file.id,
-      name: file.name,
-      url: file.url,
-      thumbnail: file.thumbnail,
-      duration: file.duration,
-      width: file.dimensions?.width,
-      height: file.dimensions?.height
-    };
-  };
-
-
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return '';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const getTypeIcon = (type: string) => {
@@ -111,96 +103,31 @@ export default function MediaGrid({
     }
   };
 
-  // Renderiza una tarjeta de archivo individual (reutilizada en modo normal y modo sesiones)
-  // isSecondary: si es un resultado del tramo "menos probables", se atenúa con
-  // opacity-60 y vuelve a opacity-100 al pasar el ratón.
+  // Renderiza una tarjeta de archivo (modo normal y modo sesiones). Ahora es un
+  // envoltorio fino sobre <MediaCard> (memoizado): deriva las props ESCALARES
+  // por tarjeta (isSelected/isScanning/isDownloading/note) desde los Sets/Record
+  // antes de renderizar, para que el comparador del memo sea barato y la tarjeta
+  // no se repinte cuando cambia el estado de OTRA tarjeta.
+  // isSecondary: tramo "menos probables" (búsqueda natural) → atenuado.
   const renderFileCard = (file: MediaFile, isSecondary: boolean = false) => (
-    <div
+    <MediaCard
       key={file.id}
-      data-file-id={file.id}
-      className={`bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group cursor-pointer relative mb-3 md:mb-6 ${
-        isSecondary ? 'opacity-60 hover:opacity-100' : ''
-      } ${selectedFiles.has(file.id) ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : ''}`}
-      onClick={(e) => onFileClick(file, e)}
-    >
-      <div className="relative bg-slate-900 overflow-hidden"
-        style={{
-          aspectRatio: file.dimensions
-            ? `${file.dimensions.width}/${file.dimensions.height}`
-            : '16/9'
-        }}>
-        {file.type === 'video' ? (
-          <VideoThumbnail video={convertToVideoItem(file)} className="w-full h-full" />
-        ) : (
-          <img
-            src={file.thumbnail}
-            alt={file.name}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-            onError={(e) => {
-              e.currentTarget.src = `data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" fill="%23ef4444"/><text x="150" y="110" font-family="Arial" font-size="12" fill="white" text-anchor="middle">Sin miniatura</text></svg>`;
-            }}
-          />
-        )}
-        <div className="absolute inset-0 bg-noche bg-opacity-0 group-hover:bg-opacity-40 transition-all duration-300" />
-        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-all duration-300 p-3 md:p-4 flex flex-col justify-end text-white">
-          {file.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mb-3">
-              {file.tags.slice(0, 3).map((tag) => (
-                <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium">{tag}</span>
-              ))}
-              {file.tags.length > 3 && <span className="text-xs text-lavanda-archivo font-medium">+{file.tags.length - 3}</span>}
-            </div>
-          )}
-          <div className="mb-3">
-            <h3 className="font-semibold text-white mb-2 line-clamp-2 text-shadow">{file.name}</h3>
-            <div className="flex items-center justify-between text-xs sm:text-sm text-white/90">
-              <span>{formatFileSize(file.size)}</span>
-              <span>{formatDate(file.createdAt)}</span>
-            </div>
-          </div>
-          <div className="flex justify-end space-x-2">
-            {onAddToCollection && (
-              <button onClick={(e) => { e.stopPropagation(); onAddToCollection(normalizePath(file.fullPath!)); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-lavanda/20 text-white hover:bg-lavanda/30" title="Añadir a colección"><Plus className="w-4 h-4" /></button>
-            )}
-            {onRemoveFromCollection && (
-              <button onClick={(e) => { e.stopPropagation(); onRemoveFromCollection(normalizePath(file.fullPath!)); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-red-500/20 text-white hover:bg-red-500/30" title="Eliminar de colección"><X className="w-4 h-4" /></button>
-            )}
-            {/* {isAdmin && onOpenPath && (
-              <button onClick={(e) => { e.stopPropagation(); onOpenPath(file.id); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-green-500/20 text-white hover:bg-green-500/30" title="Abrir ruta"><FolderOpen className="w-4 h-4" /></button>
-            )} */}
-            {onScanFile && file.type !== 'audio' && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onScanFile(file); }}
-                disabled={scanningFiles.has(file.id)}
-                className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${scanningFiles.has(file.id) ? 'bg-lavanda/30 text-white cursor-wait' : 'bg-lavanda/20 text-white hover:bg-lavanda/30'}`}
-                title={scanningFiles.has(file.id) ? 'Escaneando...' : (file.visual_description ? 'Re-escanear visualmente (IA)' : 'Escanear visualmente (IA)')}
-              >
-                {scanningFiles.has(file.id) ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              </button>
-            )}
-            <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} disabled={downloadingFiles.has(file.id)} className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${downloadingFiles.has(file.id) ? 'bg-bruma/30 text-white cursor-not-allowed' : 'bg-bruma/20 text-white hover:bg-bruma/30'}`} title="Descargar">
-              {downloadingFiles.has(file.id) ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Download className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-        {file.duration && (
-          <div className="absolute bottom-2 right-2 bg-noche/75 text-white text-xs px-2 py-1 rounded backdrop-blur-sm">{formatDuration(file.duration)}</div>
-        )}
-        <button disabled={updatingFavs} onClick={(e) => { e.stopPropagation(); onToggleFavorite(file.id); }} className={`absolute top-2 right-2 p-2 rounded-full transition-all duration-200 backdrop-blur-sm ${file.isFavorite ? 'bg-lavanda/90 text-white' : 'bg-noche/30 text-white opacity-70 hover:opacity-100 hover:bg-noche/50'} ${updatingFavs ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
-          {!updatingFavs ? <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} /> : <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-        </button>
-        {isSelectionMode && (
-          <div className="absolute top-2 left-2 z-10">
-            <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all ${selectedFiles.has(file.id) ? 'bg-lavanda border-lavanda' : 'bg-tinta/90 border-white backdrop-blur-sm'}`}>
-              {selectedFiles.has(file.id) && <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-            </div>
-          </div>
-        )}
-        <div className={`absolute ${isSelectionMode ? 'top-10' : 'top-2'} left-2 px-2 py-1 rounded-full text-xs font-medium ${file.type === 'export' ? 'bg-bruma text-white' : 'bg-lavanda-claro text-marfil'}`}>
-          {file.type === 'export' ? 'EXPORT' : file.type.toUpperCase()}
-        </div>
-      </div>
-    </div>
+      file={file}
+      isSecondary={isSecondary}
+      isSelected={selectedFiles.has(file.id)}
+      isScanning={scanningFiles.has(file.id)}
+      isDownloading={downloadingFiles.has(file.id)}
+      note={fileNotes?.[file.id]}
+      isSelectionMode={isSelectionMode}
+      updatingFavs={updatingFavs}
+      onFileClick={onFileClick}
+      onToggleFavorite={onToggleFavorite}
+      onDownload={onDownload}
+      onScanFile={onScanFile}
+      onAddToCollection={onAddToCollection}
+      onRemoveFromCollection={onRemoveFromCollection}
+      onOpenPath={onOpenPath}
+    />
   );
 
   // ── Modo sesiones: CSS grid con items mixtos ──────────────────────────────
@@ -219,6 +146,18 @@ export default function MediaGrid({
               />
             );
           }
+          if (item.type === 'session-start' || item.type === 'session-end') {
+            return (
+              <SessionBoundaryCard
+                key={`${item.type}-${item.key}`}
+                sessionKey={item.key}
+                refFile={item.firstFile}
+                label={item.label}
+                variant={item.type === 'session-start' ? 'start' : 'end'}
+                onCollapse={onCollapseGroup ?? (() => {})}
+              />
+            );
+          }
           if (item.type === 'session-card') {
             return (
               <SessionCard
@@ -229,6 +168,9 @@ export default function MediaGrid({
                 onExpand={onExpandGroup ?? (() => {})}
                 isSelectionMode={isSelectionMode}
                 onSelectAll={onSelectSessionFiles}
+                note={sessionNotes?.[item.key]}
+                onEditNote={onEditSessionNote}
+                dimmed={item.dimmed}
               />
             );
           }
@@ -243,7 +185,7 @@ export default function MediaGrid({
             );
           }
           // type === 'file'
-          return renderFileCard(item.file);
+          return renderFileCard(item.file, item.dimmed);
         })}
       </div>
     );
@@ -320,7 +262,7 @@ export default function MediaGrid({
                         </div>
                       </div>
                       <div className="min-w-0">
-                        <p className="font-medium text-slate-900 truncate">{file.name}</p>
+                        <p className="font-medium text-slate-900 truncate" title={file.name}>{file.displayName || file.name}</p>
                         {file.duration && (
                           <p className="text-sm text-slate-500 flex items-center">
                             <Clock className="w-3 h-3 mr-1" />

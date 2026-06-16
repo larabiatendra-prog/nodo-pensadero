@@ -26,9 +26,45 @@ const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getClipService } = require('../services/clipService');
 const scanOrchestrator = require('../services/scanOrchestrator');
 const folderContext = require('../services/folderContext');
+const folderNames = require('../folderNames');
+const pathsConfig = require('../config/paths');
 
 module.exports = function createScanRoutes(deps) {
-  const { broadcastProgress, syncFiles, loadScanPaths } = deps || {};
+  const { broadcastProgress, syncFiles, loadScanPaths, refreshDir } = deps || {};
+
+  // Normaliza una ruta para comparación: absoluta, minúsculas, sin separador
+  // final. En Windows el FS es case-insensitive, así que comparar en minúsculas
+  // es lo correcto.
+  function _normPath(p) {
+    return path.resolve(String(p)).toLowerCase().replace(/[\\/]+$/, '');
+  }
+
+  // Verifica que `target` esté contenida en una biblioteca configurada
+  // (CONTENT_DIR o cualquier scan_path). Sin esto, con CORS abierto y sin auth,
+  // una web podría lanzar escaneos, escribir _contexto.md / _pensadero.json o
+  // enumerar carpetas en CUALQUIER punto del disco. Confina la superficie a las
+  // raíces que el usuario añadió.
+  async function isPathAllowed(target) {
+    if (!target || typeof target !== 'string') return false;
+    let norm;
+    try { norm = _normPath(target); } catch { return false; }
+
+    const libs = [];
+    try { const cd = pathsConfig.getContentDir(); if (cd) libs.push(cd); } catch {}
+    try {
+      const sp = typeof loadScanPaths === 'function' ? await loadScanPaths() : [];
+      for (const p of (Array.isArray(sp) ? sp : [])) {
+        if (p && p.path) libs.push(p.path);
+      }
+    } catch {}
+
+    for (const lib of libs) {
+      if (!lib) continue;
+      const ln = _normPath(lib);
+      if (norm === ln || norm.startsWith(ln + path.sep)) return true;
+    }
+    return false;
+  }
 
   // Estado del bucle batch "start-all". Solo uno activo a la vez.
   // Cuando aborted=true, el bucle no avanza a la siguiente ruta tras
@@ -83,16 +119,18 @@ module.exports = function createScanRoutes(deps) {
   });
 
   // === MODELS — lista modelos disponibles para describir fotos ===
-  // Filtra los VLM (modelos con capacidad de vision) — los de solo texto
-  // o embedders no sirven para el scan. Con ?all=1 devuelve la lista sin
-  // filtrar (debugging).
+  // Devuelve el catalogo curado (gemma4:12b/27b, gemma3:12b legacy) fusionado
+  // con los VLM instalados. Cada entrada lleva { name, tier, label, notes,
+  // installed }: los curados aparecen SIEMPRE (installed:false si faltan →
+  // la UI los marca "pendiente de descarga"). Con ?all=1 devuelve la lista
+  // cruda sin filtrar ni catalogo (debugging).
   router.get('/scan/models', async (req, res) => {
     try {
       const scanner = getScanner();
       const showAll = req.query.all === '1' || req.query.all === 'true';
       const models = showAll
-        ? await scanner.listModels()
-        : await scanner.listVisionModels();
+        ? (await scanner.listModels()).map(name => ({ name, tier: 'otro', label: name, notes: '', installed: true }))
+        : await scanner.listVisionCatalog();
       res.json({ success: true, data: { models, current: scanner.model, filtered: !showAll } });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
@@ -117,6 +155,27 @@ module.exports = function createScanRoutes(deps) {
     const { path: folderPath, force = false } = req.body || {};
     if (!folderPath || typeof folderPath !== 'string') {
       return res.status(400).json({ success: false, error: 'path requerido' });
+    }
+
+    if (!(await isPathAllowed(folderPath))) {
+      return res.status(403).json({ success: false, error: 'Ruta fuera de las bibliotecas configuradas' });
+    }
+
+    // Guard de concurrencia: dos escaneos sobre carpetas solapadas hacen
+    // read-modify-write del mismo _pensadero.json y se pisarían (pérdida de
+    // entradas). Rechazar si hay un batch o un job activo sobre una ruta que
+    // contenga o esté contenida en esta.
+    if (batchState.running) {
+      return res.status(409).json({ success: false, error: 'Hay un escaneo masivo en curso. Espera a que termine.' });
+    }
+    const reqNorm = _normPath(folderPath);
+    const overlapping = (scanOrchestrator.listJobs() || []).some(j => {
+      if (j.status !== 'running' || !j.folderPath) return false;
+      const jn = _normPath(j.folderPath);
+      return jn === reqNorm || jn.startsWith(reqNorm + path.sep) || reqNorm.startsWith(jn + path.sep);
+    });
+    if (overlapping) {
+      return res.status(409).json({ success: false, error: 'Ya hay un escaneo en curso sobre esta carpeta (o una que la contiene).' });
     }
 
     // Comprobar primero que el VLM está disponible — fallar rápido si no.
@@ -170,6 +229,10 @@ module.exports = function createScanRoutes(deps) {
     const { path: filePath } = req.body || {};
     if (!filePath || typeof filePath !== 'string') {
       return res.status(400).json({ success: false, error: 'path requerido' });
+    }
+
+    if (!(await isPathAllowed(filePath))) {
+      return res.status(403).json({ success: false, error: 'Ruta fuera de las bibliotecas configuradas' });
     }
 
     // Guard: no escanear un archivo si hay un job de escaneo corriendo. Dos
@@ -287,6 +350,9 @@ module.exports = function createScanRoutes(deps) {
       });
     }
 
+    // Marca numerica para el tiempo total del batch (startedAt es ISO para el
+    // status; aqui necesitamos ms para restar al cerrar).
+    const batchStartMs = Date.now();
     setImmediate(async () => {
       // try/finally garantiza que SIEMPRE emitimos batch_scan_done y reseteamos
       // el state. Si un error inesperado revienta el bucle, la UI no se queda
@@ -337,6 +403,7 @@ module.exports = function createScanRoutes(deps) {
               total: activePaths.length,
               processed: batchState.processed,
               aborted: batchState.aborted,
+              elapsedMs: Date.now() - batchStartMs,
             });
           } catch (e) { console.warn('[scan-all] broadcast done falló:', e.message); }
         }
@@ -377,6 +444,9 @@ module.exports = function createScanRoutes(deps) {
     if (!folderPath || typeof folderPath !== 'string') {
       return res.status(400).json({ success: false, error: 'path requerido' });
     }
+    if (!(await isPathAllowed(folderPath))) {
+      return res.status(403).json({ success: false, error: 'Ruta fuera de las bibliotecas configuradas' });
+    }
     try {
       const st = await fs.stat(folderPath).catch(() => null);
       if (!st || !st.isDirectory()) {
@@ -389,6 +459,8 @@ module.exports = function createScanRoutes(deps) {
           ...f,
           hasContext: ctx.exists,
           context: ctx.exists ? { meta: ctx.meta, body: ctx.body } : null,
+          // Display name editable de la carpeta (null si conserva el original).
+          folderName: folderNames.getName(f.dir),
         };
       }));
       // Estado de la raíz también — interesa saber si tiene _contexto.md
@@ -417,6 +489,9 @@ module.exports = function createScanRoutes(deps) {
     if (!folderPath || typeof folderPath !== 'string') {
       return res.status(400).json({ success: false, error: 'folderPath requerido' });
     }
+    if (!(await isPathAllowed(folderPath))) {
+      return res.status(403).json({ success: false, error: 'Ruta fuera de las bibliotecas configuradas' });
+    }
     const st = await fs.stat(folderPath).catch(() => null);
     if (!st || !st.isDirectory()) {
       return res.status(404).json({ success: false, error: `Carpeta no encontrada: ${folderPath}` });
@@ -444,6 +519,38 @@ module.exports = function createScanRoutes(deps) {
     try {
       const written = await folderContext.writeFolderContext(folderPath, context);
       res.json({ success: true, data: written });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // === SET FOLDER DISPLAY NAME ===
+  // POST /api/folders/name
+  // body: { folderPath: string, displayName: string|null }
+  // Asigna el nombre de presentacion de una carpeta (uno por carpeta; todos sus
+  // archivos heredan + enumeracion _NNN). displayName vacio/null restaura el
+  // nombre original. El archivo fisico NO se toca nunca.
+  router.post('/folders/name', async (req, res) => {
+    const { folderPath, displayName } = req.body || {};
+    if (!folderPath || typeof folderPath !== 'string') {
+      return res.status(400).json({ success: false, error: 'folderPath requerido' });
+    }
+    if (!(await isPathAllowed(folderPath))) {
+      return res.status(403).json({ success: false, error: 'Ruta fuera de las bibliotecas configuradas' });
+    }
+    const st = await fs.stat(folderPath).catch(() => null);
+    if (!st || !st.isDirectory()) {
+      return res.status(404).json({ success: false, error: `Carpeta no encontrada: ${folderPath}` });
+    }
+
+    try {
+      const result = await folderNames.setName(folderPath, displayName);
+      // Refrescar en memoria los MediaFile de esta carpeta (sin re-escanear disco):
+      // re-aplica catalog + el nuevo display name + enumeracion sobre los hermanos.
+      if (typeof refreshDir === 'function') {
+        await refreshDir(folderPath);
+      }
+      res.json({ success: true, data: result });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }

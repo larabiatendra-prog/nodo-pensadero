@@ -34,13 +34,29 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
+const VALID_SPACE_ID = /^[a-zA-Z0-9_-]+$/;
+
 module.exports = function createSpacesManageRoutes(deps) {
   const { broadcastProgress, getScanPaths } = deps || {};
   const router = express.Router();
 
+  // Valida el :id de espacio en TODAS las rutas que lo usan. Sin esto,
+  // getSpaceDir hacía path.join(base,'spaces',id) con el id crudo de la URL: un
+  // id URL-encoded tipo "..%5C..%5C..%5C..." escapaba de avatarsBase y permitía
+  // borrar (DELETE .../photos) o enumerar (GET .../photos) archivos arbitrarios.
+  router.param('id', (req, res, next, id) => {
+    if (!VALID_SPACE_ID.test(id)) {
+      return res.status(400).json({ success: false, error: 'space_id inválido' });
+    }
+    next();
+  });
+
   function getSpaceDir(spaceId) {
     const state = spacesRegistry.getState();
     if (!state.avatarsBase) return null;
+    // Defensa en profundidad: rechazar cualquier id que no sea alfanumérico
+    // (sin '.', '/', '\') aunque la validación de router.param ya lo cubre.
+    if (!VALID_SPACE_ID.test(String(spaceId || ''))) return null;
     return path.join(state.avatarsBase, 'spaces', spaceId);
   }
 

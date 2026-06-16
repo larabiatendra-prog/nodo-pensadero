@@ -21,6 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const { EMBEDDING_DIM } = require('./services/clipService');
+const { atomicWriteFileSync } = require('./utils/jsonStore');
 
 // Threshold por defecto. 0.70 es conservador para CLIP base: la experiencia
 // real con corpus de eventos corporativos (auditorios, salas, networking)
@@ -263,9 +264,10 @@ function saveToDisk() {
     match_threshold: currentThreshold,
     spaces: Array.from(spaceById.values()),
   };
+  // Escritura atómica (tmp + rename). spaces_registry.json guarda los
+  // centroid_b64, costosos de regenerar (requieren re-entrenar desde fotos).
   try {
-    fs.mkdirSync(path.dirname(registryPath), { recursive: true });
-    fs.writeFileSync(registryPath, JSON.stringify(data, null, 2), 'utf-8');
+    atomicWriteFileSync(registryPath, JSON.stringify(data, null, 2));
     return true;
   } catch (err) {
     console.error('❌ Error escribiendo spaces registry:', err.message);

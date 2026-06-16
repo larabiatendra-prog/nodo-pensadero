@@ -33,8 +33,8 @@ export function QuickPreviewOverlay({ file, onClose }: QuickPreviewOverlayProps)
       >
         {/* File name */}
         <div className="mb-3 px-4 py-1.5 bg-noche/70 rounded-full">
-          <span className="text-sm text-white font-medium truncate max-w-[85vw] md:max-w-[60vw] block">
-            {file.name}
+          <span className="text-sm text-white font-medium truncate max-w-[85vw] md:max-w-[60vw] block" title={file.name}>
+            {file.displayName || file.name}
           </span>
         </div>
 

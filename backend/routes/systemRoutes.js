@@ -19,6 +19,7 @@ const crypto = require('crypto');
 
 // Analizador de colores (stateless - se importa directamente)
 const colorAnalyzer = require('../colorAnalyzer');
+const { atomicWriteFile, quarantineCorrupt } = require('../utils/jsonStore');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -57,13 +58,19 @@ module.exports = function createSystemRoutes(deps) {
    * Cargar configuración de rutas
    */
   async function loadScanPaths() {
-    try {
-      if (await fs.access(PATHS_CONFIG_FILE).then(() => true).catch(() => false)) {
-        const data = await fs.readFile(PATHS_CONFIG_FILE, 'utf-8');
-        return JSON.parse(data);
+    const exists = await fs.access(PATHS_CONFIG_FILE).then(() => true).catch(() => false);
+    if (exists) {
+      const data = await fs.readFile(PATHS_CONFIG_FILE, 'utf-8').catch(() => null);
+      if (data !== null) {
+        try {
+          return JSON.parse(data);
+        } catch (error) {
+          // Corrupto y NO regenerable: cuarentena en vez de devolver el default
+          // (que un saveScanPaths posterior persistiría, borrando las bibliotecas).
+          console.error(`❌ scan_paths.json corrupto: ${error.message}`);
+          await quarantineCorrupt(PATHS_CONFIG_FILE);
+        }
       }
-    } catch (error) {
-      console.warn('⚠️ Error cargando rutas:', error.message);
     }
 
     // Configuración por defecto
@@ -79,11 +86,11 @@ module.exports = function createSystemRoutes(deps) {
   }
 
   /**
-   * Guardar configuración de rutas
+   * Guardar configuración de rutas (escritura atómica: tmp + rename)
    */
   async function saveScanPaths(paths) {
     try {
-      await fs.writeFile(PATHS_CONFIG_FILE, JSON.stringify(paths, null, 2));
+      await atomicWriteFile(PATHS_CONFIG_FILE, JSON.stringify(paths, null, 2));
       console.log(`💾 Configuración de rutas guardada`);
     } catch (error) {
       console.error('❌ Error guardando rutas:', error.message);
@@ -308,9 +315,33 @@ module.exports = function createSystemRoutes(deps) {
   router.get('/scan-paths', async (req, res) => {
     try {
       const paths = await loadScanPaths();
+      // Enriquecer cada ruta con cobertura de escaneo visual: cuantos de sus
+      // archivos media tienen `visual_description` (lo pone catalogReader cuando
+      // hay descripcion, sea del modelo VLM que sea). Se calcula sobre la lista
+      // en memoria (live), no sobre el fileCount persistido.
+      const media = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      // Normaliza para comparar prefijos en Windows: barras unificadas a "\",
+      // minusculas y sin barra final.
+      const norm = (s) => (s || '').replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+      const enriched = paths.map((p) => {
+        const base = norm(p.path);
+        let visualTotal = 0;
+        let visualScanned = 0;
+        if (base) {
+          for (const f of media) {
+            const fp = norm(f.fullPath);
+            if (!fp || !(fp === base || fp.startsWith(base + '\\'))) continue;
+            visualTotal++;
+            if (typeof f.visual_description === 'string' && f.visual_description.trim()) {
+              visualScanned++;
+            }
+          }
+        }
+        return { ...p, visualTotal, visualScanned };
+      });
       res.json({
         success: true,
-        data: paths
+        data: enriched
       });
     } catch (error) {
       console.error('❌ Error obteniendo rutas:', error);
@@ -438,8 +469,9 @@ module.exports = function createSystemRoutes(deps) {
           });
 
           try {
-            const thumbnailPath = await generateThumbnail(file.fullPath, file.id, file.name);
-            file.thumbnail = `/thumbnails/${path.basename(thumbnailPath)}`;
+            // generateThumbnail ya devuelve la URL final (/api/thumbnails/:id).
+            // pathConfig.path es la raiz de biblioteca (scanRoot).
+            file.thumbnail = await generateThumbnail(file.fullPath, file.id, file.name, pathConfig.path);
           } catch (error) {
             console.error(`Error generando miniatura para ${file.name}:`, error);
           }

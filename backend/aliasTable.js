@@ -23,6 +23,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { atomicWriteFile } = require('./utils/jsonStore');
 
 const ALIAS_FILE = path.join(__dirname, 'data', 'alias_table.json');
 
@@ -73,8 +74,8 @@ async function load() {
 async function save() {
   _data.updated_at = new Date().toISOString();
   try {
-    await fs.mkdir(path.dirname(ALIAS_FILE), { recursive: true });
-    await fs.writeFile(ALIAS_FILE, JSON.stringify(_data, null, 2), 'utf-8');
+    // Escritura atómica (tmp + rename, crea la carpeta padre).
+    await atomicWriteFile(ALIAS_FILE, JSON.stringify(_data, null, 2));
     rebuildIndex();
   } catch (err) {
     console.error('[aliasTable] error guardando:', err.message);

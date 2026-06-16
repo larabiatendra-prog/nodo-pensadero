@@ -31,6 +31,10 @@ export interface ProgressData {
   perPerson?: Record<string, number>; // person_id → caras recien etiquetadas
   startedAt?: number;
   finishedAt?: number;
+  // --- Tiempos del escaneo visual (scan_progress / scan_error) ---
+  elapsedMs?: number;      // tiempo transcurrido del job
+  avgMsPerFile?: number;   // media movil (ultimos N) de ms por archivo
+  etaMs?: number;          // estimacion de tiempo restante
   // cluster_*
   processed?: number;
   unknown?: number;

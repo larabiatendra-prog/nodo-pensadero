@@ -253,9 +253,11 @@ if not exist "%ROOT%backend\.env" (
 
 REM ================================================================
 REM  [9/9] Modelos Ollama (config objetivo NODO)
-REM    - gemma3:12b        VLM principal de escaneo (calidad)
+REM    - gemma4:12b        VLM principal de escaneo (default, calidad/velocidad)
 REM    - qwen2.5:7b-instruct  busqueda en lenguaje natural (velocidad)
-REM    - qwen2.5vl:7b         VLM fallback manual (sin automatismo)
+REM  Opcionales (manual, no se descargan aqui para no inflar la instalacion):
+REM    - gemma4:27b        experimento (mayor calidad, riesgo OOM 16 GB)
+REM    - gemma3:12b        legacy/fallback manual
 REM ================================================================
 echo.
 echo ==============================================================
@@ -266,9 +268,13 @@ echo  Esto descarga los "cerebros" de la IA local. Solo primera vez.
 echo  Si se interrumpe, puedes relanzar este instalador y reanudara.
 echo.
 
-call :pull_model gemma3:12b
+call :pull_model gemma4:12b
 call :pull_model qwen2.5:7b-instruct
-call :pull_model qwen2.5vl:7b
+
+echo.
+echo  Modelos VLM opcionales (descarga MANUAL si los quieres usar):
+echo    ollama pull gemma4:27b    ^(experimento: mayor calidad, riesgo OOM 16 GB^)
+echo    ollama pull gemma3:12b    ^(legacy / fallback manual^)
 
 REM ================================================================
 REM  Health check final
@@ -286,11 +292,11 @@ call :check_cmd python "Python" optional
 call :check_cmd ffmpeg "ffmpeg" optional
 
 echo [...] Verificando modelos Ollama...
-ollama list 2>nul | findstr /i "gemma3:12b" >nul
+ollama list 2>nul | findstr /i "gemma4:12b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] gemma3:12b descargado.
+    echo [OK] gemma4:12b descargado.
 ) else (
-    echo [FAIL] gemma3:12b NO descargado.
+    echo [FAIL] gemma4:12b NO descargado.
     set "CHECK_FAIL=1"
 )
 ollama list 2>nul | findstr /i "qwen2.5:7b-instruct" >nul
@@ -298,13 +304,6 @@ if %ERRORLEVEL% EQU 0 (
     echo [OK] qwen2.5:7b-instruct descargado.
 ) else (
     echo [FAIL] qwen2.5:7b-instruct NO descargado.
-    set "CHECK_FAIL=1"
-)
-ollama list 2>nul | findstr /i "qwen2.5vl:7b" >nul
-if %ERRORLEVEL% EQU 0 (
-    echo [OK] qwen2.5vl:7b descargado.
-) else (
-    echo [FAIL] qwen2.5vl:7b NO descargado.
     set "CHECK_FAIL=1"
 )
 

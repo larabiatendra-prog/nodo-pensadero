@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, X, Tag, Calendar, MinusCircle, Sparkles, Hash, Loader2, AtSign, User } from 'lucide-react';
+import { X, Tag, Calendar, MinusCircle, Sparkles, Loader2, AtSign, User } from 'lucide-react';
 import { MentionsInput, Mention } from 'react-mentions';
 import { SearchFilters, Person } from '../types';
 import { buildApiUrl, API_CONFIG } from '../config';
@@ -561,12 +561,23 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   return (
     <div ref={searchRef} className="relative w-full">
       <div className={`rounded-full shadow-sm border p-1 transition-all duration-300 ${
-        isNatural ? 'bg-grafito border-lavanda/40' : 'bg-pizarra border-borde-sutil'
+        isNatural ? 'bg-lavanda border-lavanda' : 'bg-pizarra border-borde-sutil'
       }`}>
         <div className="flex items-center space-x-2 md:space-x-3 px-3 py-2 md:px-4 md:py-3">
-          {isNatural
-            ? <Sparkles className="w-5 h-5 text-lavanda" />
-            : <Search className="w-5 h-5 text-humo" />}
+          {/* Selector de modo (izquierda). Muestra el icono del modo DESTINO:
+              brillo → cambiar a lenguaje natural (LLM); tag → cambiar a etiquetas. */}
+          <button
+            onClick={() => switchMode(isNatural ? 'tags' : 'natural')}
+            aria-label={isNatural ? 'Cambiar a búsqueda por etiquetas' : 'Cambiar a lenguaje natural'}
+            title={isNatural ? 'Cambiar a búsqueda por etiquetas' : 'Cambiar a lenguaje natural (LLM)'}
+            className={`flex-shrink-0 p-1.5 rounded-full transition-colors ${
+              isNatural ? 'text-noche hover:bg-noche/15' : 'text-humo hover:bg-grafito hover:text-lavanda'
+            }`}
+          >
+            {isNatural
+              ? <Tag className="w-5 h-5" />
+              : <Sparkles className="w-5 h-5" />}
+          </button>
 
           {/* Selected tags - Incluidas (lavanda) y excluidas (rosa apagado).
               Siempre visibles, también en modo Natural: las tags activas siguen
@@ -737,38 +748,12 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               </select>
             )}
 
-            {/* Toggle Tags ↔ Natural */}
-            <div className="flex items-center bg-noche/40 rounded-full p-0.5" role="tablist" aria-label="Modo de búsqueda">
-              <button
-                role="tab"
-                aria-selected={!isNatural}
-                onClick={() => switchMode('tags')}
-                className={`px-2.5 py-1 rounded-full transition-colors flex items-center gap-1 text-xs font-medium ${
-                  !isNatural ? 'bg-lavanda text-noche' : 'text-niebla hover:text-marfil'
-                }`}
-                title="Búsqueda por etiquetas (texto literal y filtros)"
-              >
-                <Hash className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Tags</span>
-              </button>
-              <button
-                role="tab"
-                aria-selected={isNatural}
-                onClick={() => switchMode('natural')}
-                className={`px-2.5 py-1 rounded-full transition-colors flex items-center gap-1 text-xs font-medium ${
-                  isNatural ? 'bg-lavanda text-noche' : 'text-niebla hover:text-marfil'
-                }`}
-                title="Búsqueda en lenguaje natural (LLM local)"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Natural</span>
-              </button>
-            </div>
-
             {hasActiveFilters() && (
               <button
                 onClick={clearFilters}
-                className="p-2 rounded-lg text-humo hover:bg-grafito hover:text-marfil transition-colors"
+                className={`p-2 rounded-lg transition-colors ${
+                  isNatural ? 'text-noche/70 hover:bg-noche/15 hover:text-noche' : 'text-humo hover:bg-grafito hover:text-marfil'
+                }`}
                 title="Limpiar búsqueda"
               >
                 <X className="w-5 h-5" />
@@ -778,7 +763,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
             <button
               onClick={isNatural ? runNaturalSearch : handleSearch}
               disabled={naturalLoading || (isNatural && !naturalMarkup.trim() && !naturalPlainText.trim())}
-              className="px-4 py-2 md:px-6 rounded-full transition-all duration-300 font-medium bg-lavanda text-noche hover:bg-lavanda-claro hover:shadow-lg text-sm md:text-base disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              className={`px-4 py-2 md:px-6 rounded-full transition-all duration-300 font-medium hover:shadow-lg text-sm md:text-base disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
+                isNatural ? 'bg-noche text-lavanda hover:bg-grafito' : 'bg-lavanda text-noche hover:bg-lavanda-claro'
+              }`}
             >
               {naturalLoading
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Pensando…</>
@@ -1099,8 +1086,8 @@ const mentionsInputStyle: any = {
     padding: 0,
     border: 0,
     outline: 0,
-    color: '#f4eee8',               // marfil — texto VISIBLE aquí
-    caretColor: '#C8B6FF',          // lavanda
+    color: '#7D8197',               // humo — texto gris sobre barra lavanda
+    caretColor: '#0F111A',          // noche — caret oscuro visible sobre lavanda
     backgroundColor: 'transparent',
     fontSize: '14px',
     lineHeight: '1.5',

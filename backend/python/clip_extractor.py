@@ -220,23 +220,31 @@ def stream_loop():
             continue
 
         op = req.get("op")
+        # Eco del id de correlacion (ver face_detector.py / clipService.js).
+        req_id = req.get("id")
+
+        def emit(payload):
+            if req_id is not None:
+                payload["id"] = req_id
+            print(json.dumps(payload), flush=True)
+
         try:
             if op == "exit":
-                print(json.dumps({"ok": True, "result": "bye"}), flush=True)
+                emit({"ok": True, "result": "bye"})
                 break
             elif op == "ping":
-                print(json.dumps({"ok": True, "result": "pong"}), flush=True)
+                emit({"ok": True, "result": "pong"})
             elif op == "embed_image":
                 r = embed_image(req.get("path"))
-                print(json.dumps({"ok": True, "result": r}), flush=True)
+                emit({"ok": True, "result": r})
             elif op == "embed_text":
                 r = embed_text(req.get("text"))
-                print(json.dumps({"ok": True, "result": r}), flush=True)
+                emit({"ok": True, "result": r})
             else:
-                print(json.dumps({"ok": False, "error": f"unknown op: {op}"}), flush=True)
+                emit({"ok": False, "error": f"unknown op: {op}"})
         except Exception as e:
             tb = traceback.format_exc(limit=3)
-            print(json.dumps({"ok": False, "error": str(e), "trace": tb}), flush=True)
+            emit({"ok": False, "error": str(e), "trace": tb})
 
 
 if __name__ == "__main__":

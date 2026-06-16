@@ -411,6 +411,19 @@ no está disponible, el endpoint devuelve **503**.
 - `POST /api/collections/:id/files/bulk` body `{fileIds}` — alias compat
 - `DELETE /api/collections/:id/files/:fileId` — quita uno (compat)
 
+### Notas humanas
+Notas de texto libre en dos ambitos, persistidas en `notes_persistent.json`
+(ver `notesManager.js`). No tocan disco de las bibliotecas ni renombran nada.
+- `GET /api/notes` — `{ files: { <fileId>: nota }, sessions: { <sessionKey>: nota } }`
+- `POST /api/notes` body `{ scope: 'file'|'session', key, note }` — guarda; `note`
+  vacio **borra** la nota de esa key.
+
+Ambitos:
+- **file**: nota por archivo, keyed por `fileId` (id estable que usa el frontend).
+- **session**: nota por sesion colapsada de la galeria, keyed por la session key
+  derivada del nombre de archivo (ver `src/hooks/useSessionGroups.ts`). Como el
+  nombre fisico no se renombra nunca, la key es estable.
+
 ### Sistema
 - `GET /api/system/info` — info de directorios y diagnóstico
 - `GET /api/statistics` — estadísticas globales
@@ -438,7 +451,14 @@ no está disponible, el endpoint devuelve **503**.
 | `backend/media_cache.json`       | Cache de hashes y metadatos por archivo  |
 | `backend/favorites_persistent.json` | Favoritos                             |
 | `backend/collections_persistent.json` | Colecciones                         |
-| `backend/thumbnails/`            | Thumbnails generados                     |
+| `backend/notes_persistent.json`  | Notas humanas por archivo y por sesion   |
+| `<scanRoot>/.pensadero/thumbnails/` | Thumbnails por biblioteca (regenerables, junto al disco escaneado) |
+| `backend/thumbnails/`            | Thumbnails legacy / fallback (compat; ya no es el destino principal) |
+
+> Los thumbnails se guardan junto a cada biblioteca en `<scanRoot>/.pensadero/thumbnails/`.
+> Se sirven por `GET /api/thumbnails/:fileId`, que resuelve la ubicacion en disco a
+> partir del fileId (nuevo destino → legacy → genera → placeholder). El antiguo
+> `backend/thumbnails/` y la ruta estatica `/thumbnails` se conservan como fallback.
 
 ## Notas
 
@@ -447,4 +467,4 @@ no está disponible, el endpoint devuelve **503**.
   delega el análisis visual a la herramienta externa (Marina Video Batch personal),
   que vuelca el resultado como sidecar JSON.
 - **Compresión gzip** activada para respuestas API.
-- **Cache headers** largos para `/thumbnails` y moderados para `/media`.
+- **Cache headers** largos para `/api/thumbnails/:fileId` (y la ruta legacy `/thumbnails`) y moderados para `/media`.

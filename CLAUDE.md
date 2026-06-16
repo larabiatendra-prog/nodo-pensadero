@@ -19,7 +19,7 @@ Guía para futuras sesiones de Claude Code dentro de este repositorio.
 
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS.
 - **Backend**: Node.js + Express + WebSocket (`ws`). Servidor en `backend/server.js`, rutas modulares en `backend/routes/`, servicios en `backend/services/`.
-- **IA opcional**: Ollama local. Búsqueda en lenguaje natural con `qwen2.5:7b-instruct` (NODO) o `qwen2.5:14b-instruct`. VLM de escaneo con `gemma3:12b` (NODO) o `qwen2.5vl:7b` (fallback manual, sin automatismo). Configurable en `backend/.env` (ver `backend/.env.nodo`).
+- **IA opcional**: Ollama local. Búsqueda en lenguaje natural con `qwen2.5:7b-instruct` (NODO) o `qwen2.5:14b-instruct`. VLM de escaneo seleccionable desde la UI (catalogo curado: `gemma4:12b` principal/default, `gemma4:27b` experimento, `gemma3:12b` legacy/fallback manual; cambio siempre manual, sin automatismo). Configurable en `backend/.env` (ver `backend/.env.nodo`).
 - **Sin Electron, sin pkg, sin instaladores.** Stack deliberadamente simple: `npm install` + un `.bat`.
 
 ## Diseño
@@ -59,9 +59,10 @@ Todo en `backend/`, en disco local, formato JSON plano:
 
 - `favorites_persistent.json` — lista de IDs favoritos.
 - `collections_persistent.json` — colecciones de usuario con orden manual.
+- `notes_persistent.json` — notas humanas por archivo (`fileId`) y por sesion colapsada (session key). No regenerable.
 - `media_cache.json` — cache de metadatos de archivos escaneados (la fuente de verdad operativa).
 - `scan_paths.json` — rutas de bibliotecas que el usuario ha añadido.
-- `thumbnails/` — miniaturas generadas (regenerables).
+- `<scanRoot>/.pensadero/thumbnails/` — miniaturas por biblioteca (regenerables, junto a cada disco escaneado). Es el destino principal; se sirven por `GET /api/thumbnails/:fileId`. `backend/thumbnails/` queda como fallback legacy.
 - `embeddings_index.json` / `visual_search_data/` — índices de búsqueda vectorial (regenerables).
 
 Ninguno de estos archivos debe versionarse en git (ver `.gitignore`).

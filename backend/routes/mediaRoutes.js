@@ -19,6 +19,7 @@ const archiver = require('archiver');
 const { exec } = require('child_process');
 
 const favoritesManager = require('../favoritesManager');
+const pathsConfig = require('../config/paths');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -122,6 +123,69 @@ module.exports = function createMediaRoutes(deps) {
       res.json({ success: true, data: file });
     } else {
       res.status(404).json({ success: false, message: 'Archivo no encontrado' });
+    }
+  });
+
+  // Placeholder SVG inline (gris) cuando no hay thumbnail servible.
+  const svgPlaceholderMarkup = (label, name, bg) => {
+    const shortName = (name || '').length > 25 ? (name || '').substring(0, 22) + '...' : (name || '');
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" fill="${bg}"/><text x="150" y="105" font-family="Arial" font-size="14" fill="white" text-anchor="middle" font-weight="bold">${label}</text><text x="150" y="135" font-family="Arial" font-size="10" fill="white" text-anchor="middle">${shortName}</text></svg>`;
+  };
+
+  /**
+   * GET /api/thumbnails/:fileId
+   * Sirve el thumbnail de un archivo resolviendo internamente su ubicacion en
+   * disco a partir del fileId (sin aceptar rutas arbitrarias → sin path
+   * traversal). Orden de resolucion:
+   *   1) Nuevo destino por-disco: <scanRoot>\.pensadero\thumbnails
+   *   2) Compat: directorio legacy backend/thumbnails (mismo nombre)
+   *   3) Generar bajo demanda en el destino nuevo
+   *   4) Placeholder si todo falla (no rompe la UI)
+   */
+  router.get('/thumbnails/:fileId', async (req, res) => {
+    const fileId = req.params.fileId;
+    const sendPlaceholder = (label = 'Archivo', name = '', bg = '%23f3f4f6') => {
+      res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).send(svgPlaceholderMarkup(label, name, bg));
+    };
+    try {
+      const file = getMediaFiles().find(f => f.id === fileId);
+      if (!file || !file.fullPath) return sendPlaceholder('?', fileId, '%23999999');
+
+      const scanRoot = await pathsConfig.resolveScanRoot(file.fullPath);
+      const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, scanRoot, fileId, fileName: file.name });
+      // Sin scanRoot → ubicacion legacy (backend/thumbnails) con el mismo nombre.
+      const legacyLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, fileId, fileName: file.name });
+
+      const serveIfExists = () => {
+        for (const cand of [newLoc.thumbnailPath, legacyLoc.thumbnailPath]) {
+          if (cand && fsSync.existsSync(cand)) {
+            res.setHeader('Cache-Control', 'public, max-age=604800');
+            res.sendFile(cand);
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // 1) y 2): servir si ya existe (nuevo o legacy).
+      if (serveIfExists()) return;
+
+      // 3) generar bajo demanda en el destino nuevo.
+      const result = await generateThumbnail(file.fullPath, fileId, file.name, scanRoot);
+      // Placeholder inline (audio/error): servir el SVG decodificado.
+      if (typeof result === 'string' && result.startsWith('data:')) {
+        const svg = decodeURIComponent(result.substring(result.indexOf(',') + 1));
+        res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).send(svg);
+      }
+      if (serveIfExists()) return;
+      return sendPlaceholder('Archivo', file.name);
+    } catch (error) {
+      console.error('Error sirviendo thumbnail:', error.message);
+      return sendPlaceholder('Error', fileId, '%23fee2e2');
     }
   });
 
@@ -437,30 +501,68 @@ module.exports = function createMediaRoutes(deps) {
       const fileSize = stat.size;
       const range = req.headers.range;
 
-      if (range) {
-        const parts = range.replace(/bytes=/, "").split("-");
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-        const chunksize = (end - start) + 1;
+      const contentType = mime.lookup(filePath) || 'application/octet-stream';
 
+      // pipe() NO propaga errores del origen. Sin un listener 'error' en el
+      // readStream, un fallo de disco a mitad de stream (p.ej. un disco externo
+      // desconectado durante la reproduccion) lanza una excepcion no capturada
+      // que tumba el proceso Node entero. Este guard lo convierte en un 500/abort
+      // limpio y, ademas, libera el descriptor si el cliente corta la conexion.
+      const attachStreamGuards = (readStream) => {
+        readStream.on('error', (streamErr) => {
+          console.error(`❌ Error leyendo stream de ${file.name}:`, streamErr.message);
+          if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'Error leyendo el archivo' });
+          } else {
+            res.destroy(streamErr);
+          }
+        });
+        res.on('close', () => readStream.destroy());
+      };
+
+      if (range) {
+        // Parsear y VALIDAR el Range. Un Range malformado o fuera de rango debe
+        // responder 416 (Range Not Satisfiable), no NaN ni un stream corrupto.
+        const matches = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (!matches) {
+          res.set('Content-Range', `bytes */${fileSize}`);
+          return res.status(416).end();
+        }
+        let start = matches[1] === '' ? NaN : parseInt(matches[1], 10);
+        let end = matches[2] === '' ? fileSize - 1 : parseInt(matches[2], 10);
+        // Suffix range "bytes=-N" → ultimos N bytes
+        if (Number.isNaN(start) && !Number.isNaN(end)) {
+          start = Math.max(0, fileSize - end);
+          end = fileSize - 1;
+        }
+        if (Number.isNaN(start)) start = 0;
+        if (Number.isNaN(end) || end >= fileSize) end = fileSize - 1;
+        if (start > end || start >= fileSize) {
+          res.set('Content-Range', `bytes */${fileSize}`);
+          return res.status(416).end();
+        }
+
+        const chunksize = (end - start) + 1;
         res.status(206);
         res.set({
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Accept-Ranges': 'bytes',
           'Content-Length': chunksize,
-          'Content-Type': mime.lookup(filePath) || 'application/octet-stream'
+          'Content-Type': contentType
         });
 
         const readStream = fsSync.createReadStream(filePath, { start, end });
+        attachStreamGuards(readStream);
         readStream.pipe(res);
       } else {
         res.set({
           'Content-Length': fileSize,
-          'Content-Type': mime.lookup(filePath) || 'application/octet-stream',
+          'Content-Type': contentType,
           'Accept-Ranges': 'bytes'
         });
 
         const readStream = fsSync.createReadStream(filePath);
+        attachStreamGuards(readStream);
         readStream.pipe(res);
       }
 

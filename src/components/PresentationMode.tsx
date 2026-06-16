@@ -328,7 +328,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/70 to-transparent p-6">
           <div className="flex items-center justify-between">
             <div className="text-white">
-              <h1 className="text-xl font-semibold mb-2">{currentVideo.name}</h1>
+              <h1 className="text-xl font-semibold mb-2" title={currentVideo.name}>{currentVideo.displayName || currentVideo.name}</h1>
               <p className="text-white/80 text-sm flex items-center gap-3">
                 <span>Video {currentVideoIndex + 1} de {videoFiles.length}</span>
                 {nextVideoPreloaded && videoFiles.length > 1 && (

@@ -8,10 +8,10 @@ interface VideoThumbnailProps {
   className?: string;
 }
 
-export default function VideoThumbnail({ 
-  video, 
-  hoverDelayMs = 450, 
-  className = '' 
+function VideoThumbnail({
+  video,
+  hoverDelayMs = 450,
+  className = ''
 }: VideoThumbnailProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
@@ -163,7 +163,7 @@ export default function VideoThumbnail({
       )}
       
       {isLoading && (
-        <div 
+        <div
           className="loading-indicator"
           style={{
             position: 'absolute',
@@ -179,3 +179,7 @@ export default function VideoThumbnail({
     </div>
   );
 }
+
+// Memoizado: el grid puede re-renderizar a menudo; mientras `video` (memoizado
+// en MediaCard) y `className` no cambien, el preview no se repinta.
+export default React.memo(VideoThumbnail);

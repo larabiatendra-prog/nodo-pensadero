@@ -1,6 +1,6 @@
 # Guía de instalación de Pensadero en NODO
 
-> Versión actualizada para el instalador automático (2026-05-23).
+> Versión actualizada para el instalador automático (2026-06-06).
 > Pensada para el PC NODO (Windows 11, RTX 5070 Ti).
 > No requiere conocimientos técnicos. Si algo falla, ve al final.
 
@@ -32,7 +32,7 @@ Hay un tercero, `Pensadero_Doctor.bat`, que **no instala nada** pero te dice qu�
 
 El instalador hace todo esto solo:
 - Instalar Node.js, Python, Ollama, ffmpeg.
-- Descargar los modelos de IA (gemma3:12b, qwen2.5:7b-instruct y qwen2.5vl:7b).
+- Descargar los modelos de IA (gemma4:12b y qwen2.5:7b-instruct).
 - Instalar las dependencias del proyecto (npm + pip).
 - Crear el entorno Python (.venv) con InsightFace y SigLIP-2.
 - Construir el bundle de producción.
@@ -128,9 +128,9 @@ Para cerrar Pensadero: cierra la ventana negra que dice "Pensadero".
 | Paso 9 falla con "model not found" | Servicio Ollama no arrancó | Abre cmd y ejecuta `ollama serve` en una ventana, deja abierta, relanza instalador |
 | Doctor dice "Ollama no responde" | El servicio no arrancó al iniciar Windows | El `Start.bat` lo arranca solo ahora. Si persiste: `ollama serve` manual |
 | Doctor dice "GPU NVIDIA no encontrada" | Driver NVIDIA no instalado | Descarga driver desde nvidia.com (no debería pasar en NODO) |
-| Botón ✨ (escaneo IA) deshabilitado | Falta `qwen2.5vl:7b` | Abre cmd: `ollama pull qwen2.5vl:7b` |
+| Botón ✨ (escaneo IA) deshabilitado | Falta el VLM `VLM_MODEL` (NODO: `gemma4:12b`) | Abre cmd: `ollama pull gemma4:12b` |
 | Búsqueda natural devuelve error 503 | Falta el modelo de `OLLAMA_MODEL` (NODO: `qwen2.5:7b-instruct`) o Ollama no corre | Doctor dirá cuál es |
-| Escaneo visual falla / botón ✨ 503 | Falta el modelo de `VLM_MODEL` (NODO: `gemma3:12b`) | `ollama pull gemma3:12b` |
+| Escaneo visual falla / botón ✨ 503 | Falta el modelo de `VLM_MODEL` (NODO: `gemma4:12b`) | `ollama pull gemma4:12b` |
 | Pensadero abre pero no detecta caras | Python o venv no instalados | Doctor lo dirá. Solución: relanza instalador |
 | Pensadero no escanea vídeos | Falta ffmpeg | Doctor lo dirá. Solución: relanza instalador |
 | InsightFace lento / CPU al 100% aunque haya GPU | `.venv` copiado de otro PC (rutas rotas) o onnxruntime sin CUDA | Doctor muestra `[WARN] onnxruntime sin CUDAExecutionProvider`. Solución: eliminar `backend/python/.venv/`, relanzar instalador. Si persiste: `backend\python\.venv\Scripts\python.exe -m pip install onnxruntime-gpu --upgrade` |
@@ -153,9 +153,11 @@ Invoke-RestMethod -Uri "http://localhost:5000/api/scan/health"
 ollama list
 
 # Si falta un modelo, descargarlo manualmente
-ollama pull gemma3:12b
-ollama pull qwen2.5:7b-instruct
-ollama pull qwen2.5vl:7b
+ollama pull gemma4:12b              # VLM principal (default)
+ollama pull qwen2.5:7b-instruct    # busqueda natural
+# VLM opcionales del catalogo (cambio manual desde la UI):
+ollama pull gemma4:27b             # experimento (riesgo OOM 16 GB)
+ollama pull gemma3:12b             # legacy / fallback
 ```
 
 Los `health` deben devolver `ollamaRunning: True` y `modelAvailable: True`.
@@ -177,26 +179,26 @@ Solo tres cosas no se pueden automatizar:
 
 ## Optimizar el escaneo visual en NODO
 
-El instalador descarga `qwen2.5vl:7b` por defecto: cabe en cualquier GPU decente y funciona bien. Pero NODO tiene **16 GB VRAM** (RTX 5070 Ti) y puede correr modelos visión más potentes que dan descripciones más ricas, fieles y específicas.
+El instalador descarga `gemma4:12b` por defecto: el modelo principal recomendado, equilibrio calidad/velocidad/VRAM en los 16 GB de NODO (RTX 5070 Ti). El selector de la UI ofrece SIEMPRE un catalogo curado de tres modelos; los que no estes descargados aparecen como "pendiente de descarga" con su comando `ollama pull`.
 
-### Modelos recomendados según VRAM
+### Catalogo VLM (selector de la UI)
 
-| Modelo | VRAM aprox. (q4) | Calidad | Notas |
+| Modelo | Tier | VRAM aprox. (q4) | Notas |
 |---|---|---|---|
-| `qwen2.5vl:7b` | ~5 GB | Buena | Default. Rápido y multilingüe. |
-| `minicpm-v:8b` | ~5 GB | Buena | Fuerte en detalle visual + OCR. |
-| `gemma3:12b` | ~8 GB | Muy buena | **Recomendado para NODO.** Salto notable sobre 7b; deja VRAM para caras + CLIP. |
-| `gemma3:27b` | ~16 GB | Excelente | Al límite — riesgo de OOM con contexto largo. |
-| `qwen2.5vl:32b` | ~18 GB | Excelente | **NO cabe en 16 GB VRAM.** No usar. |
+| `gemma4:12b` | Producción | ~8 GB | **Default.** Escaneo diario. Deja VRAM para caras + CLIP. |
+| `gemma4:27b` | Experimento | ~16 GB | Mayor calidad para reanálisis. Al límite — riesgo de OOM con contexto largo. Manual, nunca default. |
+| `gemma3:12b` | Legacy | ~8 GB | Fallback manual mientras siga útil. |
+
+Cualquier otro VLM instalado en Ollama (p.ej. `qwen2.5vl:7b`, `minicpm-v:8b`) también aparece en el selector bajo "Otros instalados". `qwen2.5vl:32b` (~18 GB) **NO cabe en 16 GB VRAM** — descartado para NODO.
 
 ### Cómo cambiar el modelo
 
-1. Descarga el modelo elegido. Ejemplo recomendado:
+1. Descarga el modelo elegido si aún no lo tienes. Default:
    ```powershell
-   ollama pull gemma3:12b
+   ollama pull gemma4:12b
    ```
-2. Abre Pensadero. Menú "..." → **Configuración del escaneo visual** (el selector lista solo modelos visión disponibles).
-3. Selecciona el modelo nuevo y guarda. No necesitas reiniciar.
+2. Abre Pensadero → pestaña **Rutas**. El selector "Modelo que describe las fotos" lista el catalogo curado (agrupado por tier) más los VLM instalados.
+3. Selecciona el modelo nuevo. El cambio es inmediato y manual (sin fallback automático). No necesitas reiniciar.
 
 ### Cuándo re-escanear
 
@@ -214,7 +216,7 @@ Para NODO hay un fichero listo: copia `backend/.env.nodo` como `backend/.env`
 
 | Variable | NODO | Para qué |
 |---|---|---|
-| `VLM_MODEL` | `gemma3:12b` | VLM de escaneo. Muy buena calidad, holgado en 16 GB. Fallback **manual** (sin automatismo): si falla, cámbialo a `qwen2.5vl:7b` y re-escanea. |
+| `VLM_MODEL` | `gemma4:12b` | VLM de escaneo (default del catalogo). Equilibrio calidad/velocidad/VRAM en 16 GB. Fallback **manual** (sin automatismo): si falla, cámbialo a `gemma3:12b` y re-escanea. |
 | `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | Modelo de texto de la búsqueda natural. Prioriza velocidad. |
 | `VLM_TIMEOUT_MS` | `300000` | Timeout por imagen (ms). Holgado por el cold-start del modelo 14b. |
 | `VLM_VIDEO_FRAMES` | `3` | Frames por vídeo (inicio/medio/final). El vídeo es una **escena única**. No subir, no lógica adaptativa, no detección de escenas. |
@@ -225,9 +227,13 @@ Para NODO hay un fichero listo: copia `backend/.env.nodo` como `backend/.env`
 > **Modelos del objetivo NODO** (el instalador ya los descarga en el paso 9; estos
 > comandos solo hacen falta si quieres bajar alguno a mano):
 > ```powershell
-> ollama pull gemma3:12b        # VLM principal de escaneo
+> ollama pull gemma4:12b        # VLM principal de escaneo (default)
 > ollama pull qwen2.5:7b-instruct  # busqueda en lenguaje natural
-> ollama pull qwen2.5vl:7b         # fallback manual del VLM
+> ```
+> VLM opcionales del catalogo (descarga manual, cambio manual desde la UI):
+> ```powershell
+> ollama pull gemma4:27b        # experimento (riesgo OOM 16 GB)
+> ollama pull gemma3:12b        # legacy / fallback manual
 > ```
 
 ---
@@ -404,3 +410,4 @@ Todo lo que **no** se versiona en git está en `.gitignore`. Nada va a la nube.
 | 2026-05-25 | Doctor.bat: check CUDAExecutionProvider en onnxruntime (detecta GPU infrautilizada por .venv roto o Blackwell SM_100). Install.bat: aviso CUDA post-paso 8. GUIA: fila troubleshooting CPU bottleneck. |
 | 2026-06-01 | Config objetivo NODO: `backend/.env.nodo` (VLM `gemma3:12b`, búsqueda `qwen2.5:7b-instruct`, vídeo 3 frames). VLM sin fallback automático (fallback manual a `qwen2.5vl:7b`). Nueva sección "Validación GPU en NODO (Blackwell)". Drift corregido (`llama3.1:8b` ya no es modelo de búsqueda; tabla de vars no sugiere subir frames). |
 | 2026-06-01 | VLM principal cambiado de `internvl3:14b` a `gemma3:12b`: `internvl3` NO existe en la library oficial de Ollama (registry da 404), el pull fallaría. `gemma3:12b` (~8 GB, verificado en registry) cabe holgado en 16 GB con caras+CLIP. Instalador queda plug-and-play. |
+| 2026-06-06 | Catalogo VLM seleccionable: `gemma4:12b` (default/produccion), `gemma4:27b` (experimento), `gemma3:12b` (legacy/fallback). El selector de la UI muestra siempre los tres; los no instalados salen como "pendiente de descarga" con su `ollama pull`. Default `VLM_MODEL` movido a `gemma4:12b`. Regex de deteccion VLM ampliada `gemma3`→`gemma[3-9]`. Sin fallback automatico (cambio manual). `qwen2.5vl:32b` descartado (no cabe en 16 GB). |

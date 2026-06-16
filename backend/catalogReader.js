@@ -329,6 +329,11 @@ function mergeClipIntoFile(fileData, clip, catalog) {
     result.visual_description = clip.description.trim();
   }
 
+  // Modelo VLM que generó la descripción (solo en scans nuevos; legacy sin él).
+  if (typeof clip.vlm_model === 'string' && clip.vlm_model.trim()) {
+    result.vlm_model = clip.vlm_model.trim();
+  }
+
   // Tags adicionales para Stage 1 (matching literal): objects + actions +
   // expressions + composition + atmosphere + nombres de colores.
   // IMPORTANTE: las personas (faces[].name) NO entran en tags.

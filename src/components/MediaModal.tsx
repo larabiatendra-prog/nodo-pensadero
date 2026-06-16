@@ -17,7 +17,9 @@ import {
   EyeOff,
   UserPlus,
   Search,
-  Pencil
+  Pencil,
+  Check,
+  FolderOpen
 } from 'lucide-react';
 import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
@@ -36,6 +38,12 @@ interface MediaModalProps {
   onTagClick?: (tag: string) => void; // Callback para filtrar por etiqueta
   onBackgroundRemoved?: (newFileId: string, newFileName: string) => void; // Callback cuando se quita el fondo
   onPersonFilter?: (personId: string) => void; // Click en un bbox identificado para filtrar por persona
+  /** Nota humana de este archivo (vacia si no hay). */
+  note?: string;
+  /** Persiste la nota del archivo. note vacio borra. */
+  onSaveNote?: (fileId: string, note: string) => Promise<void> | void;
+  /** Abre la carpeta contenedora con el archivo seleccionado. */
+  onOpenPath?: (fileId: string) => void;
 }
 
 export default function MediaModal({
@@ -49,7 +57,10 @@ export default function MediaModal({
   onFileSelect,
   onTagClick,
   onBackgroundRemoved,
-  onPersonFilter
+  onPersonFilter,
+  note,
+  onSaveNote,
+  onOpenPath
 }: MediaModalProps) {
   const [relatedFilesStartIndex, setRelatedFilesStartIndex] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -95,6 +106,27 @@ export default function MediaModal({
   // del lapiz; se cierra clicando fuera o con la X.
   const [showDescription, setShowDescription] = useState(false);
   useEffect(() => { setShowDescription(false); }, [file?.id]);
+
+  // Nota humana del archivo. El borrador se sincroniza al cambiar de archivo
+  // o cuando llega una nota nueva desde el padre.
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteSaved, setNoteSaved] = useState(false);
+  useEffect(() => { setNoteDraft(note || ''); setNoteSaved(false); }, [file?.id, note]);
+
+  const handleSaveNote = async () => {
+    if (!file || !onSaveNote) return;
+    const text = noteDraft.trim();
+    if (text === (note || '').trim()) { setNoteSaved(true); return; }
+    setNoteSaving(true);
+    setNoteSaved(false);
+    try {
+      await onSaveNote(file.id, text);
+      setNoteSaved(true);
+    } finally {
+      setNoteSaving(false);
+    }
+  };
 
   // Flujo "crear persona desde cara desconocida": click en bbox sin person_id
   // dispara una busqueda de caras similares en toda la biblioteca, luego abre
@@ -681,30 +713,26 @@ export default function MediaModal({
           </>
         )}
 
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-slate-200">
-          <div className="flex items-center space-x-4 min-w-0">
-            <div className={`w-3 h-3 rounded-full flex-shrink-0 ${
-              file.type === 'video' ? 'bg-purple-500' :
-              file.type === 'audio' ? 'bg-green-500' :
-              file.type === 'export' ? 'bg-orange-500' :
-              'bg-blue-500'
-            }`}></div>
-            <h2 className="text-base md:text-xl font-semibold text-slate-900 truncate max-w-[40vw] md:max-w-none" title={file.displayName ? `Archivo: ${file.name}` : file.name}>{file.displayName || file.name}</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
-          >
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+        {/* Boton cerrar — flotante; el nombre del archivo se muestra como
+            overlay sobre el media al hacer hover (ver renderMediaPreview). */}
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 z-20 p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+        >
+          <X className="w-6 h-6" />
+        </button>
 
         <div className="p-4 md:p-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Media preview */}
-            <div className="md:col-span-2">
+            {/* Media preview — el nombre del archivo aparece como overlay
+                oscurecido al pasar el raton por encima */}
+            <div className="md:col-span-2 relative group/media">
               {renderMediaPreview()}
+              <div className="absolute top-0 inset-x-0 z-20 p-3 rounded-t-lg bg-gradient-to-b from-noche/85 via-noche/40 to-transparent opacity-0 group-hover/media:opacity-100 transition-opacity duration-200 pointer-events-none">
+                <span className="block text-sm font-medium text-marfil truncate" title={file.displayName ? `Archivo: ${file.name}` : file.name}>
+                  {file.displayName || file.name}
+                </span>
+              </div>
             </div>
 
             {/* File details */}
@@ -715,11 +743,7 @@ export default function MediaModal({
                   onClick={() => onToggleFavorite(file.id)}
                   title={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
                   aria-label={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
-                  className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                    file.isFavorite
-                      ? 'bg-lavanda bg-opacity-10 text-lavanda hover:bg-opacity-20'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
                 >
                   <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} />
                 </button>
@@ -727,10 +751,20 @@ export default function MediaModal({
                   onClick={() => onDownload(file)}
                   title="Descargar"
                   aria-label="Descargar"
-                  className="w-10 h-10 rounded-full flex items-center justify-center bg-bruma text-white hover:bg-opacity-90 transition-colors"
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
                 >
                   <Download className="w-4 h-4" />
                 </button>
+                {onOpenPath && (
+                  <button
+                    onClick={() => onOpenPath(file.id)}
+                    title="Ir a ruta (abrir carpeta contenedora)"
+                    aria-label="Ir a ruta"
+                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                  </button>
+                )}
                 {file.type === 'image' && (
                   <button
                     onClick={handleRemoveBackground}
@@ -768,6 +802,27 @@ export default function MediaModal({
                   <p className="text-sm text-slate-600 leading-relaxed">{file.description}</p>
                 )}
 
+                {/* Nota humana del archivo — editable, distinta de la descripcion IA */}
+                {onSaveNote && (
+                  <div>
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 mb-1">
+                      <Pencil className="w-3 h-3" /> Nota
+                    </label>
+                    <textarea
+                      value={noteDraft}
+                      onChange={(e) => { setNoteDraft(e.target.value); setNoteSaved(false); }}
+                      onBlur={handleSaveNote}
+                      rows={3}
+                      placeholder="Escribe una nota sobre este archivo..."
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
+                    />
+                    <div className="h-4 mt-0.5 text-xs">
+                      {noteSaving && <span className="text-slate-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Guardando...</span>}
+                      {!noteSaving && noteSaved && <span className="text-salvia flex items-center gap-1"><Check className="w-3 h-3" /> Guardado</span>}
+                    </div>
+                  </div>
+                )}
+
                 <FilePersonsBubbles
                   file={file}
                   onPersonFilter={onPersonFilter}
@@ -783,7 +838,7 @@ export default function MediaModal({
 
           {/* Related Files Section */}
           {relatedFiles.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-slate-200">
+            <div className="mt-4 pt-4">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-medium text-slate-900">Archivos relacionados</h3>
                 <div className="flex items-center space-x-2">
@@ -1370,6 +1425,7 @@ function DescriptionOverlay({ file, onClose }: { file: MediaFile; onClose: () =>
   const ocr = file.ocr_text?.trim() || '';
   const compChips = objectToChips(file.composition, COMPOSITION_LABELS);
   const atmoChips = objectToChips(file.atmosphere, ATMOSPHERE_LABELS);
+  const vlmModel = file.vlm_model?.trim() || '';
 
   return (
     <div
@@ -1436,6 +1492,12 @@ function DescriptionOverlay({ file, onClose }: { file: MediaFile; onClose: () =>
               {ocr}
             </p>
           </div>
+        )}
+
+        {vlmModel && (
+          <p className="text-[10px] text-humo font-mono pt-1">
+            Generado con {vlmModel}
+          </p>
         )}
       </div>
     </div>

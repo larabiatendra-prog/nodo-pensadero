@@ -28,6 +28,7 @@ const colorAnalyzer = require('./colorAnalyzer');
 const favoritesManager = require('./favoritesManager');
 const collectionsManager = require('./collectionsManager');
 const catalogReader = require('./catalogReader');
+const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
 const peopleRegistry = require('./peopleRegistry');
 const personsAggregator = require('./personsAggregator');
 const multer = require('multer');
@@ -45,7 +46,9 @@ const createScanRoutes = require('./routes/scanRoutes');
 const createPersonsManageRoutes = require('./routes/personsManageRoutes');
 const createColorSearchRoutes = require('./routes/colorSearchRoutes');
 const createAliasRoutes = require('./routes/aliasRoutes');
+const createNotesRoutes = require('./routes/notesRoutes');
 const aliasTable = require('./aliasTable');
+const folderNames = require('./folderNames');
 const clipIndex = require('./clipIndex');
 const spacesRegistry = require('./spacesRegistry');
 const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
@@ -101,20 +104,30 @@ let EXPORTS_PATHS = [];
 
 // Cargar rutas de escaneo
 async function loadScanPaths() {
+  const scanPathsFile = path.join(__dirname, 'scan_paths.json');
+  let data;
   try {
-    const scanPathsFile = path.join(__dirname, 'scan_paths.json');
-    const data = await fs.readFile(scanPathsFile, 'utf-8');
+    data = await fs.readFile(scanPathsFile, 'utf-8');
+  } catch (error) {
+    return []; // no existe o no accesible
+  }
+  try {
     return JSON.parse(data);
   } catch (error) {
+    // scan_paths.json NO es regenerable (son las bibliotecas del usuario). Si
+    // está corrupto, NO devolver [] y dejar que un saveScanPaths posterior lo
+    // machaque: cuarentena para recuperación manual.
+    console.error(`❌ scan_paths.json corrupto: ${error.message}`);
+    await quarantineCorrupt(scanPathsFile);
     return [];
   }
 }
 
-// Guardar configuración de rutas
+// Guardar configuración de rutas (escritura atómica: tmp + rename).
 async function saveScanPaths(paths) {
   try {
     const scanPathsFile = path.join(__dirname, 'scan_paths.json');
-    await fs.writeFile(scanPathsFile, JSON.stringify(paths, null, 2));
+    await atomicWriteFile(scanPathsFile, JSON.stringify(paths, null, 2));
   } catch (error) {
     console.error('❌ Error guardando rutas:', error.message);
   }
@@ -133,8 +146,36 @@ async function loadExportsPaths() {
 
 // === MIDDLEWARE ===
 
-// CORS abierto a localhost (single-user, sin auth)
-app.use(cors());
+// CORS restringido. En producción el backend sirve el frontend en el MISMO
+// origen que la API, así que el navegador NO aplica CORS a las llamadas
+// normales. El único cross-origin legítimo es desarrollo: Vite en :5173 → API
+// en :5000 (mismo host). Permitimos solo orígenes locales (localhost /
+// 127.0.0.1 / ::1, cualquier puerto) y peticiones sin Origin (navegación
+// same-origin, <video>, curl). Una web externa queda sin ACAO → el navegador
+// le bloquea leer la respuesta (anti-exfiltración), crítico al no haber auth.
+const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin || LOCAL_ORIGIN_RE.test(origin)) return cb(null, true);
+    return cb(null, false); // sin cabecera ACAO → el navegador bloquea la lectura
+  },
+}));
+
+// Defensa anti-CSRF / anti-DNS-rebinding. Como no hay auth, una web externa
+// podría disparar POSTs cross-origin que mutan estado (scan, tags, etc.). Para
+// métodos que mutan, si viene Origin exigimos que sea el MISMO host que sirve
+// la API (same-origin real) o un origen local de desarrollo; si no, 403. Los
+// GET/HEAD se dejan pasar: su respuesta ya queda protegida por la política CORS.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin) return next();
+  if (LOCAL_ORIGIN_RE.test(origin)) return next();
+  try {
+    if (new URL(origin).host === req.headers.host) return next();
+  } catch { /* Origin malformado: tratar como no permitido abajo */ }
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  return res.status(403).json({ success: false, error: 'Origin no permitido' });
+});
 
 // Compresión gzip para respuestas API y assets
 app.use(compression({
@@ -307,7 +348,9 @@ async function loadCache() {
 async function saveCache() {
   try {
     const obj = Object.fromEntries(fileCache);
-    await fs.writeFile(CACHE_FILE, JSON.stringify(obj));
+    // Escritura atómica: el watcher puede disparar varios saveCache solapados;
+    // tmp + rename evita que se entrelacen y corrompan media_cache.json.
+    await atomicWriteFile(CACHE_FILE, JSON.stringify(obj));
   } catch (error) {
     console.error('❌ Error guardando cache:', error.message);
   }
@@ -434,16 +477,34 @@ function getFileType(filePath) {
 
 // === THUMBNAIL ===
 
-async function generateThumbnail(filePath, fileId, fileName) {
+async function generateThumbnail(filePath, fileId, fileName, scanRoot) {
   const fileType = getFileType(filePath);
-  const nameWithoutExt = path.basename(fileName, path.extname(fileName));
-  const sanitizedName = nameWithoutExt.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const thumbnailName = `${sanitizedName}_${fileId.substring(0, 8)}_thumbnail.jpg`;
-  const thumbnailPath = path.join(THUMBNAILS_DIR, thumbnailName);
 
+  // El thumbnail pertenece a la biblioteca: vive en <scanRoot>\.pensadero\thumbnails.
+  // Si no se conoce scanRoot, el resolver cae al directorio legacy (backend/thumbnails).
+  let loc = pathsConfig.resolveThumbnailLocation({ fullPath: filePath, scanRoot, fileId, fileName });
+
+  // Crear el directorio destino de forma lazy (no en el arranque): los discos
+  // externos pueden estar desconectados o ser de solo lectura. Si falla, caer al
+  // directorio legacy local; si eso tambien falla, el llamante recibe placeholder.
+  const ensureDir = async () => {
+    try {
+      await fs.mkdir(loc.thumbnailDir, { recursive: true });
+      return true;
+    } catch (err) {
+      if (!loc.legacy) {
+        console.warn(`⚠️ No se pudo crear ${loc.thumbnailDir} (${err.message}). Fallback a thumbnails legacy.`);
+        loc = pathsConfig.resolveThumbnailLocation({ fullPath: filePath, fileId, fileName });
+        try { await fs.mkdir(loc.thumbnailDir, { recursive: true }); return true; } catch { return false; }
+      }
+      return false;
+    }
+  };
+
+  // Cache hit: si ya existe en el destino esperado, devolver la URL sin regenerar.
   try {
-    await fs.access(thumbnailPath);
-    return pathsConfig.getThumbnailUrl(thumbnailName);
+    await fs.access(loc.thumbnailPath);
+    return loc.thumbnailUrl;
   } catch {
     // No existe — generar
   }
@@ -460,6 +521,7 @@ async function generateThumbnail(filePath, fileId, fileName) {
 
   try {
     if (actualFileType === 'image') {
+      if (!(await ensureDir())) return svgPlaceholder('Error', fileName, '%23fee2e2');
       const imageBuffer = await fs.readFile(filePath);
       const metadata = await sharp(imageBuffer).metadata();
       const targetWidth = 600;
@@ -468,12 +530,13 @@ async function generateThumbnail(filePath, fileId, fileName) {
       await sharp(imageBuffer)
         .resize(targetWidth, targetHeight, { fit: 'inside', withoutEnlargement: false })
         .jpeg({ quality: 80 })
-        .toFile(thumbnailPath);
+        .toFile(loc.thumbnailPath);
 
-      return pathsConfig.getThumbnailUrl(thumbnailName);
+      return loc.thumbnailUrl;
     }
 
     if (actualFileType === 'video') {
+      if (!(await ensureDir())) return svgPlaceholder('VIDEO', fileName, '%236366f1');
       const MAX_PATH = 260;
       let effectivePath = filePath;
       let tempCopy = null;
@@ -481,6 +544,9 @@ async function generateThumbnail(filePath, fileId, fileName) {
       if (filePath.length >= MAX_PATH) {
         try {
           const tempName = `temp_video_${fileId.substring(0, 12)}${path.extname(fileName)}`;
+          // Staging en el dir legacy local (ruta corta) para no chocar con el
+          // limite de 260 chars de ffmpeg, independientemente de donde viva el
+          // thumbnail final (que puede estar en un disco externo de ruta larga).
           tempCopy = path.join(THUMBNAILS_DIR, tempName);
           const CHUNK_SIZE = 5 * 1024 * 1024;
           const srcHandle = await fs.open(filePath, 'r');
@@ -508,10 +574,10 @@ async function generateThumbnail(filePath, fileId, fileName) {
           ffmpeg(effectivePath)
             .screenshot({
               timestamps: [timestamps[attempts]],
-              filename: thumbnailName,
-              folder: THUMBNAILS_DIR
+              filename: loc.thumbnailName,
+              folder: loc.thumbnailDir
             })
-            .on('end', () => cleanup().then(() => resolve(pathsConfig.getThumbnailUrl(thumbnailName))))
+            .on('end', () => cleanup().then(() => resolve(loc.thumbnailUrl)))
             .on('error', () => tryAt(attempts + 1));
         };
         tryAt();
@@ -548,6 +614,11 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
       const fullPath = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
+        // Saltar carpetas tecnicas (.pensadero, .git, etc.). Critico: dentro de
+        // cada biblioteca vive <scanRoot>\.pensadero\thumbnails; si no se excluye,
+        // el escaner re-indexaria sus propios thumbnails .jpg como medios
+        // (duplicados que se persisten en media_cache.json).
+        if (entry.name.startsWith('.')) continue;
         const sub = await scanDirectory(fullPath, baseDir, totalFiles, processedFiles);
         files.push(...sub.files);
         newFiles += sub.stats.newFiles;
@@ -601,23 +672,33 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
         const relativePath = path.relative(baseDir, fullPath);
         const fileId = generateFileId(fullPath);
 
+        // baseDir es la raiz de biblioteca (scanRoot): el thumbnail se guarda en
+        // <baseDir>\.pensadero\thumbnails.
         let thumbnail;
         try {
-          thumbnail = await generateThumbnail(fullPath, fileId, entry.name);
+          thumbnail = await generateThumbnail(fullPath, fileId, entry.name, baseDir);
         } catch {
           thumbnail = svgPlaceholder('Error', entry.name, '%23fee2e2');
         }
 
         const smartTagsResult = extractSmartTags(entry.name);
 
-        // Análisis de colores si hay thumbnail real (no SVG)
+        // Análisis de colores si hay thumbnail real (no placeholder SVG inline).
+        // La ruta de disco se resuelve con el mismo resolver que generó el
+        // thumbnail; ya no se reconstruye desde la URL (ahora /api/thumbnails/:id).
+        // generateThumbnail puede haber caido al dir legacy si fallo el mkdir del
+        // destino por-disco, asi que probamos ambos (igual que el endpoint).
         let colorData = null;
-        if (thumbnail && !thumbnail.includes('data:image/svg+xml')) {
-          try {
-            const thumbName = thumbnail.split('/thumbnails/').pop();
-            const fullThumbnailPath = path.join(THUMBNAILS_DIR, thumbName);
-            colorData = await colorAnalyzer.analyzeFileColors(fullThumbnailPath, fileType);
-          } catch {}
+        if (thumbnail && !thumbnail.startsWith('data:')) {
+          const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath, scanRoot: baseDir, fileId, fileName: entry.name });
+          const legacyLoc = pathsConfig.resolveThumbnailLocation({ fullPath, fileId, fileName: entry.name });
+          for (const cand of [newLoc.thumbnailPath, legacyLoc.thumbnailPath]) {
+            try {
+              await fs.access(cand);
+              colorData = await colorAnalyzer.analyzeFileColors(cand, fileType);
+              break;
+            } catch {}
+          }
         }
 
         const fileData = {
@@ -671,6 +752,8 @@ async function countMediaFiles(dir) {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        // Mismo skip que scanDirectory: no contar archivos dentro de .pensadero.
+        if (entry.name.startsWith('.')) continue;
         count += await countMediaFiles(fullPath);
       } else if (entry.isFile() && getFileType(fullPath)) {
         count++;
@@ -680,7 +763,7 @@ async function countMediaFiles(dir) {
   return count;
 }
 
-async function syncFiles() {
+async function performSync() {
   console.log('🔄 Sincronizando...');
 
   const paths = await loadScanPaths();
@@ -741,6 +824,10 @@ async function syncFiles() {
       await saveCache();
     }
 
+    // Aplicar nombres de carpeta (display name editable) + enumeracion _NNN +
+    // re-derivar tags/fecha desde el nombre nuevo. El archivo fisico no se toca.
+    allFiles = folderNames.applyFolderNames(allFiles, { smartTags: extractSmartTags });
+
     // Aplicar favoritos
     mediaFiles = favoritesManager.applyFavoritesToFiles(allFiles);
 
@@ -781,6 +868,46 @@ async function syncFiles() {
   }
 }
 
+// === GUARD DE CONCURRENCIA DE SYNC ===
+// Nunca corren dos syncs a la vez. Si llega una petición mientras uno está en
+// curso, se marca y se hace UNA re-pasada al terminar (coalescing). Sin esto, el
+// watcher de FS dispara un syncFiles por cada evento; copiar/borrar N archivos
+// lanzaría N escaneos solapados con writes concurrentes sobre scan_paths.json y
+// media_cache.json (corrupción) y un thrash severo de CPU/IO.
+let _syncInFlight = null;
+let _syncQueuedAgain = false;
+
+async function syncFiles() {
+  if (_syncInFlight) {
+    _syncQueuedAgain = true;
+    return _syncInFlight.then(() => mediaFiles);
+  }
+  _syncInFlight = (async () => {
+    let result;
+    do {
+      _syncQueuedAgain = false;
+      result = await performSync();
+    } while (_syncQueuedAgain);
+    return result;
+  })();
+  try {
+    return await _syncInFlight;
+  } finally {
+    _syncInFlight = null;
+  }
+}
+
+// Debounce del watcher: agrupa ráfagas de eventos de FS en una sola pasada.
+let _resyncTimer = null;
+const RESYNC_DEBOUNCE_MS = 1500;
+function scheduleResync() {
+  if (_resyncTimer) clearTimeout(_resyncTimer);
+  _resyncTimer = setTimeout(() => {
+    _resyncTimer = null;
+    syncFiles().catch(err => console.error('❌ Error en resync del watcher:', err.message));
+  }, RESYNC_DEBOUNCE_MS);
+}
+
 // Watcher de filesystem
 function watchFileSystem() {
   if (!CONTENT_DIR) return;
@@ -790,7 +917,14 @@ function watchFileSystem() {
     const watcher = chokidar.watch(CONTENT_DIR, {
       persistent: true,
       ignoreInitial: true,
+      // Esperar a que el archivo termine de escribirse antes de emitir el
+      // evento (copias grandes, descargas). Evita escanear ficheros a medias.
+      awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
       ignored: (p) => {
+        // Ignorar la carpeta tecnica .pensadero (cachés regenerables: thumbnails).
+        // Si la biblioteca escaneada es CONTENT_DIR, escribir thumbnails ahi
+        // dispararia un resync en bucle.
+        if (/(^|[\\/])\.pensadero([\\/]|$)/i.test(p)) return true;
         if (!/\.json$/i.test(p)) return false;
         return path.basename(p).toLowerCase() !== '_marina.json';
       }
@@ -810,17 +944,17 @@ function watchFileSystem() {
     };
 
     watcher
-      .on('add', async (p) => {
+      .on('add', (p) => {
         if (isCatalog(p)) { handleCatalogChange(p); return; }
-        await syncFiles();
+        scheduleResync();
       })
-      .on('unlink', async (p) => {
+      .on('unlink', (p) => {
         if (isCatalog(p)) { handleCatalogChange(p); return; }
-        await syncFiles();
+        scheduleResync();
       })
-      .on('change', async (p) => {
+      .on('change', (p) => {
         if (isCatalog(p)) { handleCatalogChange(p); return; }
-        await syncFiles();
+        scheduleResync();
       });
   } catch (err) {
     console.warn('⚠️ No se pudo iniciar watcher:', err.message);
@@ -833,6 +967,7 @@ function watchFileSystem() {
  */
 async function refreshFilesInDir(dirPath) {
   const normalized = path.normalize(dirPath).toLowerCase();
+  const touched = [];
   for (let i = 0; i < mediaFiles.length; i++) {
     const f = mediaFiles[i];
     if (!f.fullPath) continue;
@@ -842,7 +977,15 @@ async function refreshFilesInDir(dirPath) {
     const cached = fileCache.get(f.fullPath);
     const base = cached ? cached.fileData : f;
     mediaFiles[i] = await catalogReader.applyCatalog(base);
+    touched.push(mediaFiles[i]);
   }
+  // Re-aplicar el display name de carpeta (+ enumeracion) sobre los refrescados:
+  // applyCatalog parte del base sin esta capa, asi que hay que volver a ponerla.
+  folderNames.applyFolderNames(touched, { smartTags: extractSmartTags });
+  // Recalcular el agregado de personas: si el refresco cambio las caras de un
+  // archivo (re-id, assign-face, promote), los conteos/bubbles del home deben
+  // reflejarlo. Sin esto, el mediaFile se actualizaba pero personsAggregate no.
+  recomputePersonsAggregate();
   broadcastProgress({ type: 'catalog_refresh', dir: dirPath });
 }
 
@@ -924,6 +1067,7 @@ const scanRoutes = createScanRoutes({
   broadcastProgress,
   syncFiles,
   loadScanPaths,
+  refreshDir: refreshFilesInDir,
 });
 app.use('/api', scanRoutes);
 
@@ -934,7 +1078,8 @@ const personsManageRoutes = createPersonsManageRoutes({
   recomputePersonsAggregate,
   broadcastProgress,
   getScanPaths: loadScanPaths,
-  syncFiles, // necesario para que promote refresque mediaFiles tras escribir _pensadero.json
+  syncFiles, // fallback; promote prefiere refreshDir (refresco por carpeta, sin full-sync)
+  refreshDir: refreshFilesInDir, // refresca solo las carpetas afectadas tras promote
 });
 app.use('/api', personsManageRoutes);
 
@@ -958,6 +1103,10 @@ const aliasRoutes = createAliasRoutes({
   getMediaFiles: () => mediaFiles,
 });
 app.use('/api', aliasRoutes);
+
+// === NOTAS (notas humanas por archivo y por sesion colapsada) ===
+const notesRoutes = createNotesRoutes();
+app.use('/api', notesRoutes);
 
 // === PERSONS (registry + agregado memoizado) ===
 
@@ -996,24 +1145,32 @@ app.post('/api/persons/refresh', (req, res) => {
   res.json({ success: true, count: personsAggregate.length });
 });
 
-// Limpieza de thumbnails huérfanos
+// Limpieza de thumbnails legacy huérfanos (solo el directorio central
+// backend/thumbnails). Los thumbnails por-disco (<scanRoot>\.pensadero) son
+// regenerables y desaparecen con el disco; no se limpian aqui. El matching es
+// por id8 (primeros 8 chars del fileId, embebidos en el nombre): NO se borra a
+// partir del campo file.thumbnail (que ahora es /api/thumbnails/:id y no
+// codifica el nombre de archivo en disco).
 async function cleanOrphanedThumbnails() {
   try {
+    // Guard: sin medios cargados (sync fallido) no borramos nada.
+    if (!Array.isArray(mediaFiles) || mediaFiles.length === 0) return;
     const thumbnailFiles = await fs.readdir(THUMBNAILS_DIR);
-    const valid = new Set();
-    mediaFiles.forEach(file => {
-      if (file.thumbnail && file.thumbnail.includes('/thumbnails/')) {
-        valid.add(file.thumbnail.split('/thumbnails/')[1]);
-      }
-    });
+    const validIds = new Set(
+      mediaFiles.map(f => f && f.id && f.id.substring(0, 8).toLowerCase()).filter(Boolean)
+    );
 
     let removed = 0;
     for (const t of thumbnailFiles) {
-      if (!valid.has(t)) {
+      const m = t.match(/_([0-9a-f]{8})_thumbnail\.jpg$/i);
+      // Solo borramos si reconocemos el patron y su medio ya no existe.
+      // Conservamos thumbnails de medios vivos (fallback) y nombres no
+      // reconocidos (p.ej. temp_video_*).
+      if (m && !validIds.has(m[1].toLowerCase())) {
         try { await fs.unlink(path.join(THUMBNAILS_DIR, t)); removed++; } catch {}
       }
     }
-    if (removed > 0) console.log(`🧹 Thumbnails huérfanos eliminados: ${removed}`);
+    if (removed > 0) console.log(`🧹 Thumbnails legacy huérfanos eliminados: ${removed}`);
   } catch (error) {
     console.error('Error limpiando thumbnails:', error.message);
   }
@@ -1090,6 +1247,9 @@ async function initialize() {
 
   // Cargar la tabla de sinonimos. Si no existe el archivo, opera vacia.
   await aliasTable.load();
+
+  // Nombres de presentacion por carpeta (display name editable desde la UI).
+  await folderNames.load();
 
   // Cargar el indice de embeddings CLIP en memoria. Si no existe, opera vacio.
   // El daemon Python CLIP se carga lazy (solo al primer embedImage / embedText).

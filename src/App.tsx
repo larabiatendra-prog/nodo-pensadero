@@ -9,12 +9,14 @@ import { config } from './config';
 import { cacheService } from './services/cacheService';
 
 import SearchBar from './components/SearchBar';
+import TimelineWave from './components/TimelineWave';
 import { MoreOptionsMenu } from './components/MoreOptionsMenu';
 import { ScrollToTopButton } from './components/ScrollToTopButton';
 import { SelectionModeButton } from './components/SelectionModeButton';
 import QuickFilters from './components/QuickFilters';
 import MediaGrid from './components/MediaGrid';
 import MediaModal from './components/MediaModal';
+import SessionNoteModal from './components/SessionNoteModal';
 import { FolderScanner } from './components/FolderScanner';
 import { CreateCollectionModal } from './components/CreateCollectionModal';
 import { AddToCollectionModal } from './components/AddToCollectionModal';
@@ -127,6 +129,49 @@ function App() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [showAllGroups, setShowAllGroups] = useState<Set<string>>(new Set());
 
+  // Notas humanas: nota por sesion colapsada (keyed por session key) y nota
+  // por archivo (keyed por file.id). Persisten en notes_persistent.json.
+  const [sessionNotes, setSessionNotes] = useState<Record<string, string>>({});
+  const [fileNotes, setFileNotes] = useState<Record<string, string>>({});
+  // Sesion cuya nota se esta editando (abre SessionNoteModal).
+  const [editingSessionNote, setEditingSessionNote] = useState<{ key: string; label: { line1: string; line2: string } } | null>(null);
+
+  // Guarda (optimista) la nota de una sesion. Texto vacio = borrar.
+  const handleSaveSessionNote = React.useCallback(async (key: string, note: string) => {
+    const text = note.trim();
+    setSessionNotes((prev) => {
+      const next = { ...prev };
+      if (text) next[key] = text; else delete next[key];
+      return next;
+    });
+    try {
+      await api.saveNote('session', key, text);
+    } catch (err) {
+      console.warn('No se pudo guardar la nota de sesion:', err);
+    }
+  }, []);
+
+  // Estable (deps []): abre el editor de nota de sesion. Inline-arrow antes en
+  // el render rompia el memo de todas las SessionCard.
+  const handleEditSessionNote = React.useCallback((key: string, label: { line1: string; line2: string }) => {
+    setEditingSessionNote({ key, label });
+  }, []);
+
+  // Guarda (optimista) la nota de un archivo. Texto vacio = borrar.
+  const handleSaveFileNote = React.useCallback(async (fileId: string, note: string) => {
+    const text = note.trim();
+    setFileNotes((prev) => {
+      const next = { ...prev };
+      if (text) next[fileId] = text; else delete next[fileId];
+      return next;
+    });
+    try {
+      await api.saveNote('file', fileId, text);
+    } catch (err) {
+      console.warn('No se pudo guardar la nota del archivo:', err);
+    }
+  }, []);
+
   // Store current search filters to reapply when persons change
   const [currentSearchQuery, setCurrentSearchQuery] = useState<string>('');
   const [currentSearchFilters, setCurrentSearchFilters] = useState<SearchFilters | null>(null);
@@ -137,18 +182,39 @@ function App() {
   // WebSocket para progreso de sincronización
   const { isConnected, progressData, clearProgress } = useWebSocket(config.wsUrl);
   const [showProgress, setShowProgress] = useState(false);
+  // Estado dedicado de la barra de sync: solo lo alimentan frames sync_*/scan_*.
+  // Antes la barra leia el slot WS compartido (progressData), asi que un frame
+  // ajeno sin percentage (persons_refresh, reidentify_*) la dejaba en 0% =
+  // "sincronizando sin avanzar".
+  const [syncPct, setSyncPct] = useState(0);
+  const [syncStatus, setSyncStatus] = useState('Preparando...');
 
   // Infinite scroll state
-  const [loadedItemsCount, setLoadedItemsCount] = useState(24);
+  const [loadedItemsCount, setLoadedItemsCount] = useState(96);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const ITEMS_PER_LOAD = 24;
-  const MAX_LOADED_ITEMS = 1000;
+  const INITIAL_ITEMS = 96;        // primer pintado con buffer (menos saltos al empezar)
+  const ITEMS_PER_LOAD = 48;       // tamano de cada recarga incremental
+  const MAX_LOADED_ITEMS = 20000;  // tope de seguridad (un solo usuario)
 
   // Connection state
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const [userFavs, setUserFavs] = useState<any[]>([])
   const [updatingFavs, setUpdatingFavs] = useState<boolean>(false)
+
+  // Espejos en refs de estado que leen los handlers pasados a las tarjetas
+  // memoizadas. Permite envolver esos handlers en useCallback con deps=[] (refs
+  // estables) en vez de deps que cambian a menudo (mediaFiles, userFavs...). Asi
+  // el handler conserva identidad estable y el memo de MediaCard no se rompe en
+  // cada toggle de favorito/scan; a la vez lee SIEMPRE el valor actual via .current.
+  const userFavsRef = useRef(userFavs);
+  useEffect(() => { userFavsRef.current = userFavs; }, [userFavs]);
+  const mediaFilesRef = useRef(mediaFiles);
+  useEffect(() => { mediaFilesRef.current = mediaFiles; }, [mediaFiles]);
+  const scanningFilesRef = useRef(scanningFiles);
+  useEffect(() => { scanningFilesRef.current = scanningFiles; }, [scanningFiles]);
+  const isSelectionModeRef = useRef(isSelectionMode);
+  useEffect(() => { isSelectionModeRef.current = isSelectionMode; }, [isSelectionMode]);
 
   // ESC key listener for clearing all filters
   const hasActiveFiltersRef = useRef(false);
@@ -218,16 +284,31 @@ function App() {
   // Carga inicial: archivos, colecciones y favoritos (single-user).
   useEffect(() => {
     const init = async () => {
+      // favs locales: pasamos la lista recien cargada directamente a
+      // loadFiles para evitar la race condition con setUserFavs (el estado
+      // no se propaga al closure de loadFiles en la misma vuelta, lo que
+      // dejaba isFavorite en false tras refrescar/reiniciar).
+      let favs: any[] = [];
       try {
         const result = await getFavouritesByUser();
         if (result.success && result.data) {
+          favs = result.data;
           setUserFavs(result.data);
         }
       } catch (err) {
         console.warn('No se pudieron cargar los favoritos iniciales:', err);
       }
-      loadFiles();
+      loadFiles(false, favs);
       loadCollections();
+
+      // Cargar notas humanas (archivo + sesion). Best-effort: si falla, la app
+      // funciona igual sin notas.
+      api.getNotes().then((res) => {
+        if (res.success && res.data) {
+          setFileNotes(res.data.files || {});
+          setSessionNotes(res.data.sessions || {});
+        }
+      }).catch(() => {});
 
       // Limpieza de claves antiguas de localStorage que ya no usamos.
       localStorage.removeItem('deletedCollections');
@@ -261,6 +342,7 @@ function App() {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(file =>
         file.name.toLowerCase().includes(query) ||
+        (file.displayName ? file.displayName.toLowerCase().includes(query) : false) ||
         file.tags.some(tag => tag.toLowerCase().includes(query))
       );
     }
@@ -507,38 +589,102 @@ function App() {
     }
   };
 
-  // Manejar progreso de WebSocket
+  // Manejar progreso de WebSocket. El timeout de auto-ocultado se guarda en una
+  // ref y se limpia en el cleanup: sin esto, cada nuevo mensaje reprogramaba un
+  // setTimeout suelto (recargas duplicadas) y podía hacer setState tras el
+  // desmontaje. clearProgress es estable (useCallback) → el efecto solo
+  // re-corre cuando cambia progressData.
+  const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quietReloadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Recarga silenciosa (sin barra) coalescida: para refrescos por carpeta tras
+  // promote/etiquetado (catalog_refresh) o cambios de registry (persons_refresh).
+  const scheduleQuietReload = () => {
+    if (quietReloadRef.current) clearTimeout(quietReloadRef.current);
+    quietReloadRef.current = setTimeout(() => {
+      quietReloadRef.current = null;
+      reloadFilesAfterSync();
+    }, 800);
+  };
+
   useEffect(() => {
-    if (progressData) {
-      switch (progressData.type) {
-        case 'sync_start':
-          setShowProgress(true);
-          break;
-        case 'sync_progress':
-        case 'scan_progress':
-          setShowProgress(true);
-          break;
-        case 'sync_complete':
-          // Mantener visible por 3 segundos y luego ocultar
-          setTimeout(() => {
-            setShowProgress(false);
-            clearProgress();
-            // Recargar los archivos para mostrar los nuevos
-            reloadFilesAfterSync();
-          }, 3000);
-          break;
-        case 'sync_error':
-          // Mostrar error por 5 segundos
-          setTimeout(() => {
-            setShowProgress(false);
-            clearProgress();
-          }, 5000);
-          break;
-      }
+    if (!progressData) return;
+    const t = progressData.type as string;
+
+    // Frames de refresco silencioso: actualizar home SIN tocar la barra global.
+    // reidentify_done: un re-id (p.ej. el que dispara promote para propagar la
+    // persona) cambio los catalogos → recargar para ver las nuevas apariciones.
+    if (t === 'persons_refresh' || t === 'catalog_refresh' || t === 'reidentify_done') {
+      scheduleQuietReload();
+      return;
     }
+
+    // Solo los frames de sync/scan alimentan la barra. Los de PersonsManager
+    // (reidentify_*, cluster_*) tienen su propia UI y no deben tocarla.
+    const isSyncFrame = t === 'sync_start' || t === 'sync_progress' || t === 'scan_progress'
+      || t === 'sync_complete' || t === 'sync_error';
+    if (!isSyncFrame) return;
+
+    // Watchdog: si tras mostrarse no llega ningun frame de sync en 30s, ocultar.
+    // Cubre un sync_complete perdido por una reconexion WS durante un sync largo.
+    const armWatchdog = () => {
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      watchdogRef.current = setTimeout(() => {
+        watchdogRef.current = null;
+        setShowProgress(false);
+        clearProgress();
+      }, 30000);
+    };
+
+    switch (progressData.type) {
+      case 'sync_start':
+      case 'sync_progress':
+      case 'scan_progress':
+        if (typeof progressData.percentage === 'number') setSyncPct(progressData.percentage);
+        if (progressData.status) setSyncStatus(progressData.status);
+        setShowProgress(true);
+        armWatchdog();
+        break;
+      case 'sync_complete':
+        setSyncPct(100);
+        if (progressData.status) setSyncStatus(progressData.status);
+        if (watchdogRef.current) clearTimeout(watchdogRef.current);
+        if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = setTimeout(() => {
+          progressTimerRef.current = null;
+          setShowProgress(false);
+          clearProgress();
+          reloadFilesAfterSync();
+        }, 3000);
+        break;
+      case 'sync_error':
+        if (progressData.status) setSyncStatus(progressData.status);
+        if (watchdogRef.current) clearTimeout(watchdogRef.current);
+        if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = setTimeout(() => {
+          progressTimerRef.current = null;
+          setShowProgress(false);
+          clearProgress();
+        }, 5000);
+        break;
+    }
+    // OJO: sin cleanup que cancele los timers en cada cambio de progressData.
+    // El cleanup anterior cancelaba el timer de ocultar si llegaba CUALQUIER
+    // frame dentro de la ventana de 3s → la barra se quedaba colgada.
   }, [progressData, clearProgress]);
 
-  const loadFiles = async (forceSync = false) => {
+  // Limpieza de timers SOLO al desmontar el componente.
+  useEffect(() => () => {
+    if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    if (quietReloadRef.current) clearTimeout(quietReloadRef.current);
+  }, []);
+
+  const loadFiles = async (forceSync = false, favsOverride?: any[]) => {
+    // favs efectivos: el override de la carga inicial gana al estado (que
+    // aun no se ha propagado al closure en ese momento).
+    const favs = favsOverride ?? userFavs;
     try {
       setIsLoading(true);
       setConnectionError(null);
@@ -560,7 +706,7 @@ function App() {
           createdAt: new Date(file.createdAt),
           modifiedAt: new Date(file.modifiedAt),
           extractedDate: file.extractedDate ? new Date(file.extractedDate) : undefined,
-          isFavorite: userFavs.some(f => normalizePath(file.fullPath) === normalizePath(f.photo_url))
+          isFavorite: favs.some(f => normalizePath(file.fullPath) === normalizePath(f.photo_url))
         }));
 
         //  for (const f of userFavs){
@@ -806,48 +952,29 @@ function App() {
   };
 
 
-  const handleToggleFavorite = async (fileId: string) => {
+  // useCallback con deps=[]: lee mediaFiles/userFavs via ref y actualiza con
+  // setters funcionales, asi el handler conserva identidad estable y el memo de
+  // las tarjetas NO se rompe en cada toggle (solo se repinta la tarjeta tocada).
+  const handleToggleFavorite = React.useCallback(async (fileId: string) => {
     setUpdatingFavs(true);
-    const file = mediaFiles.find(f => f.id === fileId);
-    if (!file) return;
+    const file = mediaFilesRef.current.find(f => f.id === fileId);
+    if (!file) { setUpdatingFavs(false); return; }
 
     // Set flag to prevent unnecessary page resets
     isUpdatingFavoriteRef.current = true;
 
     try {
-      // Update local state immediately for better UX
       const newFavoriteStatus = !file.isFavorite;
 
-      // Update mediaFiles array
-      const updatedFiles = mediaFiles.map(f =>
-        f.id === fileId
-          ? { ...f, isFavorite: newFavoriteStatus }
-          : f
-      );
-      setMediaFiles(updatedFiles);
-
-      // Update filtered files directly to avoid triggering useEffect chain
-      setFilteredFiles(prev => {
-        const updatedFiltered = prev.map(f =>
-          f.id === fileId
-            ? { ...f, isFavorite: newFavoriteStatus }
-            : f
-        );
-
-        // Log that we're updating favorite status without changing page
-        console.log(`❤️ Estado de favorito actualizado para ${file.name} sin resetear página`);
-
-        return updatedFiltered;
-      });
-
-      // Update selected file if it's the same
-      if (selectedFile && selectedFile.id === fileId) {
-        setSelectedFile({ ...selectedFile, isFavorite: newFavoriteStatus });
-      }
+      // map preserva la identidad de los archivos NO tocados → solo la tarjeta
+      // afectada se re-renderiza (las demas pasan el fast-path del memo).
+      setMediaFiles(prev => prev.map(f => f.id === fileId ? { ...f, isFavorite: newFavoriteStatus } : f));
+      setFilteredFiles(prev => prev.map(f => f.id === fileId ? { ...f, isFavorite: newFavoriteStatus } : f));
+      setSelectedFile(prev => prev && prev.id === fileId ? { ...prev, isFavorite: newFavoriteStatus } : prev);
 
       // Actualizar en backend (single-user)
       try {
-        const favs = await handleSupabaseFavourite(file.fullPath!, '', userFavs)
+        const favs = await handleSupabaseFavourite(file.fullPath!, '', userFavsRef.current)
         setUserFavs(favs ?? [])
 
       } catch {
@@ -861,9 +988,9 @@ function App() {
         setUpdatingFavs(false)
       }, 1000)
     }
-  };
+  }, []);
 
-  const handleDownload = async (file: MediaFile) => {
+  const handleDownload = React.useCallback(async (file: MediaFile) => {
     try {
       console.log(`📥 Iniciando descarga de: ${file.name}`);
 
@@ -903,13 +1030,13 @@ function App() {
         return updated;
       });
     }
-  };
+  }, []);
 
   // Escaneo visual de un único archivo desde el botón de su tarjeta. Espera al
   // backend (sincrono) y luego re-lee solo ese archivo para refrescar su card
   // sin recargar toda la galería.
-  const handleScanFile = async (file: MediaFile) => {
-    if (scanningFiles.has(file.id)) return;
+  const handleScanFile = React.useCallback(async (file: MediaFile) => {
+    if (scanningFilesRef.current.has(file.id)) return;
     const targetPath = file.fullPath;
     if (!targetPath) {
       toast.error('No se puede determinar la ruta del archivo');
@@ -929,7 +1056,7 @@ function App() {
           createdAt: new Date(fresh.data.createdAt),
           modifiedAt: new Date(fresh.data.modifiedAt),
           extractedDate: fresh.data.extractedDate ? new Date(fresh.data.extractedDate) : undefined,
-          isFavorite: userFavs.some(f => normalizePath(fresh.data.fullPath) === normalizePath(f.photo_url)),
+          isFavorite: userFavsRef.current.some(f => normalizePath(fresh.data.fullPath) === normalizePath(f.photo_url)),
         };
         setMediaFiles(prev => prev.map(f => (f.id === file.id ? mapped : f)));
         // Si el modal está abierto sobre este archivo, refrescarlo también.
@@ -945,9 +1072,9 @@ function App() {
         return updated;
       });
     }
-  };
+  }, []);
 
-  const handleOpenPath = async (fileId: string) => {
+  const handleOpenPath = React.useCallback(async (fileId: string) => {
     try {
       console.log(`📂 Abriendo ruta del archivo: ${fileId}`);
 
@@ -973,18 +1100,18 @@ function App() {
       console.error('Error abriendo ruta:', error);
       alert('Error al abrir la ruta del archivo. Por favor, intenta de nuevo.');
     }
-  };
+  }, []);
 
   // Logout eliminado: uso personal sin auth.
 
   // Selection mode functions
-  const handleFileClick = (file: MediaFile, event?: React.MouseEvent) => {
+  const handleFileClick = React.useCallback((file: MediaFile, event?: React.MouseEvent) => {
     // Si es Ctrl+Click, entrar en modo selección múltiple
     if (event?.ctrlKey || event?.metaKey) {
       event.preventDefault();
 
       // Activar modo selección si no está activo
-      if (!isSelectionMode) {
+      if (!isSelectionModeRef.current) {
         setIsSelectionMode(true);
         setSelectedFiles(new Set([file.id]));
       } else {
@@ -1007,7 +1134,7 @@ function App() {
     }
 
     // Si está en modo selección y es click normal, seleccionar/deseleccionar
-    if (isSelectionMode) {
+    if (isSelectionModeRef.current) {
       setSelectedFiles(prev => {
         const updated = new Set(prev);
         if (updated.has(file.id)) {
@@ -1027,7 +1154,7 @@ function App() {
     // Click normal - abrir modal
     setSelectedFile(file);
     setIsModalOpen(true);
-  };
+  }, []);
 
   const exitSelectionMode = () => {
     setIsSelectionMode(false);
@@ -1274,10 +1401,10 @@ function App() {
     }
   };
 
-  const handleAddToCollection = (fileId: string) => {
+  const handleAddToCollection = React.useCallback((fileId: string) => {
     setSelectedFileForCollection(fileId);
     setShowAddToCollection(true);
-  };
+  }, []);
 
   const handleAddFileToCollection = async (collectionId: string) => {
     try {
@@ -1341,7 +1468,7 @@ function App() {
     }
   };
 
-  const handleRemoveFromCollection = async (file: string) => {
+  const handleRemoveFromCollection = React.useCallback(async (file: string) => {
     if (!selectedCollectionId) return;
 
     try {
@@ -1399,7 +1526,7 @@ function App() {
       // const collection = collections.find(c => c.id === selectedCollectionId);
       // console.log(`⚠️ Archivo eliminado localmente de "${collection?.name}" (sincronización pendiente)`);
     }
-  };
+  }, [selectedCollectionId, collections]);
 
   const handleDownloadCollection = async (collectionId: string, e?: React.MouseEvent) => {
     console.log(`📦 Iniciando descarga de colección: ${collectionId}`);
@@ -2243,6 +2370,20 @@ function App() {
 
   }, [filteredFiles, activeView, selectedCollectionId, extractDateFromFilename, optimizedNameCompare, imageSearchFileIds, naturalSearchIds]);
 
+  // ── Timeline-onda (pasiva) del home ─────────────────────────────────────
+  // Solo cuando el grid esta en orden cronologico real: home, sin coleccion,
+  // sin orden aleatorio y sin busqueda (imagen/natural traen su propio orden).
+  const showTimeline = activeView === 'home'
+    && !selectedCollectionId
+    && !isRandomized
+    && (!imageSearchFileIds || imageSearchFileIds.length === 0)
+    && naturalSearchIds === null;
+
+  const timelineDateValues = React.useMemo(() => {
+    if (!showTimeline) return [];
+    return sortedFiles.map(f => extractDateFromFilename(f.name));
+  }, [showTimeline, sortedFiles, extractDateFromFilename]);
+
   const getAllDisplayFiles = () => {
     // Get base files first
     let files = getBaseDisplayFiles();
@@ -2351,7 +2492,7 @@ function App() {
   };
 
   const resetInfiniteScroll = () => {
-    setLoadedItemsCount(ITEMS_PER_LOAD);
+    setLoadedItemsCount(INITIAL_ITEMS);
     setIsLoadingMore(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -2368,26 +2509,28 @@ function App() {
     loadedItemsCount
   );
 
-  const handleExpandGroup = (key: string) => {
+  // Estables (deps []): setters funcionales. Necesarias para que el memo de
+  // SessionCard (onExpand/onSelectAll) y las tarjetas se mantenga.
+  const handleExpandGroup = React.useCallback((key: string) => {
     setExpandedGroups(prev => new Set([...prev, key]));
-  };
+  }, []);
 
-  const handleCollapseGroup = (key: string) => {
+  const handleCollapseGroup = React.useCallback((key: string) => {
     setExpandedGroups(prev => { const next = new Set(prev); next.delete(key); return next; });
     setShowAllGroups(prev => { const next = new Set(prev); next.delete(key); return next; });
-  };
+  }, []);
 
-  const handleShowMoreGroup = (key: string) => {
+  const handleShowMoreGroup = React.useCallback((key: string) => {
     setShowAllGroups(prev => new Set([...prev, key]));
-  };
+  }, []);
 
-  const handleSelectSessionFiles = (files: MediaFile[]) => {
+  const handleSelectSessionFiles = React.useCallback((files: MediaFile[]) => {
     setSelectedFiles(prev => {
       const next = new Set(prev);
       files.forEach(f => next.add(f.id));
       return next;
     });
-  };
+  }, []);
   // ─────────────────────────────────────────────────────────────────────────
 
   // Add scroll listener for infinite scroll
@@ -2396,7 +2539,10 @@ function App() {
       if (isLoadingMore || isLoading) return;
 
       const scrollPosition = window.innerHeight + window.scrollY;
-      const threshold = document.body.offsetHeight - 500;
+      // Precarga por delante: disparamos la siguiente tanda cuando aun faltan
+      // ~2 pantallas para el fondo, no pegados al borde. Asi el contenido ya
+      // esta montado antes de que el usuario llegue (sin "golpes" de carga).
+      const threshold = document.body.offsetHeight - window.innerHeight * 2;
       const allFiles = getAllDisplayFiles();
       const isGrouping = groupingEnabled && viewMode === 'grid';
       const totalSlots = isGrouping
@@ -2405,21 +2551,16 @@ function App() {
 
       if (scrollPosition >= threshold &&
         loadedItemsCount < totalSlots &&
-        loadedItemsCount < MAX_LOADED_ITEMS &&
-        !isLoadingMore) {
-        setIsLoadingMore(true);
-
-        // Simulate loading delay for smoother UX
-        setTimeout(() => {
-          const newCount = Math.min(
-            loadedItemsCount + ITEMS_PER_LOAD,
-            totalSlots,
-            MAX_LOADED_ITEMS
-          );
-          setLoadedItemsCount(newCount);
-          setIsLoadingMore(false);
-          console.log(`📜 Items cargados: ${newCount} de ${totalSlots}`);
-        }, 300);
+        loadedItemsCount < MAX_LOADED_ITEMS) {
+        // Sin retardo artificial: en local la carga es inmediata y el margen
+        // de 2 pantallas la hace invisible. El re-suscribir del efecto al
+        // cambiar loadedItemsCount evita disparos duplicados.
+        const newCount = Math.min(
+          loadedItemsCount + ITEMS_PER_LOAD,
+          totalSlots,
+          MAX_LOADED_ITEMS
+        );
+        setLoadedItemsCount(newCount);
       }
     };
 
@@ -2952,6 +3093,9 @@ function App() {
                     onCollapseGroup={handleCollapseGroup}
                     onShowMoreGroup={handleShowMoreGroup}
                     onSelectSessionFiles={handleSelectSessionFiles}
+                    sessionNotes={sessionNotes}
+                    onEditSessionNote={handleEditSessionNote}
+                    fileNotes={fileNotes}
                     secondaryStartIndex={
                       naturalSearchIds !== null && naturalSearchPrimaryCount > 0 && naturalSearchPrimaryCount < displayFiles.length
                         ? naturalSearchPrimaryCount
@@ -3194,10 +3338,15 @@ function App() {
       </header>
 
       <main className="bg-noche">
-        <div className="p-4 md:p-8">
+        <div className={`p-4 md:p-8${showTimeline ? ' md:pr-24' : ''}`}>
           {renderMainContent()}
         </div>
       </main>
+
+      {/* Onda vertical (pasiva) de densidad temporal a la derecha del home */}
+      {showTimeline && timelineDateValues.length > 1 && (
+        <TimelineWave sortedDateValues={timelineDateValues} loadedCount={loadedItemsCount} />
+      )}
 
       {/* Quick Preview Overlay (Space key) */}
       {quickPreviewFile && (
@@ -3207,9 +3356,23 @@ function App() {
         />
       )}
 
+      {editingSessionNote && (
+        <SessionNoteModal
+          isOpen={true}
+          sessionKey={editingSessionNote.key}
+          label={editingSessionNote.label}
+          initialNote={sessionNotes[editingSessionNote.key] || ''}
+          onClose={() => setEditingSessionNote(null)}
+          onSave={handleSaveSessionNote}
+        />
+      )}
+
       <MediaModal
         file={selectedFile}
         isOpen={isModalOpen}
+        note={selectedFile ? fileNotes[selectedFile.id] : ''}
+        onSaveNote={handleSaveFileNote}
+        onOpenPath={handleOpenPath}
         onClose={() => {
           setIsModalOpen(false);
           setSelectedFile(null);
@@ -3311,9 +3474,9 @@ function App() {
       {/* Barra de progreso para sincronización */}
       <ProgressBar
         isVisible={showProgress}
-        percentage={progressData?.percentage || 0}
-        status={progressData?.status || 'Preparando...'}
-        stats={progressData?.stats}
+        percentage={syncPct}
+        status={syncStatus}
+        stats={progressData?.type === 'sync_complete' ? progressData?.stats : undefined}
         onClose={() => {
           setShowProgress(false);
           clearProgress();

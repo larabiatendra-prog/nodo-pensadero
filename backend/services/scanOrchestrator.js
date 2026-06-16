@@ -35,7 +35,7 @@ const peopleRegistry = require('../peopleRegistry');
 const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
-const { atomicWriteFile } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
 const { computeFaceCount } = require('../utils/faceCatalog');
 
 // Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
@@ -270,8 +270,33 @@ async function scanFolder(folderPath, opts = {}) {
     errors: 0,
     cancelRequested: false,
     startedAt: Date.now(),
+    // Ventana movil de duraciones por archivo para estimar tiempo restante.
+    // Movil (no acumulada) porque fotos y videos tardan muy distinto y el
+    // cold-start del VLM en el primer archivo dispararia una media acumulada.
+    recentMs: [],
+    lastTickAt: Date.now(),
   };
   activeJobs.set(jobId, job);
+
+  // Calcula campos de tiempo para el payload de progreso. Se llama UNA vez por
+  // archivo procesado (exito o error): cada llamada registra el delta desde el
+  // archivo anterior en la ventana movil. avgMsPerFile = media de la ventana;
+  // etaMs = ese ritmo aplicado a lo que queda.
+  const RECENT_WINDOW = 8;
+  const timingFields = () => {
+    const now = Date.now();
+    const delta = now - job.lastTickAt;
+    job.lastTickAt = now;
+    job.recentMs.push(delta);
+    if (job.recentMs.length > RECENT_WINDOW) job.recentMs.shift();
+    const avgMsPerFile = job.recentMs.reduce((a, b) => a + b, 0) / job.recentMs.length;
+    const remaining = Math.max(0, job.total - job.done);
+    return {
+      elapsedMs: now - job.startedAt,
+      avgMsPerFile: Math.round(avgMsPerFile),
+      etaMs: Math.max(0, Math.round(avgMsPerFile * remaining)),
+    };
+  };
 
   // Avisar inicio
   broadcastProgress({
@@ -362,6 +387,9 @@ async function scanFolder(folderPath, opts = {}) {
   }
 
   // 4) Escanear en serie
+  // Reiniciar el reloj de la ventana movil aqui: listar/filtrar imagenes puede
+  // tardar en arboles grandes y no debe contar como tiempo del primer archivo.
+  job.lastTickAt = Date.now();
   for (const filePath of toScan) {
     if (job.cancelRequested) {
       job.status = 'cancelled';
@@ -610,6 +638,7 @@ async function scanFolder(folderPath, opts = {}) {
         errors: job.errors,
         file: basename,
         percentage: Math.round((job.done / job.total) * 100),
+        ...timingFields(),
       });
     } catch (err) {
       console.warn(`[scan] ${basename}: ${err.message}`);
@@ -621,6 +650,7 @@ async function scanFolder(folderPath, opts = {}) {
         error: err.message,
         done: job.done,
         errors: job.errors,
+        ...timingFields(),
       });
     }
   }
@@ -630,16 +660,22 @@ async function scanFolder(folderPath, opts = {}) {
   for (const [dir, c] of catalogsByDir.entries()) {
     if (!c.dirty) continue;
     const targetFile = path.join(dir, PENSADERO_CATALOG_FILENAME);
-    try {
-      // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
-      // verdad y guarda embeddings NO regenerables. Un crash a media escritura
-      // ya no lo trunca. (Antes era el unico writer con fs.writeFile directo.)
-      await atomicWriteFile(targetFile, JSON.stringify(c.catalog, null, 2));
-      catalogReader.invalidateCatalog(dir);
-      written++;
-    } catch (err) {
-      console.warn(`[scan] error escribiendo ${targetFile}: ${err.message}`);
-    }
+    // Lock por path: serializa esta escritura con un re-id/promote de fondo
+    // sobre la misma carpeta, para que no se intercalen dos escrituras del mismo
+    // _pensadero.json. (El scan ya tiene su catalogo en memoria; el lock evita el
+    // solapamiento fisico, no re-mezcla cambios externos hechos durante el scan.)
+    await withFileLock(targetFile, async () => {
+      try {
+        // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
+        // verdad y guarda embeddings NO regenerables. Un crash a media escritura
+        // ya no lo trunca. (Antes era el unico writer con fs.writeFile directo.)
+        await atomicWriteFile(targetFile, JSON.stringify(c.catalog, null, 2));
+        catalogReader.invalidateCatalog(dir);
+        written++;
+      } catch (err) {
+        console.warn(`[scan] error escribiendo ${targetFile}: ${err.message}`);
+      }
+    });
   }
 
   // 6) Persistir clipIndex si hubo cambios (CLIP embeddings nuevos)
@@ -664,6 +700,10 @@ async function scanFolder(folderPath, opts = {}) {
     written,
     status: job.status === 'cancelled' ? 'Escaneo cancelado' : 'Escaneo completado',
     percentage: 100,
+    elapsedMs: job.finishedAt - job.startedAt,
+    // Media real del job completo (no la ventana movil): tiempo total / archivos
+    // procesados. Para el resumen final interesa la media global, no la reciente.
+    avgMsPerFile: job.done > 0 ? Math.round((job.finishedAt - job.startedAt) / job.done) : 0,
   });
 
   // Conservar el job ~5 min para queries de status, luego liberar

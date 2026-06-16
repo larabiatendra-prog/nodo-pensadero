@@ -21,6 +21,7 @@ const path = require('path');
 const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const { EMBEDDING_DIM } = require('./clipService');
+const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 
@@ -158,7 +159,9 @@ async function reidentifyAll(opts = {}) {
       const photos = catalog.photos || catalog.clips || {};
       const count = Object.keys(photos).length;
       totalEntries += count;
-      parsed.push({ catalogPath: cp, catalog, photosKey: catalog.photos ? 'photos' : (catalog.clips ? 'clips' : 'photos') });
+      // Solo guardamos la RUTA: el catalogo se relee fresco dentro del lock al
+      // procesar (no retenemos toda la biblioteca en memoria ni copias obsoletas).
+      parsed.push({ catalogPath: cp });
     } catch (err) {
       console.warn(`[reidentify-space] no se pudo leer ${cp}: ${err.message}`);
     }
@@ -176,46 +179,60 @@ async function reidentifyAll(opts = {}) {
     percentage: 0,
   });
 
-  for (const { catalogPath, catalog, photosKey } of parsed) {
+  for (const { catalogPath } of parsed) {
     if (job.cancelRequested) {
       job.status = 'cancelled';
       break;
     }
-    const photos = catalog[photosKey] || {};
-    let dirty = false;
-    for (const basename of Object.keys(photos)) {
-      if (job.cancelRequested) break;
-      const entry = photos[basename];
-      const { changed, hadEmbedding } = reidentifyEntry(entry);
-      if (!hadEmbedding) job.skippedNoEmbedding++;
-      if (changed) {
-        dirty = true;
-        job.changed++;
-      }
-      job.done++;
-      if (job.done % 50 === 0 || job.done === job.total) {
-        broadcastProgress({
-          type: 'reidentify_space_progress',
-          jobId,
-          total: job.total,
-          done: job.done,
-          changed: job.changed,
-          skippedNoEmbedding: job.skippedNoEmbedding,
-          file: basename,
-          percentage: Math.round((job.done / job.total) * 100),
-        });
-      }
-    }
-    if (dirty) {
-      catalog.processed = new Date().toISOString();
+    // Releer el catalogo FRESCO dentro del lock (no reutilizar la copia de la
+    // pre-pasada): si un re-id de caras u otro escritor toco esta carpeta entre
+    // el conteo y ahora, escribir la copia vieja perderia esos cambios
+    // (lost-update). El lock por path ademas serializa con esos escritores.
+    await withFileLock(catalogPath, async () => {
+      let catalog;
       try {
-        await fs.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf-8');
-        catalogReader.invalidateCatalog(path.dirname(catalogPath));
-        job.catalogsWritten++;
+        catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
       } catch (err) {
-        console.warn(`[reidentify-space] error escribiendo ${catalogPath}: ${err.message}`);
+        console.warn(`[reidentify-space] no se pudo releer ${catalogPath}: ${err.message}`);
+        return;
       }
-    }
+      const photosKey = catalog.photos ? 'photos' : (catalog.clips ? 'clips' : 'photos');
+      const photos = catalog[photosKey] || {};
+      let dirty = false;
+      for (const basename of Object.keys(photos)) {
+        if (job.cancelRequested) break;
+        const entry = photos[basename];
+        const { changed, hadEmbedding } = reidentifyEntry(entry);
+        if (!hadEmbedding) job.skippedNoEmbedding++;
+        if (changed) {
+          dirty = true;
+          job.changed++;
+        }
+        job.done++;
+        if (job.done % 50 === 0 || job.done === job.total) {
+          broadcastProgress({
+            type: 'reidentify_space_progress',
+            jobId,
+            total: job.total,
+            done: job.done,
+            changed: job.changed,
+            skippedNoEmbedding: job.skippedNoEmbedding,
+            file: basename,
+            percentage: Math.round((job.done / job.total) * 100),
+          });
+        }
+      }
+      if (dirty) {
+        catalog.processed = new Date().toISOString();
+        try {
+          await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+          catalogReader.invalidateCatalog(path.dirname(catalogPath));
+          job.catalogsWritten++;
+        } catch (err) {
+          console.warn(`[reidentify-space] error escribiendo ${catalogPath}: ${err.message}`);
+        }
+      }
+    });
   }
 
   job.status = job.cancelRequested ? 'cancelled' : 'done';

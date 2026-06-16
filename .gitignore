@@ -42,6 +42,7 @@ backend/media_cache.json
 backend/media_cache_backup_*.json
 backend/favorites_persistent.json
 backend/collections_persistent.json
+backend/notes_persistent.json
 backend/scan_paths.json
 backend/embeddings_index.json
 backend/visual_search_data/
@@ -57,6 +58,11 @@ Archivos más importantes/
 # Carpeta de contexto para iterar en ChatGPT (copia plana refrescable). Local.
 contexto-chatgpt/
 
+# Artefactos de workflows de auditoria (reportes/hallazgos generados). Local.
+.audit-findings.json
+.audit-report.md
+.audit-workflow.js
+
 # Patrones genericos heredados
 embeddings_index.json
 media_cache.json
@@ -65,3 +71,7 @@ vector_index.json
 **/temp/
 **/training_data/
 media_cache_backup*
+
+# Carpeta tecnica por-biblioteca: cachés regenerables (thumbnails) que viven
+# junto a cada disco escaneado (<scanRoot>\.pensadero). No versionar.
+**/.pensadero/

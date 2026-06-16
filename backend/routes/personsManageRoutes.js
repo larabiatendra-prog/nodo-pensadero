@@ -31,7 +31,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
-const { atomicWriteFile } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
 const { computeFaceCount, rebuildFaces } = require('../utils/faceCatalog');
 const { getInstance: getFaceService, decodeEmbedding } = require('../services/faceService');
 const faceReidentifier = require('../services/faceReidentifier');
@@ -91,74 +91,79 @@ module.exports = function createPersonsManageRoutes(deps) {
 
     for (const [folder, faces] of byFolder) {
       const catalogPath = path.join(folder, '_pensadero.json');
-      let catalog;
-      try {
-        const raw = await fsp.readFile(catalogPath, 'utf-8');
-        catalog = JSON.parse(raw);
-      } catch (err) {
-        console.warn(`[promote] no se pudo leer ${catalogPath}: ${err.message}`);
-        continue;
-      }
-      const photos = catalog.photos || catalog.clips || {};
+      // Lock por path: el ciclo leer->mutar->escribir de este catalogo no se
+      // solapa con el re-id de fondo (que assign-face/promote disparan) ni con
+      // otro promote sobre la misma carpeta. Sin esto se pierden asignaciones.
+      await withFileLock(catalogPath, async () => {
+        let catalog;
+        try {
+          const raw = await fsp.readFile(catalogPath, 'utf-8');
+          catalog = JSON.parse(raw);
+        } catch (err) {
+          console.warn(`[promote] no se pudo leer ${catalogPath}: ${err.message}`);
+          return;
+        }
+        const photos = catalog.photos || catalog.clips || {};
 
-      // Agrupar refs por basename para tocar cada entry una sola vez
-      const byBasename = new Map();
-      for (const f of faces) {
-        if (!byBasename.has(f.basename)) byBasename.set(f.basename, []);
-        byBasename.get(f.basename).push(f.face_index);
-      }
+        // Agrupar refs por basename para tocar cada entry una sola vez
+        const byBasename = new Map();
+        for (const f of faces) {
+          if (!byBasename.has(f.basename)) byBasename.set(f.basename, []);
+          byBasename.get(f.basename).push(f.face_index);
+        }
 
-      let dirty = false;
-      for (const [basename, faceIndices] of byBasename) {
-        const entry = photos[basename];
-        if (!entry || !entry.identity || !Array.isArray(entry.identity.detections)) continue;
+        let dirty = false;
+        for (const [basename, faceIndices] of byBasename) {
+          const entry = photos[basename];
+          if (!entry || !entry.identity || !Array.isArray(entry.identity.detections)) continue;
 
-        // Re-identificar SOLO las caras del cluster contra el faceService
-        // (que ya tiene cargados los embeddings de la persona promovida).
-        // Aceptamos el match solo si coincide con personId — proteccion contra
-        // que el daemon devuelva otro person_id mas cercano.
-        const detsRefs = faceIndices.map(idx => entry.identity.detections[idx]).filter(Boolean);
-        if (detsRefs.length === 0) continue;
-        const identified = force ? null : faceSvc.identifyFaces(detsRefs);
+          // Re-identificar SOLO las caras del cluster contra el faceService
+          // (que ya tiene cargados los embeddings de la persona promovida).
+          // Aceptamos el match solo si coincide con personId — proteccion contra
+          // que el daemon devuelva otro person_id mas cercano.
+          const detsRefs = faceIndices.map(idx => entry.identity.detections[idx]).filter(Boolean);
+          if (detsRefs.length === 0) continue;
+          const identified = force ? null : faceSvc.identifyFaces(detsRefs);
 
-        let entryChanged = false;
-        for (let i = 0; i < detsRefs.length; i++) {
-          const det = detsRefs[i];
-          if (force) {
-            det.person_id = personId;
-            det.display_name = displayName;
-            det.confidence = det.confidence || 0.99;
-            entryChanged = true;
-            facesUpdated++;
-          } else {
-            const match = identified[i];
-            if (match && match.person_id === personId) {
+          let entryChanged = false;
+          for (let i = 0; i < detsRefs.length; i++) {
+            const det = detsRefs[i];
+            if (force) {
               det.person_id = personId;
               det.display_name = displayName;
-              det.confidence = match.similarity;
+              det.confidence = det.confidence || 0.99;
               entryChanged = true;
               facesUpdated++;
+            } else {
+              const match = identified[i];
+              if (match && match.person_id === personId) {
+                det.person_id = personId;
+                det.display_name = displayName;
+                det.confidence = match.similarity;
+                entryChanged = true;
+                facesUpdated++;
+              }
             }
+          }
+
+          if (entryChanged) {
+            // Recalcular faces[]/face_count con la definicion canonica compartida
+            entry.identity.faces = rebuildFaces(entry.identity.detections, peopleRegistry.getDisplayName);
+            entry.identity.face_count = computeFaceCount(entry.identity.detections);
+            dirty = true;
           }
         }
 
-        if (entryChanged) {
-          // Recalcular faces[]/face_count con la definicion canonica compartida
-          entry.identity.faces = rebuildFaces(entry.identity.detections, peopleRegistry.getDisplayName);
-          entry.identity.face_count = computeFaceCount(entry.identity.detections);
-          dirty = true;
+        if (dirty) {
+          try {
+            await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+            catalogsWritten++;
+            writtenFolders.push(folder);
+          } catch (err) {
+            console.warn(`[promote] no se pudo escribir ${catalogPath}: ${err.message}`);
+          }
         }
-      }
-
-      if (dirty) {
-        try {
-          await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
-          catalogsWritten++;
-          writtenFolders.push(folder);
-        } catch (err) {
-          console.warn(`[promote] no se pudo escribir ${catalogPath}: ${err.message}`);
-        }
-      }
+      });
     }
 
     return { catalogsWritten, facesUpdated, folders: writtenFolders };
@@ -417,43 +422,54 @@ module.exports = function createPersonsManageRoutes(deps) {
     const displayName = peopleRegistry.getDisplayName(personId) || personId;
 
     const catalogPath = path.join(folder, '_pensadero.json');
-    let catalog;
+    // `det` se necesita despues del lock (para fusionar su embedding en el
+    // centroid de la persona), por eso se declara fuera.
+    let det;
     try {
-      const raw = await fsp.readFile(catalogPath, 'utf-8');
-      catalog = JSON.parse(raw);
+      // Lock por path: el ciclo leer->marcar->escribir de este catalogo no se
+      // solapa con el re-id de fondo que este mismo handler dispara mas abajo,
+      // ni con otro assign-face/promote sobre la misma carpeta. Sin esto la
+      // asignacion manual recien hecha podia perderse (lost-update).
+      await withFileLock(catalogPath, async () => {
+        let catalog;
+        try {
+          const raw = await fsp.readFile(catalogPath, 'utf-8');
+          catalog = JSON.parse(raw);
+        } catch (err) {
+          const e = new Error(`catalogo no encontrado: ${err.message}`); e.httpStatus = 404; throw e;
+        }
+
+        const photos = catalog.photos || catalog.clips || {};
+        const entry = photos[basename];
+        if (!entry) {
+          const e = new Error(`entrada no encontrada: ${basename}`); e.httpStatus = 404; throw e;
+        }
+        const detections = entry?.identity?.detections;
+        if (!Array.isArray(detections) || face_index < 0 || face_index >= detections.length) {
+          const e = new Error('face_index fuera de rango o sin detecciones'); e.httpStatus = 400; throw e;
+        }
+
+        det = detections[face_index];
+        if (!det.embedding_b64) {
+          const e = new Error('esta deteccion no tiene embedding (re-scan necesario)'); e.httpStatus = 400; throw e;
+        }
+
+        // Marcar deteccion como asignada manualmente
+        det.person_id = personId;
+        det.display_name = displayName;
+        det.confidence = 1.0;
+        det.assigned_manually = true;
+
+        // Recalcular identity.faces/face_count con la definicion canonica compartida
+        entry.identity.faces = rebuildFaces(detections, peopleRegistry.getDisplayName);
+        entry.identity.face_count = computeFaceCount(detections);
+
+        await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+      });
     } catch (err) {
-      return res.status(404).json({ success: false, error: `catalogo no encontrado: ${err.message}` });
-    }
-
-    const photos = catalog.photos || catalog.clips || {};
-    const entry = photos[basename];
-    if (!entry) {
-      return res.status(404).json({ success: false, error: `entrada no encontrada: ${basename}` });
-    }
-    const detections = entry?.identity?.detections;
-    if (!Array.isArray(detections) || face_index < 0 || face_index >= detections.length) {
-      return res.status(400).json({ success: false, error: 'face_index fuera de rango o sin detecciones' });
-    }
-
-    const det = detections[face_index];
-    if (!det.embedding_b64) {
-      return res.status(400).json({ success: false, error: 'esta deteccion no tiene embedding (re-scan necesario)' });
-    }
-
-    // Marcar deteccion como asignada manualmente
-    det.person_id = personId;
-    det.display_name = displayName;
-    det.confidence = 1.0;
-    det.assigned_manually = true;
-
-    // Recalcular identity.faces/face_count con la definicion canonica compartida
-    entry.identity.faces = rebuildFaces(detections, peopleRegistry.getDisplayName);
-    entry.identity.face_count = computeFaceCount(detections);
-
-    try {
-      await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
-    } catch (err) {
-      return res.status(500).json({ success: false, error: `error escribiendo catalogo: ${err.message}` });
+      const code = err.httpStatus || 500;
+      const msg = err.httpStatus ? err.message : `error escribiendo catalogo: ${err.message}`;
+      return res.status(code).json({ success: false, error: msg });
     }
 
     // Refrescar YA el mediaFile en memoria de esta carpeta (+ agregado) para que
@@ -471,26 +487,32 @@ module.exports = function createPersonsManageRoutes(deps) {
     if (personDir) {
       const embFile = path.join(personDir, 'embeddings.json');
       try {
-        const raw = await fsp.readFile(embFile, 'utf-8');
-        const existing = JSON.parse(raw);
-        if (Array.isArray(existing.centroid) && existing.centroid.length === 512) {
-          const newEmb = decodeEmbedding(det.embedding_b64);
-          if (newEmb && newEmb.length === 512) {
-            const n = existing.count || 1;
-            const blended = new Float32Array(512);
-            for (let i = 0; i < 512; i++) blended[i] = (existing.centroid[i] * n + newEmb[i]) / (n + 1);
-            let norm = 0;
-            for (let i = 0; i < 512; i++) norm += blended[i] * blended[i];
-            norm = Math.sqrt(norm);
-            if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
-            existing.centroid = Array.from(blended);
-            existing.count = n + 1;
-            existing.trained_at = new Date().toISOString();
-            await atomicWriteFile(embFile, JSON.stringify(existing), { backup: true });
-            // Invalidar cache en faceService para que el proximo identifyFaces use el centroid actualizado
-            getFaceService().embeddingsCache.delete(personId);
+        // Lock por path del embeddings.json: el blend (leer centroid -> mezclar
+        // -> escribir) no se solapa con entrenamiento/merge/promote ni con otro
+        // assign-face de la MISMA persona; sin esto dos blends concurrentes leen
+        // el mismo centroid y el segundo pisa al primero (lost-update).
+        await withFileLock(embFile, async () => {
+          const raw = await fsp.readFile(embFile, 'utf-8');
+          const existing = JSON.parse(raw);
+          if (Array.isArray(existing.centroid) && existing.centroid.length === 512) {
+            const newEmb = decodeEmbedding(det.embedding_b64);
+            if (newEmb && newEmb.length === 512) {
+              const n = existing.count || 1;
+              const blended = new Float32Array(512);
+              for (let i = 0; i < 512; i++) blended[i] = (existing.centroid[i] * n + newEmb[i]) / (n + 1);
+              let norm = 0;
+              for (let i = 0; i < 512; i++) norm += blended[i] * blended[i];
+              norm = Math.sqrt(norm);
+              if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
+              existing.centroid = Array.from(blended);
+              existing.count = n + 1;
+              existing.trained_at = new Date().toISOString();
+              await atomicWriteFile(embFile, JSON.stringify(existing), { backup: true });
+              // Invalidar cache en faceService para que el proximo identifyFaces use el centroid actualizado
+              getFaceService().embeddingsCache.delete(personId);
+            }
           }
-        }
+        });
       } catch {
         // Sin embeddings.json: persona no entrenada. Se omite el blend sin error.
       }
@@ -542,32 +564,38 @@ module.exports = function createPersonsManageRoutes(deps) {
 
     // 1) Mezclar centroides (ponderado por count). Si solo uno tiene embeddings,
     //    se conserva ese. El retrain posterior (si hay fotos) lo recalcula exacto.
+    const survivorEmbFile = path.join(survivorDir, 'embeddings.json');
     try {
-      const survEmb = await readEmbeddingsJson(survivorDir);
-      const loseEmb = await readEmbeddingsJson(loserDir);
-      let blended = null;
-      let count = 0;
-      if (survEmb && loseEmb) {
-        const n1 = survEmb.count || 1;
-        const n2 = loseEmb.count || 1;
-        blended = new Float32Array(512);
-        for (let i = 0; i < 512; i++) blended[i] = (survEmb.centroid[i] * n1 + loseEmb.centroid[i] * n2) / (n1 + n2);
-        let norm = 0; for (let i = 0; i < 512; i++) norm += blended[i] * blended[i]; norm = Math.sqrt(norm);
-        if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
-        count = n1 + n2;
-      } else if (loseEmb && !survEmb) {
-        blended = Float32Array.from(loseEmb.centroid);
-        count = loseEmb.count || 1;
-      }
-      if (blended) {
-        const out = {
-          person_id: survivor_id, version: 1, count,
-          photos_used: [], mean_similarity_to_centroid: null, min_similarity_to_centroid: null,
-          centroid: Array.from(blended), trained_at: new Date().toISOString(), source: 'person_merge',
-        };
-        await fsp.mkdir(survivorDir, { recursive: true });
-        await atomicWriteFile(path.join(survivorDir, 'embeddings.json'), JSON.stringify(out), { backup: true });
-      }
+      // Lock por path del embeddings.json del superviviente: la mezcla de
+      // centroides no se solapa con un assign-face/entrenamiento sobre esa misma
+      // persona (que tambien hacen read-modify-write de este fichero).
+      await withFileLock(survivorEmbFile, async () => {
+        const survEmb = await readEmbeddingsJson(survivorDir);
+        const loseEmb = await readEmbeddingsJson(loserDir);
+        let blended = null;
+        let count = 0;
+        if (survEmb && loseEmb) {
+          const n1 = survEmb.count || 1;
+          const n2 = loseEmb.count || 1;
+          blended = new Float32Array(512);
+          for (let i = 0; i < 512; i++) blended[i] = (survEmb.centroid[i] * n1 + loseEmb.centroid[i] * n2) / (n1 + n2);
+          let norm = 0; for (let i = 0; i < 512; i++) norm += blended[i] * blended[i]; norm = Math.sqrt(norm);
+          if (norm > 0) for (let i = 0; i < 512; i++) blended[i] /= norm;
+          count = n1 + n2;
+        } else if (loseEmb && !survEmb) {
+          blended = Float32Array.from(loseEmb.centroid);
+          count = loseEmb.count || 1;
+        }
+        if (blended) {
+          const out = {
+            person_id: survivor_id, version: 1, count,
+            photos_used: [], mean_similarity_to_centroid: null, min_similarity_to_centroid: null,
+            centroid: Array.from(blended), trained_at: new Date().toISOString(), source: 'person_merge',
+          };
+          await fsp.mkdir(survivorDir, { recursive: true });
+          await atomicWriteFile(survivorEmbFile, JSON.stringify(out), { backup: true });
+        }
+      });
     } catch (err) {
       console.warn('[person-merge] blend centroides:', err.message);
     }

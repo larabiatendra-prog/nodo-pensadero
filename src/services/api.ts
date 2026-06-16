@@ -110,6 +110,23 @@ class ApiService {
     });
   }
 
+  // ── Notas humanas (por archivo y por sesion colapsada) ──────────────────
+  /** Carga todas las notas: { files: { id: nota }, sessions: { key: nota } }. */
+  async getNotes() {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      files: Record<string, string>;
+      sessions: Record<string, string>;
+    }>>(`${API_BASE_URL}/notes`);
+  }
+
+  /** Guarda (o borra, si `note` viene vacio) una nota de archivo o de sesion. */
+  async saveNote(scope: 'file' | 'session', key: string, note: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ scope, key, note }),
+    });
+  }
+
   // Colecciones
   async getCollections() {
     return this.fetchWithErrorHandling<ApiResponse<any[]>>(`${API_BASE_URL}/collections`);
@@ -601,8 +618,21 @@ class ApiService {
         videoCount: number;
         hasContext: boolean;
         context: { meta: Record<string, any>; body: string } | null;
+        folderName: string | null;
       }>;
     }>>(`${API_BASE_URL}/scan/inventory?${qs}`);
+  }
+
+  /**
+   * Asigna el nombre de presentacion de una carpeta (display name). Todos sus
+   * archivos lo heredan, con enumeracion "_NNN" si hay mas de uno. El archivo
+   * fisico no se modifica. `displayName` vacio/null restaura el original.
+   */
+  async setFolderName(folderPath: string, displayName: string | null) {
+    return this.fetchWithErrorHandling<ApiResponse<{ displayName: string | null }>>(`${API_BASE_URL}/folders/name`, {
+      method: 'POST',
+      body: JSON.stringify({ folderPath, displayName }),
+    });
   }
 
   /**

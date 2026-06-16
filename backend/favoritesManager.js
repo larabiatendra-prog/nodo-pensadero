@@ -5,6 +5,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
 
 // Identificador canonico: path normalizado (lowercase + colapsar separadores).
 // Debe coincidir con src/utils/formatData.ts en el frontend.
@@ -17,6 +18,7 @@ class FavoritesManager {
   constructor() {
     this.favoritesFile = path.join(__dirname, 'favorites_persistent.json');
     this.favorites = new Map(); // pathKey -> { fileId, filePath, addedAt, lastModified }
+    this.saveQueue = Promise.resolve(); // serializa escrituras concurrentes
   }
 
   /**
@@ -25,32 +27,42 @@ class FavoritesManager {
   async loadFavorites() {
     try {
       const exists = await fs.access(this.favoritesFile).then(() => true).catch(() => false);
-      if (exists) {
-        const data = await fs.readFile(this.favoritesFile, 'utf-8');
-        const favoritesArray = JSON.parse(data);
-
-        // Convertir array a Map para mejor rendimiento.
-        // Clave canonica = path normalizado. Entradas legacy (md5 hex de 32 chars)
-        // se descartan en carga: el frontend reintroducira los favoritos con path.
-        this.favorites = new Map();
-        for (const fav of favoritesArray) {
-          const key = normalizePath(fav.fileId);
-          if (!key) continue;
-          const isLegacyMd5 = /^[a-f0-9]{32}$/i.test(fav.fileId) && !fav.fileId.includes('\\') && !fav.fileId.includes('/');
-          if (isLegacyMd5) {
-            console.log(`⚠️ Descartando favorito legacy md5: ${fav.fileId}`);
-            continue;
-          }
-          this.favorites.set(key, { ...fav, fileId: key });
-        }
-
-        console.log(`✅ Favoritos cargados: ${this.favorites.size} archivos marcados como favoritos`);
-        return this.favorites;
-      } else {
+      if (!exists) {
         console.log('📝 No existe archivo de favoritos previo, creando nuevo sistema...');
         await this.saveFavorites(); // Crear archivo vacío
         return this.favorites;
       }
+
+      const data = await fs.readFile(this.favoritesFile, 'utf-8');
+      let favoritesArray;
+      try {
+        favoritesArray = JSON.parse(data);
+      } catch (parseErr) {
+        // JSON corrupto: NO arrancar con Map vacío y borrar todos los favoritos
+        // en el primer guardado. Cuarentena para recuperación manual.
+        console.error(`❌ favorites_persistent.json corrupto: ${parseErr.message}`);
+        await quarantineCorrupt(this.favoritesFile);
+        this.favorites = new Map();
+        return this.favorites;
+      }
+
+      // Convertir array a Map para mejor rendimiento.
+      // Clave canonica = path normalizado. Entradas legacy (md5 hex de 32 chars)
+      // se descartan en carga: el frontend reintroducira los favoritos con path.
+      this.favorites = new Map();
+      for (const fav of favoritesArray) {
+        const key = normalizePath(fav.fileId);
+        if (!key) continue;
+        const isLegacyMd5 = /^[a-f0-9]{32}$/i.test(fav.fileId) && !fav.fileId.includes('\\') && !fav.fileId.includes('/');
+        if (isLegacyMd5) {
+          console.log(`⚠️ Descartando favorito legacy md5: ${fav.fileId}`);
+          continue;
+        }
+        this.favorites.set(key, { ...fav, fileId: key });
+      }
+
+      console.log(`✅ Favoritos cargados: ${this.favorites.size} archivos marcados como favoritos`);
+      return this.favorites;
     } catch (error) {
       console.error('❌ Error cargando favoritos:', error);
       this.favorites = new Map();
@@ -62,16 +74,22 @@ class FavoritesManager {
    * Guardar favoritos al archivo persistente
    */
   async saveFavorites() {
+    // Serializar escrituras: cleanupOrphanedFavorites (en syncFiles, background)
+    // y addFavorite/removeFavorite (request del usuario) pueden coincidir. El
+    // `.catch(()=>{})` evita envenenar la cola si un guardado falla.
+    this.saveQueue = this.saveQueue.catch(() => {}).then(() => this._performSave());
+    return this.saveQueue;
+  }
+
+  async _performSave() {
     try {
       const favoritesArray = Array.from(this.favorites.values());
-      await fs.writeFile(
-        this.favoritesFile,
-        JSON.stringify(favoritesArray, null, 2),
-        'utf-8'
-      );
+      // Escritura atómica (tmp + rename): un crash a mitad nunca corrompe el
+      // JSON destino. favorites_persistent.json NO es regenerable.
+      await atomicWriteFile(this.favoritesFile, JSON.stringify(favoritesArray, null, 2));
       console.log(`💾 Favoritos guardados: ${favoritesArray.length} archivos`);
     } catch (error) {
-      console.error('❌ Error guardando favoritos:', error);
+      console.error('❌ Error guardando favoritos:', error.message);
       throw error;
     }
   }

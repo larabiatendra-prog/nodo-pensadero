@@ -6,6 +6,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
+const { quarantineCorrupt } = require('./utils/jsonStore');
 
 // Límite máximo de archivos por colección
 const MAX_FILES_PER_COLLECTION = 500;
@@ -25,22 +26,33 @@ class CollectionsManager {
   async loadCollections() {
     try {
       const exists = await fs.access(this.collectionsFile).then(() => true).catch(() => false);
-      if (exists) {
-        const data = await fs.readFile(this.collectionsFile, 'utf-8');
-        const collectionsArray = JSON.parse(data);
-
-        // Convertir array a Map para mejor rendimiento
-        this.collections = new Map(
-          collectionsArray.map(collection => [collection.id, collection])
-        );
-
-        console.log(`✅ Colecciones cargadas: ${this.collections.size} colecciones con un total de ${this.getTotalFilesCount()} archivos`);
-        return Array.from(this.collections.values());
-      } else {
+      if (!exists) {
         console.log('📝 No existe archivo de colecciones previo, creando nuevo sistema...');
         await this.saveCollections(); // Crear archivo vacío
         return [];
       }
+
+      const data = await fs.readFile(this.collectionsFile, 'utf-8');
+      let collectionsArray;
+      try {
+        collectionsArray = JSON.parse(data);
+      } catch (parseErr) {
+        // JSON corrupto: NO arrancar con Map vacío para luego machacar el
+        // fichero en el primer guardado. Ponerlo en cuarentena (.corrupt-<ts>)
+        // para recuperación manual de las colecciones del usuario.
+        console.error(`❌ collections_persistent.json corrupto: ${parseErr.message}`);
+        await quarantineCorrupt(this.collectionsFile);
+        this.collections = new Map();
+        return [];
+      }
+
+      // Convertir array a Map para mejor rendimiento
+      this.collections = new Map(
+        collectionsArray.map(collection => [collection.id, collection])
+      );
+
+      console.log(`✅ Colecciones cargadas: ${this.collections.size} colecciones con un total de ${this.getTotalFilesCount()} archivos`);
+      return Array.from(this.collections.values());
     } catch (error) {
       console.error('❌ Error cargando colecciones:', error);
       this.collections = new Map();
@@ -57,8 +69,14 @@ class CollectionsManager {
       console.log('💾 Guardado en cola...');
     }
 
-    // Encolar la operación de guardado
-    this.saveQueue = this.saveQueue.then(() => this._performSave());
+    // Encolar la operación de guardado. El `.catch(()=>{})` ANTES del `.then`
+    // es crítico: si un guardado previo falló (p.ej. lock transitorio de
+    // antivirus/backup sobre el .tmp en Windows), la promesa quedaría rechazada
+    // y un `.then(onFulfilled)` encadenado NO se ejecutaría, envenenando la cola
+    // para siempre (ningún guardado posterior volvería a correr). Absorbemos el
+    // rechazo anterior para que la cola siga viva; el error del guardado ACTUAL
+    // sí se propaga al llamante (que devuelve 500).
+    this.saveQueue = this.saveQueue.catch(() => {}).then(() => this._performSave());
     return this.saveQueue;
   }
 

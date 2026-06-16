@@ -101,6 +101,81 @@ function getStreamUrl(fileId) {
 }
 
 /**
+ * Nombre de thumbnail seguro y estable. No depende solo del nombre de archivo
+ * (puede haber duplicados): añade los primeros 8 chars del fileId.
+ */
+function buildThumbnailName(fileName, fileId) {
+  const nameWithoutExt = path.basename(fileName, path.extname(fileName));
+  const sanitized = nameWithoutExt.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${sanitized}_${fileId.substring(0, 8)}_thumbnail.jpg`;
+}
+
+/**
+ * Resuelve la raiz de biblioteca (scanRoot) a la que pertenece un archivo,
+ * por coincidencia de prefijo mas largo contra las bibliotecas activas
+ * (CONTENT_DIR + scan_paths activas). Necesario para los thumbnails que viven
+ * junto a cada disco (<scanRoot>\.pensadero\thumbnails). Devuelve la ruta de
+ * biblioteca original, o null si el archivo no cae bajo ninguna activa.
+ *
+ * Normaliza a minusculas para tolerar la insensibilidad a mayusculas de
+ * Windows (Y: vs y:, mayusculas mezcladas en scan_paths.json). Si hay
+ * bibliotecas anidadas, gana la mas profunda (prefijo mas largo).
+ */
+async function resolveScanRoot(fullPath) {
+  if (!fullPath) return null;
+  const libraries = await getActiveLibraries();
+  const target = path.resolve(fullPath).toLowerCase();
+  let best = null;
+  let bestLen = -1;
+  for (const lib of libraries) {
+    const norm = path.resolve(lib).toLowerCase();
+    if (target === norm || target.startsWith(norm + path.sep)) {
+      if (norm.length > bestLen) {
+        best = lib;
+        bestLen = norm.length;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Funcion centralizada que resuelve donde guardar/servir un thumbnail.
+ * El thumbnail pertenece a la biblioteca, no al backend: vive en
+ * <scanRoot>\.pensadero\thumbnails. Si no se puede determinar scanRoot, cae al
+ * directorio legacy (backend/thumbnails) y marca legacy:true para que el
+ * llamante loguee un warning.
+ *
+ * @param {Object} args
+ * @param {string} args.fullPath  Ruta absoluta del archivo de medios.
+ * @param {string} [args.scanRoot] Raiz de biblioteca ya conocida (durante el
+ *   escaneo es el baseDir). Si se omite, el llamante debe resolverla antes con
+ *   resolveScanRoot() (esta funcion es sincrona; no hace I/O).
+ * @param {string} args.fileId
+ * @param {string} args.fileName
+ * @returns {{thumbnailDir:string, thumbnailName:string, thumbnailPath:string, thumbnailUrl:string, legacy:boolean}}
+ */
+function resolveThumbnailLocation({ fullPath, scanRoot, fileId, fileName }) {
+  const thumbnailName = buildThumbnailName(fileName, fileId);
+  let thumbnailDir;
+  let legacy = false;
+  if (scanRoot) {
+    thumbnailDir = path.join(scanRoot, '.pensadero', 'thumbnails');
+  } else {
+    thumbnailDir = systemPaths.thumbnails;
+    legacy = true;
+  }
+  return {
+    thumbnailDir,
+    thumbnailName,
+    thumbnailPath: path.join(thumbnailDir, thumbnailName),
+    // URL estable por fileId: el endpoint resuelve el disco internamente.
+    thumbnailUrl: `/api/thumbnails/${fileId}`,
+    legacy,
+  };
+}
+
+/**
  * Verifica accesibilidad de una ruta
  */
 async function isPathAccessible(dirPath) {
@@ -152,6 +227,9 @@ module.exports = {
   isPathAccessible,
   getThumbnailUrl,
   getStreamUrl,
+  buildThumbnailName,
+  resolveScanRoot,
+  resolveThumbnailLocation,
   systemPaths,
   aiConfig,
 };

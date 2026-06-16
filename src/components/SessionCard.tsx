@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, ChevronUp } from 'lucide-react';
+import { Layers, ChevronUp, Pencil } from 'lucide-react';
 import { MediaFile } from '../types';
 
 // ─── SessionCard (grupo colapsado) ──────────────────────────────────────────
@@ -11,9 +11,15 @@ interface SessionCardProps {
   onExpand: (key: string) => void;
   isSelectionMode?: boolean;
   onSelectAll?: (files: MediaFile[]) => void;
+  /** Nota humana que resume esta sesion (vacia si no hay). */
+  note?: string;
+  /** Abre el editor de la nota de esta sesion. */
+  onEditNote?: (key: string, label: { line1: string; line2: string }) => void;
+  /** Atenuada porque hay otra sesion abierta y esta queda fuera del foco. */
+  dimmed?: boolean;
 }
 
-export function SessionCard({ sessionKey, files, label, onExpand, isSelectionMode, onSelectAll }: SessionCardProps) {
+function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, onSelectAll, note, onEditNote, dimmed }: SessionCardProps) {
   // Seleccionar 4 thumbnails representativas (0%, 25%, 50%, 100%)
   const count = files.length;
   const indices = [
@@ -34,7 +40,9 @@ export function SessionCard({ sessionKey, files, label, onExpand, isSelectionMod
 
   return (
     <div
-      className="relative bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden cursor-pointer group mb-3 md:mb-6"
+      className={`relative bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden cursor-pointer group mb-3 md:mb-6 ${
+        dimmed ? 'opacity-50 hover:opacity-100' : ''
+      }`}
       onClick={handleClick}
     >
       {/* Mosaico 2×2 */}
@@ -62,11 +70,31 @@ export function SessionCard({ sessionKey, files, label, onExpand, isSelectionMod
         <span>{count}</span>
       </div>
 
-      {/* Gradiente inferior + etiqueta */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3">
+      {/* Lapiz para editar la nota de la sesion. Resaltado si ya hay nota. */}
+      {onEditNote && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onEditNote(sessionKey, label); }}
+          title={note ? 'Editar nota de la sesion' : 'Anadir nota a la sesion'}
+          className={`absolute top-2 left-2 z-10 p-1.5 rounded-full backdrop-blur-sm transition-colors ${
+            note
+              ? 'bg-lavanda/90 text-noche'
+              : 'bg-noche/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-noche/70'
+          }`}
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
+
+      {/* Gradiente inferior + etiqueta + nota humana */}
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-3">
         <p className="text-white text-xs font-medium leading-tight truncate">{label.line1}</p>
         {label.line2 && (
           <p className="text-white/80 text-xs leading-tight truncate mt-0.5">{label.line2}</p>
+        )}
+        {note && (
+          <p className="text-lavanda-claro text-xs italic leading-snug mt-1 line-clamp-2" title={note}>
+            “{note}”
+          </p>
         )}
       </div>
 
@@ -79,6 +107,26 @@ export function SessionCard({ sessionKey, files, label, onExpand, isSelectionMod
     </div>
   );
 }
+
+// Memoizado: una tarjeta de sesion solo se repinta si cambia su contenido o su
+// nota. Los callbacks (onExpand/onSelectAll/onEditNote) se asumen estables vía
+// useCallback en App; se comparan por referencia para evitar closures obsoletos.
+function sessionCardEqual(prev: SessionCardProps, next: SessionCardProps): boolean {
+  return (
+    prev.sessionKey === next.sessionKey &&
+    prev.files === next.files &&
+    prev.note === next.note &&
+    prev.dimmed === next.dimmed &&
+    prev.isSelectionMode === next.isSelectionMode &&
+    prev.label.line1 === next.label.line1 &&
+    prev.label.line2 === next.label.line2 &&
+    prev.onExpand === next.onExpand &&
+    prev.onSelectAll === next.onSelectAll &&
+    prev.onEditNote === next.onEditNote
+  );
+}
+
+export const SessionCard = React.memo(SessionCardBase, sessionCardEqual);
 
 // ─── SessionHeader (cabecera del grupo expandido) ───────────────────────────
 
@@ -111,6 +159,42 @@ export function SessionHeader({ sessionKey, files, label, onCollapse }: SessionH
         <ChevronUp className="w-3.5 h-3.5" />
         Colapsar
       </button>
+    </div>
+  );
+}
+
+// ─── SessionBoundaryCard (marca inicio/fin de una sesion abierta) ────────────
+
+interface SessionBoundaryCardProps {
+  sessionKey: string;
+  /** Archivo cuya relacion de aspecto adopta la tarjeta (primer/ultimo de la sesion). */
+  refFile: MediaFile;
+  label: { line1: string; line2: string };
+  variant: 'start' | 'end';
+  onCollapse: (key: string) => void;
+}
+
+export function SessionBoundaryCard({ sessionKey, refFile, label, variant, onCollapse }: SessionBoundaryCardProps) {
+  const aspect = refFile.dimensions
+    ? `${refFile.dimensions.width}/${refFile.dimensions.height}`
+    : '16/9';
+  return (
+    <div
+      onClick={() => onCollapse(sessionKey)}
+      title="Colapsar sesión"
+      className="relative bg-lavanda rounded-xl overflow-hidden cursor-pointer group mb-3 md:mb-6 flex items-center justify-center hover:bg-lavanda-claro transition-colors duration-200"
+      style={{ aspectRatio: aspect }}
+    >
+      <div className="text-center px-3">
+        <p className="text-white text-sm font-semibold leading-tight break-words">{label.line1}</p>
+        {label.line2 && (
+          <p className="text-white/80 text-xs mt-1 break-words">{label.line2}</p>
+        )}
+        <p className="text-white/70 text-[11px] mt-2 inline-flex items-center gap-1">
+          <ChevronUp className="w-3 h-3" />
+          {variant === 'start' ? 'Inicio' : 'Fin'} · colapsar
+        </p>
+      </div>
     </div>
   );
 }

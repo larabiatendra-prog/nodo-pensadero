@@ -23,7 +23,7 @@ const path = require('path');
 const { getInstance: getFaceService } = require('./faceService');
 const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
-const { atomicWriteFile } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
 const { computeFaceCount, rebuildFaces, inferDemographics } = require('../utils/faceCatalog');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
@@ -258,60 +258,66 @@ async function reidentifyAll(opts = {}) {
     for (const { catalogPath, photosKey } of catalogMeta) {
       if (job.cancelRequested) { job.status = 'cancelled'; break; }
 
-      let catalog;
-      try {
-        catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
-      } catch (err) {
-        console.warn(`[reidentify] no se pudo releer ${catalogPath}: ${err.message}`);
-        continue;
-      }
-      const folder = path.dirname(catalogPath);
-      const photos = catalog[photosKey] || {};
-      let dirty = false;
-
-      for (const basename of Object.keys(photos)) {
-        if (job.cancelRequested) break;
-        const entry = photos[basename];
-        const { changed, hadDetections, newlyTagged } = reidentifyEntry(entry, faceSvc);
-        if (!hadDetections) job.skippedNoDetections++;
-        if (changed) {
-          dirty = true;
-          job.changed++;
-          for (const pid of newlyTagged) job.perPerson[pid] = (job.perPerson[pid] || 0) + 1;
-        }
-        job.done++;
-        // Yield periodico para no congelar el event-loop en catalogos grandes.
-        if (job.done % YIELD_EVERY === 0) await yieldToLoop();
-        if (job.done % 25 === 0 || job.done === job.total) {
-          broadcastProgress({
-            type: 'reidentify_progress',
-            jobId,
-            total: job.total,
-            done: job.done,
-            changed: job.changed,
-            skippedNoDetections: job.skippedNoDetections,
-            catalogsWritten: job.catalogsWritten,
-            file: basename,
-            folder, // carpeta actual — para mostrar "en qué va"
-            percentage: job.total > 0 ? Math.round((job.done / job.total) * 100) : 100,
-          });
-        }
-      }
-
-      if (dirty) {
-        catalog.processed = new Date().toISOString();
+      // Serializar el ciclo releer->mutar->escribir de ESTE catalogo (lock por
+      // path): evita que un promote/assign-face o el re-id de espacios sobre la
+      // misma carpeta lean/escriban a la vez y se pierdan asignaciones manuales
+      // (lost-update). Carpetas distintas siguen procesandose en paralelo.
+      await withFileLock(catalogPath, async () => {
+        let catalog;
         try {
-          await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
-          catalogReader.invalidateCatalog(folder);
-          job.catalogsWritten++;
-          // Refrescar mediaFiles en memoria de esta carpeta para que el home
-          // vea las nuevas etiquetas sin un sync completo (el re-id solo cambia
-          // catalogos en disco; sin esto, /api/files seguiria sirviendo lo viejo).
-          if (typeof refreshDir === 'function') { try { await refreshDir(folder); } catch {} }
+          catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
         } catch (err) {
-          console.warn(`[reidentify] error escribiendo ${catalogPath}: ${err.message}`);
+          console.warn(`[reidentify] no se pudo releer ${catalogPath}: ${err.message}`);
+          return;
         }
-      }
+        const folder = path.dirname(catalogPath);
+        const photos = catalog[photosKey] || {};
+        let dirty = false;
+
+        for (const basename of Object.keys(photos)) {
+          if (job.cancelRequested) break;
+          const entry = photos[basename];
+          const { changed, hadDetections, newlyTagged } = reidentifyEntry(entry, faceSvc);
+          if (!hadDetections) job.skippedNoDetections++;
+          if (changed) {
+            dirty = true;
+            job.changed++;
+            for (const pid of newlyTagged) job.perPerson[pid] = (job.perPerson[pid] || 0) + 1;
+          }
+          job.done++;
+          // Yield periodico para no congelar el event-loop en catalogos grandes.
+          if (job.done % YIELD_EVERY === 0) await yieldToLoop();
+          if (job.done % 25 === 0 || job.done === job.total) {
+            broadcastProgress({
+              type: 'reidentify_progress',
+              jobId,
+              total: job.total,
+              done: job.done,
+              changed: job.changed,
+              skippedNoDetections: job.skippedNoDetections,
+              catalogsWritten: job.catalogsWritten,
+              file: basename,
+              folder, // carpeta actual — para mostrar "en qué va"
+              percentage: job.total > 0 ? Math.round((job.done / job.total) * 100) : 100,
+            });
+          }
+        }
+
+        if (dirty) {
+          catalog.processed = new Date().toISOString();
+          try {
+            await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+            catalogReader.invalidateCatalog(folder);
+            job.catalogsWritten++;
+            // Refrescar mediaFiles en memoria de esta carpeta para que el home
+            // vea las nuevas etiquetas sin un sync completo (el re-id solo cambia
+            // catalogos en disco; sin esto, /api/files seguiria sirviendo lo viejo).
+            if (typeof refreshDir === 'function') { try { await refreshDir(folder); } catch {} }
+          } catch (err) {
+            console.warn(`[reidentify] error escribiendo ${catalogPath}: ${err.message}`);
+          }
+        }
+      });
     }
 
     job.status = job.cancelRequested ? 'cancelled' : 'done';
@@ -395,54 +401,58 @@ async function rewritePersonInCatalogs(fromId, toId, opts = {}) {
   broadcastProgress({ type: 'reidentify_start', jobId, status: `${verb} en la biblioteca...` });
 
   for (const catalogPath of catalogPaths) {
-    let catalog;
-    try {
-      catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
-    } catch { continue; }
-    const folder = path.dirname(catalogPath);
-    const photos = catalog.photos || catalog.clips || {};
-    let dirty = false;
+    // Lock por path: serializa con re-id, promote y assign-face sobre la misma
+    // carpeta para que la reasignacion/limpieza de persona no pise (ni la pisen).
+    await withFileLock(catalogPath, async () => {
+      let catalog;
+      try {
+        catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
+      } catch { return; }
+      const folder = path.dirname(catalogPath);
+      const photos = catalog.photos || catalog.clips || {};
+      let dirty = false;
 
-    for (const basename of Object.keys(photos)) {
-      const entry = photos[basename];
-      const detections = entry?.identity?.detections;
-      if (!Array.isArray(detections)) continue;
-      let entryChanged = false;
-      for (const det of detections) {
-        if (det.person_id === fromId) {
-          if (toId) {
-            det.person_id = toId;
-            det.display_name = toName || toId;
-            // se conserva confidence y assigned_manually
-          } else {
-            delete det.person_id;
-            delete det.display_name;
-            delete det.confidence;
-            delete det.assigned_manually;
+      for (const basename of Object.keys(photos)) {
+        const entry = photos[basename];
+        const detections = entry?.identity?.detections;
+        if (!Array.isArray(detections)) continue;
+        let entryChanged = false;
+        for (const det of detections) {
+          if (det.person_id === fromId) {
+            if (toId) {
+              det.person_id = toId;
+              det.display_name = toName || toId;
+              // se conserva confidence y assigned_manually
+            } else {
+              delete det.person_id;
+              delete det.display_name;
+              delete det.confidence;
+              delete det.assigned_manually;
+            }
+            entryChanged = true;
+            facesUpdated++;
           }
-          entryChanged = true;
-          facesUpdated++;
+        }
+        if (entryChanged) {
+          entry.identity.faces = rebuildFaces(detections, peopleRegistry.getDisplayName);
+          entry.identity.face_count = computeFaceCount(detections);
+          dirty = true;
+        }
+        processed++;
+        if (processed % YIELD_EVERY === 0) await yieldToLoop();
+      }
+
+      if (dirty) {
+        catalog.processed = new Date().toISOString();
+        try {
+          await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
+          catalogReader.invalidateCatalog(folder);
+          catalogsWritten++;
+        } catch (err) {
+          console.warn(`[rewrite-person] error escribiendo ${catalogPath}: ${err.message}`);
         }
       }
-      if (entryChanged) {
-        entry.identity.faces = rebuildFaces(detections, peopleRegistry.getDisplayName);
-        entry.identity.face_count = computeFaceCount(detections);
-        dirty = true;
-      }
-      processed++;
-      if (processed % YIELD_EVERY === 0) await yieldToLoop();
-    }
-
-    if (dirty) {
-      catalog.processed = new Date().toISOString();
-      try {
-        await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
-        catalogReader.invalidateCatalog(folder);
-        catalogsWritten++;
-      } catch (err) {
-        console.warn(`[rewrite-person] error escribiendo ${catalogPath}: ${err.message}`);
-      }
-    }
+    });
   }
 
   broadcastProgress({

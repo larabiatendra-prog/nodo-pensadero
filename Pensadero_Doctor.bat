@@ -106,12 +106,12 @@ echo.
 echo --------------------------------------------------------------
 echo  Modelos IA
 echo --------------------------------------------------------------
-ollama list 2>nul | findstr /i "gemma3:12b" >nul
+ollama list 2>nul | findstr /i "gemma4:12b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] gemma3:12b  ^(VLM principal de escaneo^)
+    echo [OK] gemma4:12b  ^(VLM principal de escaneo - default^)
 ) else (
-    echo [FAIL] gemma3:12b NO descargado.
-    echo        Ejecuta: ollama pull gemma3:12b
+    echo [FAIL] gemma4:12b NO descargado.
+    echo        Ejecuta: ollama pull gemma4:12b
     set /a PROBLEMS+=1
 )
 ollama list 2>nul | findstr /i "qwen2.5:7b-instruct" >nul
@@ -122,13 +122,18 @@ if %ERRORLEVEL% EQU 0 (
     echo        Ejecuta: ollama pull qwen2.5:7b-instruct
     set /a PROBLEMS+=1
 )
-ollama list 2>nul | findstr /i "qwen2.5vl:7b" >nul
+REM VLM opcionales del catalogo (no cuentan como problema si faltan).
+ollama list 2>nul | findstr /i "gemma4:27b" >nul
 if %ERRORLEVEL% EQU 0 (
-    echo [OK] qwen2.5vl:7b  ^(VLM fallback manual^)
+    echo [OK] gemma4:27b  ^(VLM experimento, opcional^)
 ) else (
-    echo [FAIL] qwen2.5vl:7b NO descargado.
-    echo        Ejecuta: ollama pull qwen2.5vl:7b
-    set /a PROBLEMS+=1
+    echo [..] gemma4:27b no descargado ^(opcional: ollama pull gemma4:27b^)
+)
+ollama list 2>nul | findstr /i "gemma3:12b" >nul
+if %ERRORLEVEL% EQU 0 (
+    echo [OK] gemma3:12b  ^(VLM legacy/fallback, opcional^)
+) else (
+    echo [..] gemma3:12b no descargado ^(opcional: ollama pull gemma3:12b^)
 )
 
 :skip_ollama

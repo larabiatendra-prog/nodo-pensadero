@@ -6,9 +6,15 @@ export const MIN_GROUP_SIZE = 5;
 export const EXPANDED_PREVIEW = 12;
 
 export type SessionItem =
-  | { type: 'file'; file: MediaFile }
-  | { type: 'session-card'; key: string; files: MediaFile[]; label: { line1: string; line2: string } }
+  // `dimmed`: el archivo/tarjeta queda atenuado porque hay otra sesion abierta
+  // y este item esta fuera de ella (refuerzo visual del foco en la sesion abierta).
+  | { type: 'file'; file: MediaFile; dimmed?: boolean }
+  | { type: 'session-card'; key: string; files: MediaFile[]; label: { line1: string; line2: string }; dimmed?: boolean }
   | { type: 'session-header'; key: string; files: MediaFile[]; label: { line1: string; line2: string } }
+  // Tarjetas lavanda que marcan inicio (izquierda del primer archivo) y fin
+  // (derecha del ultimo) de una sesion abierta. Al pulsarlas se colapsa.
+  | { type: 'session-start'; key: string; firstFile: MediaFile; label: { line1: string; line2: string } }
+  | { type: 'session-end'; key: string; firstFile: MediaFile; label: { line1: string; line2: string } }
   | { type: 'session-show-more'; key: string; remaining: number };
 
 /** Agrupa los archivos preservando el orden de primera aparición de cada clave */
@@ -49,10 +55,12 @@ export function computeTotalSlots(
       total += 1; // tarjeta colapsada = 1 slot
     } else {
       const showAll = showAllGroups.has(key!);
+      const truncated = !showAll && files.length > EXPANDED_PREVIEW;
       const fileCount = showAll ? files.length : Math.min(files.length, EXPANDED_PREVIEW);
+      total += 1; // tarjeta de inicio (lavanda)
       total += fileCount;
-      if (!showAll && files.length > EXPANDED_PREVIEW) total += 1; // show-more card
-      // session-header no cuenta como slot
+      if (truncated) total += 1; // show-more card
+      else total += 1; // tarjeta de fin (lavanda)
     }
   }
 
@@ -79,6 +87,12 @@ export function useSessionGroups(
     const items: SessionItem[] = [];
     let slotsUsed = 0;
 
+    // Hay alguna sesion realmente abierta? Si la hay, el resto de items (archivos
+    // sueltos y tarjetas colapsadas) se atenuan para enfocar la sesion abierta.
+    const anyExpanded = groups.some(
+      g => g.key !== null && g.files.length >= MIN_GROUP_SIZE && expandedGroups.has(g.key)
+    );
+
     for (const { key, files } of groups) {
       if (slotsUsed >= visibleSlotCount) break;
 
@@ -88,18 +102,20 @@ export function useSessionGroups(
         // Archivos sueltos — 1 slot cada uno
         for (const file of files) {
           if (slotsUsed >= visibleSlotCount) break;
-          items.push({ type: 'file', file });
+          items.push({ type: 'file', file, dimmed: anyExpanded });
           slotsUsed++;
         }
       } else if (!expandedGroups.has(key!)) {
         // Grupo colapsado — 1 slot (tarjeta mosaico)
         const label = parseSmartLabel(files[0].name);
-        items.push({ type: 'session-card', key: key!, files, label });
+        items.push({ type: 'session-card', key: key!, files, label, dimmed: anyExpanded });
         slotsUsed++;
       } else {
-        // Grupo expandido — header (0 slots) + archivos + show-more opcional
+        // Grupo expandido: tarjeta de inicio + archivos + (show-more | tarjeta de fin)
         const label = parseSmartLabel(files[0].name);
-        items.push({ type: 'session-header', key: key!, files, label });
+        items.push({ type: 'session-start', key: key!, firstFile: files[0], label });
+        slotsUsed++;
+        if (slotsUsed >= visibleSlotCount) break;
 
         const showAll = showAllGroups.has(key!);
         const filesToShow = showAll ? files : files.slice(0, EXPANDED_PREVIEW);
@@ -110,8 +126,13 @@ export function useSessionGroups(
           slotsUsed++;
         }
 
-        if (!showAll && files.length > EXPANDED_PREVIEW && slotsUsed < visibleSlotCount) {
+        const truncated = !showAll && files.length > EXPANDED_PREVIEW;
+        if (truncated && slotsUsed < visibleSlotCount) {
           items.push({ type: 'session-show-more', key: key!, remaining: files.length - EXPANDED_PREVIEW });
+          slotsUsed++;
+        } else if (!truncated && slotsUsed < visibleSlotCount) {
+          // Tarjeta de fin: misma relacion de aspecto que el ultimo archivo.
+          items.push({ type: 'session-end', key: key!, firstFile: files[files.length - 1], label });
           slotsUsed++;
         }
       }

@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square } from 'lucide-react';
+import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square, Tag } from 'lucide-react';
 import { api } from '../services/api';
+import type { VlmModel } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
 import ScanContextModal from './ScanContextModal';
+import FolderRenameModal from './FolderRenameModal';
 
 interface ScanPath {
   id: string;
@@ -13,6 +15,8 @@ interface ScanPath {
   fileCount: number;
   status: 'connected' | 'disconnected' | 'scanning' | 'error';
   errorMessage?: string;
+  visualTotal?: number;     // archivos media bajo la ruta (live)
+  visualScanned?: number;   // de esos, cuantos tienen descripcion visual
 }
 
 interface AiScanState {
@@ -23,6 +27,24 @@ interface AiScanState {
   currentFile?: string;
   status: 'idle' | 'running' | 'done' | 'error' | 'cancelled';
   errorMessage?: string;
+  avgMsPerFile?: number;   // media movil por archivo (backend)
+  etaMs?: number;          // tiempo restante estimado (backend)
+  totalMs?: number;        // tiempo total del job al terminar (scan_done)
+}
+
+// Formatea una duracion en ms a texto humano corto: "850ms", "2.4s", "3m 12s",
+// "1h 5m". Para medias por archivo (< 1 min) preferimos segundos con decimal.
+function fmtDuration(ms: number | undefined, decimalSeconds = false): string {
+  if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return decimalSeconds ? `${totalSec.toFixed(1)}s` : `${Math.round(totalSec)}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = Math.round(totalSec % 60);
+  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
 }
 
 interface PathManagerProps {
@@ -46,12 +68,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   // Estado de salud del VLM (Ollama + modelo). Se consulta al montar.
   const [vlmHealth, setVlmHealth] = useState<{ ollamaRunning: boolean; modelAvailable: boolean; model: string; error?: string } | null>(null);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [availableModels, setAvailableModels] = useState<VlmModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
 
   // Modal de contexto previo al escaneo individual (botón ✨/⚡ por ruta).
   const [contextModalPathId, setContextModalPathId] = useState<string | null>(null);
   const [contextModalForce, setContextModalForce] = useState(false);
+
+  // Modal de renombrado de carpetas (display name por carpeta).
+  const [renameModalPathId, setRenameModalPathId] = useState<string | null>(null);
 
   // Cola de rutas para el flujo "Escanear todas": el modal se muestra una
   // vez por cada ruta activa antes de lanzar el scan-all.
@@ -61,6 +86,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   // Estado del bucle batch "Escanear todas las rutas". Solo uno activo a la vez.
   const [batchScan, setBatchScan] = useState<{ running: boolean; total: number; processed: number; force: boolean } | null>(null);
+  // Resumen transitorio al terminar el batch (tiempo total). Se autolimpia.
+  const [batchSummary, setBatchSummary] = useState<{ processed: number; total: number; elapsedMs: number; aborted: boolean } | null>(null);
 
   // WebSocket para progreso en tiempo real
   const { isConnected, progressData } = useWebSocket(config.wsUrl);
@@ -71,7 +98,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     // o el modelo no están listos.
     api.scanHealth().then(r => {
       if (r.success && r.data) setVlmHealth(r.data);
-    }).catch(() => setVlmHealth({ ollamaRunning: false, modelAvailable: false, model: 'qwen2.5vl:7b' }));
+    }).catch(() => setVlmHealth({ ollamaRunning: false, modelAvailable: false, model: 'gemma4:12b' }));
     api.scanModels().then(r => {
       if (r.success && r.data) {
         setAvailableModels(r.data.models);
@@ -92,6 +119,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }).catch(() => {});
   }, []);
 
+  // Espejos en refs para leer estado/props dentro del efecto de WS SIN meterlos
+  // en sus deps. Antes `aiScansByPath` estaba en las deps y el efecto llamaba a
+  // `setAiScansByPath(new Map(...))` en casi todas las ramas: cada Map nuevo es
+  // una referencia distinta → re-disparaba el efecto con el MISMO progressData →
+  // bucle "Maximum update depth exceeded" durante el escaneo. Leyendo desde refs,
+  // el efecto solo depende de progressData (un objeto nuevo por mensaje WS).
+  const aiScansByPathRef = useRef(aiScansByPath);
+  useEffect(() => { aiScansByPathRef.current = aiScansByPath; }, [aiScansByPath]);
+  const onSyncCompleteRef = useRef(onSyncComplete);
+  useEffect(() => { onSyncCompleteRef.current = onSyncComplete; }, [onSyncComplete]);
+
   // Escuchar progreso de sincronización Y de escaneo visual IA
   useEffect(() => {
     if (!progressData) return;
@@ -101,9 +139,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       loadPaths();
 
       // Notificar al componente padre para refrescar los archivos
-      if (onSyncComplete) {
+      if (onSyncCompleteRef.current) {
         setTimeout(() => {
-          onSyncComplete();
+          onSyncCompleteRef.current?.();
         }, 1000); // Pequeño delay para asegurar que el backend completó todo
       }
     }
@@ -120,7 +158,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       // Fallback: si solo hay un path actualmente en running, asociar el evento a el
       let candidate: string | undefined;
       let count = 0;
-      for (const [pid, st] of aiScansByPath.entries()) {
+      for (const [pid, st] of aiScansByPathRef.current.entries()) {
         if (st.status === 'running') { candidate = pid; count++; }
       }
       if (count === 1 && candidate && jobId) {
@@ -161,6 +199,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             done: progressData.done ?? cur.done,
             errors: progressData.errors ?? cur.errors,
             currentFile: progressData.file,
+            avgMsPerFile: progressData.avgMsPerFile ?? cur.avgMsPerFile,
+            etaMs: progressData.etaMs ?? cur.etaMs,
             status: 'running',
           });
           return next;
@@ -182,6 +222,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               errors: progressData.errors ?? cur.errors,
               status: 'done',
               currentFile: undefined,
+              totalMs: progressData.elapsedMs ?? cur.totalMs,
+              avgMsPerFile: progressData.avgMsPerFile ?? cur.avgMsPerFile,
             });
           }
           return next;
@@ -210,6 +252,12 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
     if (progressData.type === 'batch_scan_done') {
       setBatchScan(null);
+      setBatchSummary({
+        processed: (progressData as any).processed ?? 0,
+        total: (progressData as any).total ?? 0,
+        elapsedMs: progressData.elapsedMs ?? 0,
+        aborted: !!(progressData as any).aborted,
+      });
     }
 
     if (progressData.type === 'scan_error' && progressData.jobId) {
@@ -229,7 +277,23 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         });
       }
     }
-  }, [progressData, onSyncComplete, aiScansByPath]);
+
+    // Refrescar la cobertura visual (badge %/ratio) cuando termina algo que la
+    // cambia. En scan_done el post-sync del backend corre DESPUES de emitir el
+    // evento, asi que damos un margen; en batch/sync ya viene fresco.
+    if (progressData.type === 'scan_done') {
+      setTimeout(() => { loadPaths(); }, 1200);
+    } else if (progressData.type === 'batch_scan_done' || progressData.type === 'sync_complete') {
+      loadPaths();
+    }
+  }, [progressData]);
+
+  // Autolimpiar el resumen del batch tras unos segundos.
+  useEffect(() => {
+    if (!batchSummary) return;
+    const t = setTimeout(() => setBatchSummary(null), 12000);
+    return () => clearTimeout(t);
+  }, [batchSummary]);
 
   const loadPaths = async () => {
     try {
@@ -550,27 +614,57 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       )}
 
       {/* Selector de modelo VLM — visible solo cuando Ollama está disponible.
-          Solo se listan modelos con capacidad de vision (filtrado en backend). */}
-      {vlmHealth?.ollamaRunning && availableModels.length > 0 && (
-        <div className="mb-6 flex items-center gap-3 flex-wrap">
-          <span className="text-sm text-lavanda-archivo" title="Modelo de IA que mira cada foto y la describe durante el escaneo">
-            Modelo que describe las fotos:
-          </span>
-          <select
-            value={selectedModel}
-            onChange={async (e) => {
-              const model = e.target.value;
-              setSelectedModel(model);
-              await api.setScanModel(model).catch(() => {});
-            }}
-            className="bg-grafito border border-pizarra rounded-lg px-3 py-1.5 text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-          >
-            {availableModels.map(m => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        </div>
-      )}
+          El catalogo curado (Producción / Experimento / Legacy) aparece siempre,
+          aunque el modelo no esté instalado: en ese caso la opción se marca
+          "(pendiente de descarga)" y se ofrece el comando ollama pull. El cambio
+          es manual, sin fallback automático. */}
+      {vlmHealth?.ollamaRunning && availableModels.length > 0 && (() => {
+        const TIER_LABEL: Record<VlmModel['tier'], string> = {
+          produccion: 'Producción',
+          experimento: 'Experimento',
+          legacy: 'Legacy / fallback',
+          otro: 'Otros instalados',
+        };
+        const TIER_ORDER: VlmModel['tier'][] = ['produccion', 'experimento', 'legacy', 'otro'];
+        const selectedEntry = availableModels.find(m => m.name === selectedModel);
+        return (
+          <div className="mb-6 flex flex-col gap-2">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-sm text-lavanda-archivo" title="Modelo de IA que mira cada foto y la describe durante el escaneo">
+                Modelo que describe las fotos:
+              </span>
+              <select
+                value={selectedModel}
+                onChange={async (e) => {
+                  const model = e.target.value;
+                  setSelectedModel(model);
+                  await api.setScanModel(model).catch(() => {});
+                }}
+                className="bg-grafito border border-pizarra rounded-lg px-3 py-1.5 text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+              >
+                {TIER_ORDER.filter(t => availableModels.some(m => m.tier === t)).map(tier => (
+                  <optgroup key={tier} label={TIER_LABEL[tier]}>
+                    {availableModels.filter(m => m.tier === tier).map(m => (
+                      <option key={m.name} value={m.name} disabled={!m.installed}>
+                        {m.label}{m.installed ? '' : ' (pendiente de descarga)'}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+            {selectedEntry?.notes && (
+              <p className="text-xs text-humo">{selectedEntry.notes}</p>
+            )}
+            {selectedEntry && !selectedEntry.installed && (
+              <p className="text-xs text-lavanda-archivo">
+                No instalado. Ejecuta en una terminal:{' '}
+                <span className="font-mono text-bruma">ollama pull {selectedEntry.name}</span>
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Acciones globales: añadir ruta + escaneos masivos */}
       <div className="mb-6">
@@ -629,6 +723,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                 >
                   Detener
                 </button>
+              </div>
+            )}
+            {!batchScan?.running && batchSummary && (
+              <div className="flex items-center gap-2 ml-2 px-3 py-2 rounded-full bg-tinta border border-pizarra">
+                <CheckCircle className="w-4 h-4 text-salvia" />
+                <span className="text-sm text-lavanda-archivo">
+                  {batchSummary.aborted ? 'Escaneo masivo detenido' : 'Escaneo masivo completado'}
+                  {' · '}
+                  <span className="text-marfil font-medium">{batchSummary.processed}/{batchSummary.total} rutas</span>
+                  {batchSummary.elapsedMs > 0 && <> en <span className="text-marfil font-medium">{fmtDuration(batchSummary.elapsedMs)}</span></>}
+                </span>
               </div>
             )}
           </div>
@@ -699,6 +804,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                       <span>Archivos:</span>
                       <span className="font-medium">{path.fileCount}</span>
                     </div>
+                    {typeof path.visualTotal === 'number' && path.visualTotal > 0 && (() => {
+                      const pct = Math.round(((path.visualScanned ?? 0) / path.visualTotal) * 100);
+                      const color = pct === 100 ? 'text-salvia' : pct > 0 ? 'text-lavanda' : 'text-humo';
+                      return (
+                        <div className="flex items-center gap-1" title={`${path.visualScanned ?? 0} de ${path.visualTotal} archivos con descripcion visual`}>
+                          <Sparkles className={`w-3.5 h-3.5 ${color}`} />
+                          <span className={`font-medium ${color}`}>{pct}% escaneado visualmente</span>
+                          <span className="text-humo">· {path.visualScanned ?? 0}/{path.visualTotal}</span>
+                        </div>
+                      );
+                    })()}
                     {path.lastScan && (
                       <div className="flex items-center gap-1">
                         <span>Última sincronización:</span>
@@ -781,6 +897,21 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                     <Zap className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />
                   </button>
 
+                  {/* Renombrar carpetas — nombre de presentacion por carpeta
+                      (el archivo fisico no se toca). */}
+                  <button
+                    onClick={() => setRenameModalPathId(path.id)}
+                    disabled={!path.isActive}
+                    className={`p-2 rounded-lg transition-colors ${
+                      !path.isActive
+                        ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
+                        : 'bg-grafito text-bruma hover:bg-lavanda hover:text-white'
+                    }`}
+                    title="Renombrar carpetas (nombre de presentacion, no toca el archivo)"
+                  >
+                    <Tag className="w-4 h-4" />
+                  </button>
+
                   <button
                     onClick={() => handleTogglePath(path.id, path.isActive)}
                     className={`p-2 rounded-lg transition-colors ${
@@ -817,7 +948,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                         <Sparkles className={`w-4 h-4 text-lavanda ${scan.status === 'running' ? 'animate-pulse' : ''}`} />
                         <span className="text-sm font-medium text-marfil">
                           {scan.status === 'running' && 'Escaneando con IA...'}
-                          {scan.status === 'done' && '✓ Escaneo completado'}
+                          {scan.status === 'done' && (scan.totalMs ? `✓ Escaneo completado en ${fmtDuration(scan.totalMs)}` : '✓ Escaneo completado')}
                           {scan.status === 'error' && '✗ Error al iniciar escaneo'}
                           {scan.status === 'cancelled' && 'Escaneo cancelado'}
                         </span>
@@ -847,6 +978,18 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                         />
                       </div>
                     )}
+                    {scan.status === 'running' && scan.total > 0 && (scan.avgMsPerFile || scan.etaMs) && (
+                      <p className="text-xs text-lavanda-archivo mt-2">
+                        {scan.avgMsPerFile ? <>~{fmtDuration(scan.avgMsPerFile, true)}/archivo</> : null}
+                        {scan.avgMsPerFile && scan.etaMs ? ' · ' : null}
+                        {scan.etaMs ? <>quedan ~{fmtDuration(scan.etaMs)}</> : null}
+                      </p>
+                    )}
+                    {scan.status === 'done' && scan.done > 0 && scan.avgMsPerFile ? (
+                      <p className="text-xs text-lavanda-archivo mt-2">
+                        {scan.done} archivos · ~{fmtDuration(scan.avgMsPerFile, true)}/archivo de media
+                      </p>
+                    ) : null}
                     {scan.currentFile && scan.status === 'running' && (
                       <p className="text-xs text-lavanda-archivo mt-2 truncate">
                         Procesando: {scan.currentFile}
@@ -887,6 +1030,20 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               handleAiScan(contextModalPathId, contextModalForce);
               setContextModalPathId(null);
             }}
+          />
+        );
+      })()}
+
+      {/* Modal de renombrado de carpetas (display name por carpeta) */}
+      {renameModalPathId && (() => {
+        const target = paths.find(p => p.id === renameModalPathId);
+        if (!target) return null;
+        return (
+          <FolderRenameModal
+            isOpen={true}
+            rootPath={target.path}
+            onClose={() => setRenameModalPathId(null)}
+            onSaved={() => onSyncComplete?.()}
           />
         );
       })()}

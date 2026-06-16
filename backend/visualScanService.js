@@ -9,9 +9,9 @@
  *
  * Llamada principal: scanImage(filePath) → objeto entry para photos[basename]
  *
- * Modelo por defecto: `qwen2.5vl:7b` (multimodal, ~6 GB VRAM, multilingüe).
+ * Modelo por defecto: `gemma4:12b` (principal NODO, equilibrio calidad/velocidad/VRAM).
  * Configurable vía VLM_MODEL en .env. Cualquier modelo de visión soportado
- * por Ollama vale (gemma3:12b, llava, etc.).
+ * por Ollama vale (gemma4:27b, gemma3:12b legacy, qwen2.5vl, llava, etc.).
  */
 
 const fs = require('fs').promises;
@@ -22,7 +22,21 @@ const { spawn } = require('child_process');
 const { Ollama } = require('ollama');
 const sharp = require('sharp');
 
-const DEFAULT_VLM_MODEL = 'qwen2.5vl:7b';
+const DEFAULT_VLM_MODEL = 'gemma4:12b';
+
+// Catalogo curado de modelos VLM que Pensadero ofrece SIEMPRE en el selector,
+// esten o no instalados en Ollama. Permite mostrar "pendiente de descarga" en la
+// UI sin romper (regla 4) y guiar al usuario con el comando pull exacto. No hay
+// fallback automatico entre ellos: el cambio es manual (regla 5).
+//   - produccion : modelo recomendado para escaneo diario (default).
+//   - experimento: mayor calidad, mas coste/VRAM. Manual, nunca sustituye al de
+//                  produccion automaticamente. Riesgo OOM en GPUs de 16 GB.
+//   - legacy     : conservado como fallback manual mientras siga util.
+const VLM_CATALOG = [
+  { name: 'gemma4:12b', tier: 'produccion',  label: 'Gemma 4 12B',  notes: 'Principal. Equilibrio calidad/velocidad/VRAM.' },
+  { name: 'gemma4:27b', tier: 'experimento', label: 'Gemma 4 27B',  notes: 'Mayor calidad, mas coste. Manual, no default. Riesgo OOM en 16 GB.' },
+  { name: 'gemma3:12b', tier: 'legacy',      label: 'Gemma 3 12B',  notes: 'Legacy/fallback manual.' },
+];
 const PER_IMAGE_TIMEOUT_MS = parseInt(process.env.VLM_TIMEOUT_MS || '180000', 10); // 180s por imagen (margen para fotos grandes + modelos grandes en cold-start)
 const VIDEO_FRAMES_PER_SCAN = parseInt(process.env.VLM_VIDEO_FRAMES || '3', 10); // 3 frames es buen balance calidad/coste
 const VIDEO_MAX_FRAMES = 6;
@@ -343,7 +357,7 @@ class VisualScanService {
    * Lista solo modelos con capacidad de vision (multimodales). Filtra por
    * nombre porque las familias VLM tienen nombres estandar:
    *   - qwen*-vl, qwen2.5vl, qwen-vl
-   *   - gemma3 (todos los gemma3 son multimodales)
+   *   - gemma3, gemma4 (todos los gemma 3+ son multimodales)
    *   - llava, bakllava
    *   - moondream
    *   - minicpm-v (y variantes)
@@ -361,8 +375,42 @@ class VisualScanService {
   async listVisionModels() {
     const list = await this.ollama.list();
     const all = (list.models || []).map(m => m.name).filter(Boolean);
-    const visionNameRegex = /(qwen.*vl|gemma3(:|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama|internvl)/i;
+    // gemma\d captura gemma3, gemma4 y futuras familias (gemma3 era demasiado
+    // estricto: dejaba fuera gemma4 instalado).
+    const visionNameRegex = /(qwen.*vl|gemma[3-9]\d*(:|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama|internvl)/i;
     return all.filter(name => visionNameRegex.test(name));
+  }
+
+  /**
+   * Catalogo para el selector de la UI: fusiona el catalogo curado (VLM_CATALOG)
+   * con los modelos de vision realmente instalados en Ollama. Los 3 curados
+   * aparecen SIEMPRE (con installed:false si faltan → la UI los pinta como
+   * "pendiente de descarga", regla 1+4). Los demas VLM instalados se anaden
+   * despues con tier 'otro'. No hay fallback automatico (regla 5).
+   *
+   * @returns {Promise<Array<{name,tier,label,notes,installed}>>}
+   */
+  async listVisionCatalog() {
+    let installed = [];
+    try {
+      installed = await this.listVisionModels();
+    } catch {
+      // Ollama caido: devolvemos el catalogo curado como no instalado para que
+      // la UI no se quede vacia y muestre los pull pendientes.
+    }
+    const installedSet = new Set(installed.map(n => n.toLowerCase()));
+    const catalogSet = new Set(VLM_CATALOG.map(c => c.name.toLowerCase()));
+
+    const out = VLM_CATALOG.map(c => ({
+      ...c,
+      installed: installedSet.has(c.name.toLowerCase()),
+    }));
+    for (const name of installed) {
+      if (!catalogSet.has(name.toLowerCase())) {
+        out.push({ name, tier: 'otro', label: name, notes: '', installed: true });
+      }
+    }
+    return out;
   }
 
   /**
@@ -642,6 +690,8 @@ ${head}`;
 
     return {
       schema_version: 2,
+      // Modelo VLM que generó esta descripción (trazabilidad en la UI).
+      vlm_model: this.model,
       description_what: descWhat,
       description_mood: descMood,
       // Compat: `description` se sigue exponiendo como concatenacion para que

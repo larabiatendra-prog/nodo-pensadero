@@ -36,6 +36,7 @@ class ClipService {
     this.proc = null;
     this.queue = [];
     this.current = null;
+    this.reqSeq = 0;           // contador de id de correlacion peticion↔respuesta
     this.stdoutBuffer = '';
     this.starting = null;
     this.ready = false;
@@ -158,6 +159,7 @@ class ClipService {
       return;
     }
     const entry = this.queue.shift();
+    entry.id = ++this.reqSeq;
     this.current = entry;
     entry.timer = setTimeout(() => {
       this.current = null;
@@ -165,7 +167,8 @@ class ClipService {
       this._pump();
     }, entry.timeoutMs);
     try {
-      this.proc.stdin.write(JSON.stringify(entry.req) + '\n');
+      // Adjuntar el id de correlacion (ver clipService _handleResponseLine).
+      this.proc.stdin.write(JSON.stringify({ ...entry.req, id: entry.id }) + '\n');
     } catch (err) {
       clearTimeout(entry.timer);
       this.current = null;
@@ -186,21 +189,35 @@ class ClipService {
   }
 
   _handleResponseLine(line) {
-    if (!this.current) {
-      console.warn('[clipService] respuesta sin peticion pendiente:', line.slice(0, 100));
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch (err) {
+      if (this.current) {
+        const entry = this.current;
+        this.current = null;
+        clearTimeout(entry.timer);
+        entry.reject(new Error(`JSON parse: ${err.message} (line: ${line.slice(0, 200)})`));
+        this._pump();
+      } else {
+        console.warn('[clipService] respuesta no-JSON sin peticion:', line.slice(0, 100));
+      }
       return;
     }
+
+    // Correlación por id: descartar respuestas tardías de peticiones expiradas
+    // por timeout (evita atribuir el embedding de A al archivo B).
+    const respId = parsed.id;
+    if (!this.current || (respId !== undefined && this.current.id !== respId)) {
+      console.warn(`[clipService] descartando respuesta huérfana (id=${respId})`);
+      return;
+    }
+
     const entry = this.current;
     this.current = null;
     clearTimeout(entry.timer);
-
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed.ok) entry.resolve(parsed.result);
-      else entry.reject(new Error(parsed.error || 'unknown error'));
-    } catch (err) {
-      entry.reject(new Error(`JSON parse: ${err.message} (line: ${line.slice(0, 200)})`));
-    }
+    if (parsed.ok) entry.resolve(parsed.result);
+    else entry.reject(new Error(parsed.error || 'unknown error'));
     this._pump();
   }
 

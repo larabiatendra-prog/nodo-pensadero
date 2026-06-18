@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { X, Tag, Calendar, MinusCircle, Sparkles, Loader2, AtSign, User } from 'lucide-react';
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { X, Tag, Calendar, MinusCircle, Sparkles, Loader2, AtSign, User, Search } from 'lucide-react';
 import { MentionsInput, Mention } from 'react-mentions';
 import { SearchFilters, Person } from '../types';
 import { buildApiUrl, API_CONFIG } from '../config';
@@ -59,13 +59,25 @@ interface SearchBarProps {
 
 type SearchMode = 'tags' | 'natural';
 
-export default function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson }: SearchBarProps) {
+// Handle imperativo: el padre (App) llama reset() desde "Limpiar todos los
+// filtros" para borrar tambien el estado interno de la barra (texto tecleado,
+// pregunta natural, sugerencias) que no viaja por props.
+export interface SearchBarHandle {
+  reset: () => void;
+}
+
+const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson }, ref) {
   const [query, setQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filters, setFilters] = useState<SearchFilters>({ type: 'all' });
   const [localIncludedTags, setLocalIncludedTags] = useState<string[]>(includedTags);
   const [localExcludedTags, setLocalExcludedTags] = useState<string[]>(excludedTags);
+  // Terminos de busqueda de texto libre (chips grises). Naturaleza distinta a
+  // los tags: filtran por substring (no coincidencia exacta) y se combinan en
+  // AND con tags y entre si. Viven aqui (fuente de verdad) y viajan al padre
+  // via filters.textTerms en cada onSearch.
+  const [localTextTerms, setLocalTextTerms] = useState<string[]>([]);
   const [tagsData, setTagsData] = useState<TagsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
@@ -246,12 +258,29 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     setLocalExcludedTags(excludedTags);
   }, [includedTags, excludedTags]);
 
-  const handleSearch = () => {
-    // Regular search mode
-    onSearch(query, {
+  // Payload comun: tags incluidas + terminos de texto libre. Se manda en CADA
+  // onSearch para que texto y tags convivan en AND y no se pierda uno al tocar
+  // el otro. searchQuery va vacio: el texto vive en textTerms (chips), no suelto.
+  const emitSearch = (terms = localTextTerms, included = localIncludedTags) => {
+    onSearch('', {
       ...filters,
-      tags: localIncludedTags.length > 0 ? localIncludedTags : undefined
+      tags: included.length > 0 ? included : undefined,
+      textTerms: terms,
     });
+  };
+
+  const handleSearch = () => {
+    const q = query.trim();
+    if (!q) {
+      emitSearch();
+      return;
+    }
+    // Si coincide EXACTO con un tag existente -> chip lavanda (tag). Si no ->
+    // chip gris (texto). Misma decision que el Enter, para que el boton Buscar
+    // sea coherente.
+    const exact = (tagsData?.allTags || []).find(t => normalizeString(t) === normalizeString(q));
+    if (exact) addTag(exact);
+    else addTextTerm(q);
   };
 
   // Lanza búsqueda en lenguaje natural contra Ollama (vía /api/ai/search).
@@ -446,11 +475,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
           setSelectedSuggestionIndex(-1);
           setPendingFreeSearchQuery(query.trim());
         } else {
-          // Búsqueda de texto libre (incluye el "segundo Enter").
-          setShowSmartSuggestions(false);
-          setSmartSuggestions([]);
-          setPendingFreeSearchQuery('');
-          handleSearch();
+          // Búsqueda de texto libre (incluye el "segundo Enter"): se promueve a
+          // chip gris en vez de quedarse suelta en el input.
+          addTextTerm(query.trim());
         }
       }
     } else if (e.key === 'ArrowDown') {
@@ -507,9 +534,36 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       // Notify parent about tags change
       onTagsChange?.({ included: newIncluded, excluded: localExcludedTags });
 
-      // Automatically perform search with the new tags
-      onSearch('', { ...filters, tags: newIncluded });
+      // Automatically perform search with the new tags (conservando los
+      // terminos de texto libre activos)
+      emitSearch(localTextTerms, newIncluded);
     }
+  };
+
+  // Añade un termino de texto libre como chip gris (coincidencia por substring,
+  // no es un tag). Dedup case/acento-insensible. Limpia el input y busca.
+  const addTextTerm = (term: string) => {
+    const t = term.trim();
+    if (!t) return;
+    const norm = normalizeString(t);
+    const already = localTextTerms.some(x => normalizeString(x) === norm);
+    const next = already ? localTextTerms : [...localTextTerms, t];
+    if (!already) setLocalTextTerms(next);
+    setQuery('');
+    setShowSuggestions(false);
+    setShowSmartSuggestions(false);
+    setSmartSuggestions([]);
+    setPendingFreeSearchQuery('');
+    setSelectedSuggestionIndex(-1);
+    setTimeout(() => { inputRef.current?.focus(); }, 0);
+    emitSearch(next, localIncludedTags);
+  };
+
+  // Quita un chip de texto y relanza la busqueda.
+  const removeTextTerm = (term: string) => {
+    const next = localTextTerms.filter(t => t !== term);
+    setLocalTextTerms(next);
+    emitSearch(next, localIncludedTags);
   };
 
   // Ciclo de estados al hacer click en una tag activa
@@ -538,13 +592,8 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     // Notify parent about tags change
     onTagsChange?.({ included: newIncluded, excluded: newExcluded });
 
-    // Automatically update search
-    if (newIncluded.length > 0 || newExcluded.length > 0) {
-      onSearch('', { ...filters, tags: newIncluded.length > 0 ? newIncluded : undefined });
-    } else {
-      // If no tags left, show all files
-      onSearch('', { ...filters, tags: undefined });
-    }
+    // Automatically update search (conservando terminos de texto libre)
+    emitSearch(localTextTerms, newIncluded);
   };
 
   // Eliminar tag completamente (botón X)
@@ -560,48 +609,35 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     // Notify parent about tags change
     onTagsChange?.({ included: newIncluded, excluded: newExcluded });
 
-    // Automatically update search when removing tags
-    if (newIncluded.length > 0 || newExcluded.length > 0) {
-      onSearch('', { ...filters, tags: newIncluded.length > 0 ? newIncluded : undefined });
-    } else {
-      // If no tags left, show all files
-      onSearch('', { ...filters, tags: undefined });
-    }
+    // Automatically update search when removing tags (conservando texto libre)
+    emitSearch(localTextTerms, newIncluded);
   };
 
-  const clearFilters = () => {
+  // Reset SOLO del estado interno de la barra (no viaja por props). Lo invoca
+  // App.clearAllFilters via ref; App ya resetea su propio estado y los filtros
+  // de nivel app (color, imagen, tipo, persona, fav, fecha), asi que aqui no
+  // llamamos a onSearch/onTagsChange/onNaturalSearch para no duplicar trabajo.
+  const resetInternal = () => {
     setFilters({ type: 'all' });
     setLocalIncludedTags([]);
     setLocalExcludedTags([]);
+    setLocalTextTerms([]);
     setQuery('');
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
     setShowSmartSuggestions(false);
     setSmartSuggestions([]);
     setPendingFreeSearchQuery('');
     // Limpieza también del estado de búsqueda natural — evita resultados zombie
     setNaturalIntent(null);
     setNaturalNotice(null);
+    setNaturalMetadata(null);
     setNaturalMarkup('');
     setNaturalPlainText('');
     setNaturalMentions([]);
-    onNaturalSearch?.(null, null);
-    // Reset search to show all files
-    onSearch('', { type: 'all' });
-    // Notify parent about clearing tags
-    onTagsChange?.({ included: [], excluded: [] });
   };
 
-  const hasActiveFilters = () => {
-    return localIncludedTags.length > 0 ||
-           localExcludedTags.length > 0 ||
-           query ||
-           naturalMarkup ||
-           filters.type !== 'all' ||
-           filters.favorites ||
-           filters.dateFrom ||
-           filters.dateTo ||
-           filters.year ||
-           filters.month;
-  };
+  useImperativeHandle(ref, () => ({ reset: resetInternal }), []);
 
 
   return (
@@ -705,6 +741,26 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               </span>
             ))}
 
+            {/* Términos de texto libre — chips GRISES (lupa). Naturaleza distinta
+                a las etiquetas: coincidencia por texto, no tag exacto. */}
+            {localTextTerms.map((term) => (
+              <span
+                key={`txt-${term}`}
+                className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-grafito text-niebla border border-borde-sutil font-medium select-none"
+                title="Coincidencia de texto (no es una etiqueta)"
+              >
+                <Search className="w-3 h-3 mr-1 text-humo" />
+                {term}
+                <button
+                  onClick={(e) => { e.stopPropagation(); removeTextTerm(term); }}
+                  className="ml-2 hover:text-estado-error transition-colors"
+                  title="Quitar búsqueda de texto"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+
             {isNatural ? (
               <MentionsInput
                 value={naturalMarkup}
@@ -794,18 +850,6 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
               </select>
             )}
 
-            {hasActiveFilters() && (
-              <button
-                onClick={clearFilters}
-                className={`p-2 rounded-lg transition-colors ${
-                  isNatural ? 'text-noche/70 hover:bg-noche/15 hover:text-noche' : 'text-humo hover:bg-grafito hover:text-marfil'
-                }`}
-                title="Limpiar búsqueda"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            )}
-
             <button
               onClick={isNatural ? runNaturalSearch : handleSearch}
               disabled={naturalLoading || (isNatural && !naturalMarkup.trim() && !naturalPlainText.trim())}
@@ -817,7 +861,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Pensando…</>
                 : (isNatural
                   ? 'Preguntar'
-                  : (allActiveTags.length > 0 ? `Buscar (${allActiveTags.length})` : 'Buscar'))
+                  : ((allActiveTags.length + localTextTerms.length) > 0
+                    ? `Buscar (${allActiveTags.length + localTextTerms.length})`
+                    : 'Buscar'))
               }
             </button>
           </div>
@@ -1120,7 +1166,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       )}
     </div>
   );
-}
+});
+
+export default SearchBar;
 
 // Píldora compacta para mostrar campos del intent extraído por el LLM.
 function Chip({ children }: { children: React.ReactNode }) {

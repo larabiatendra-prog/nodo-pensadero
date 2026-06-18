@@ -51,6 +51,12 @@ export interface MediaFile {
   dimensions?: { width: number; height: number }; // for images/videos
   isFavorite?: boolean;
   fullPath?:string
+  // Nombre de presentacion heredado de la carpeta (folder_names.json). El
+  // archivo fisico no se toca; esto es solo capa de presentacion. Cuando la
+  // carpeta tiene >1 archivo lleva sufijo "_NNN". Dispara agrupacion en sesion.
+  displayName?: string;
+  folderIndex?: number;  // posicion 1..N dentro de la carpeta con override
+  folderTotal?: number;  // total de archivos de la carpeta con override
   // Campos enriquecidos del catalog (_marina.json) — opcionales
   visual_description?: string;
   ocr_text?: string;
@@ -105,6 +111,10 @@ export interface SearchFilters {
   month?: string; // Filter by month extracted from filename
   favorites?: boolean;
   collection?: string;
+  // Terminos de busqueda de texto libre (chips grises). Se combinan en AND
+  // entre si y con los tags. Cada termino filtra por substring sobre
+  // name/displayName/tags. Distinto de `tags` (coincidencia exacta).
+  textTerms?: string[];
 }
 
 export type VideoItem = {

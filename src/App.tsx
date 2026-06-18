@@ -8,8 +8,8 @@ import { useSessionGroups, computeTotalSlots } from './hooks/useSessionGroups';
 import { config } from './config';
 import { cacheService } from './services/cacheService';
 
-import SearchBar from './components/SearchBar';
-import TimelineWave from './components/TimelineWave';
+import SearchBar, { SearchBarHandle } from './components/SearchBar';
+import TimelineWave, { monthIndexOf } from './components/TimelineWave';
 import { MoreOptionsMenu } from './components/MoreOptionsMenu';
 import { ScrollToTopButton } from './components/ScrollToTopButton';
 import { SelectionModeButton } from './components/SelectionModeButton';
@@ -21,6 +21,7 @@ import { FolderScanner } from './components/FolderScanner';
 import { CreateCollectionModal } from './components/CreateCollectionModal';
 import { AddToCollectionModal } from './components/AddToCollectionModal';
 import Statistics from './components/Statistics';
+import AtlasView from './components/AtlasView';
 import PresentationMode from './components/PresentationMode';
 import ProgressBar from './components/ProgressBar';
 import PersonBubbles from './components/PersonBubbles';
@@ -174,6 +175,10 @@ function App() {
 
   // Store current search filters to reapply when persons change
   const [currentSearchQuery, setCurrentSearchQuery] = useState<string>('');
+  // Terminos de busqueda de texto libre (chips grises de la barra). Se combinan
+  // en AND entre si y con tags/personas/etc. Espejo de los chips que vive en
+  // SearchBar; llega via filters.textTerms en onSearch.
+  const [currentSearchTerms, setCurrentSearchTerms] = useState<string[]>([]);
   const [currentSearchFilters, setCurrentSearchFilters] = useState<SearchFilters | null>(null);
 
   // Flag to prevent unnecessary page resets during favorite updates
@@ -216,6 +221,10 @@ function App() {
   const isSelectionModeRef = useRef(isSelectionMode);
   useEffect(() => { isSelectionModeRef.current = isSelectionMode; }, [isSelectionMode]);
 
+  // Ref a la barra de busqueda: clearAllFilters la usa para resetear el estado
+  // interno (texto tecleado, pregunta natural) que no viaja por props.
+  const searchBarRef = useRef<SearchBarHandle>(null);
+
   // ESC key listener for clearing all filters
   const hasActiveFiltersRef = useRef(false);
   useEffect(() => {
@@ -231,6 +240,25 @@ function App() {
     };
     document.addEventListener('keydown', handleEscClearFilters);
     return () => document.removeEventListener('keydown', handleEscClearFilters);
+  }, [isModalOpen, quickPreviewFile, isSelectionMode, showPresentationMode]);
+
+  // Esc colapsa la sesion abierta. Capture phase + stopImmediatePropagation
+  // para tener prioridad sobre el Esc que limpia filtros: primero colapsas,
+  // un segundo Esc ya limpia filtros.
+  const expandedGroupsRef = useRef(expandedGroups);
+  expandedGroupsRef.current = expandedGroups;
+  useEffect(() => {
+    const handleEscCollapse = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || expandedGroupsRef.current.size === 0) return;
+      if (isModalOpen || quickPreviewFile || isSelectionMode || showPresentationMode) return;
+      const tag = (event.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      event.stopImmediatePropagation();
+      setExpandedGroups(new Set());
+      setShowAllGroups(new Set());
+    };
+    document.addEventListener('keydown', handleEscCollapse, true);
+    return () => document.removeEventListener('keydown', handleEscCollapse, true);
   }, [isModalOpen, quickPreviewFile, isSelectionMode, showPresentationMode]);
 
   // Quick Preview: track which card is under the cursor
@@ -323,6 +351,7 @@ function App() {
     baseFiles: MediaFile[] = mediaFiles,
     options: {
       searchQuery?: string;
+      searchTerms?: string[];
       searchFilters?: SearchFilters;
       tags?: string[];
       excludeTags?: string[];
@@ -335,16 +364,28 @@ function App() {
     } = {}
   ) => {
     let filtered = [...baseFiles];
-    const { searchQuery, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
+    const { searchQuery, searchTerms = currentSearchTerms, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
 
-    // 1. Aplicar búsqueda de texto si existe
+    // Coincidencia de texto (substring) sobre name/displayName/tags.
+    const matchesText = (file: MediaFile, q: string) =>
+      file.name.toLowerCase().includes(q) ||
+      (file.displayName ? file.displayName.toLowerCase().includes(q) : false) ||
+      file.tags.some(tag => tag.toLowerCase().includes(q));
+
+    // 1. Búsqueda de texto suelta (query única; p.ej. fallback de natural).
     if (searchQuery && searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(file =>
-        file.name.toLowerCase().includes(query) ||
-        (file.displayName ? file.displayName.toLowerCase().includes(query) : false) ||
-        file.tags.some(tag => tag.toLowerCase().includes(query))
-      );
+      filtered = filtered.filter(file => matchesText(file, query));
+    }
+
+    // 1b. Términos de texto libre (chips grises). AND: cada término debe
+    // coincidir. Naturaleza distinta a `tags` (que es coincidencia exacta).
+    if (Array.isArray(searchTerms) && searchTerms.length > 0) {
+      for (const term of searchTerms) {
+        const q = String(term || '').toLowerCase().trim();
+        if (!q) continue;
+        filtered = filtered.filter(file => matchesText(file, q));
+      }
     }
 
     // 2. Aplicar filtros de búsqueda (fechas, etc)
@@ -890,6 +931,11 @@ function App() {
     // Save current search query and filters
     setCurrentSearchQuery(query);
     setCurrentSearchFilters(filters);
+    // Terminos de texto libre (chips grises). Si vienen en filters, espejarlos;
+    // si no, conservar los actuales. Se usan ABAJO de forma sincrona (el estado
+    // aun no se ha actualizado en esta misma llamada).
+    const terms = filters.textTerms ?? currentSearchTerms;
+    if (filters.textTerms !== undefined) setCurrentSearchTerms(filters.textTerms);
 
 
     // Si tenemos filtros de fecha extraída, usar búsqueda del backend
@@ -921,6 +967,7 @@ function App() {
           // Esto garantiza que la lógica AND funcione siempre, sin importar el orden
           files = applyAllFilters(files, {
             searchQuery: '', // Ya filtrado por el backend
+            searchTerms: terms, // Chips de texto: filtrar localmente (no van al backend)
             searchFilters: undefined, // Ya filtrado por el backend
             tags: [], // Ya filtrado por el backend
             types: selectedTypes, // Aplicar filtros de tipo localmente
@@ -943,6 +990,7 @@ function App() {
     // Búsqueda local usando la función centralizada
     const filtered = applyAllFilters(mediaFiles, {
       searchQuery: query,
+      searchTerms: terms,
       searchFilters: filters,
       tags: filters.tags,
       types: selectedTypes,
@@ -1221,8 +1269,8 @@ function App() {
             // 3. Apply natural sorting to collection files
             files = files.sort((a, b) => {
               // Primary: Sort by extracted date (if different)
-              const dateA = extractDateFromFilename(a.name);
-              const dateB = extractDateFromFilename(b.name);
+              const dateA = extractDateFromFilename(a.displayName || a.name);
+              const dateB = extractDateFromFilename(b.displayName || b.name);
               if (dateA !== dateB) {
                 return dateB - dateA; // Descending (newest first)
               }
@@ -2129,6 +2177,7 @@ function App() {
 
   const clearAllFilters = () => {
     setCurrentSearchQuery('');
+    setCurrentSearchTerms([]);
     setCurrentSearchFilters(null);
     setFilterDateFrom(undefined);
     setFilterDateTo(undefined);
@@ -2142,6 +2191,9 @@ function App() {
     setColorFilterHex(null);
     setImageSearchFileIds(null);
     setImageSearchPreview(null);
+
+    // Resetear estado interno de la barra (texto/pregunta natural sin enviar)
+    searchBarRef.current?.reset();
 
     resetInfiniteScroll();
   };
@@ -2273,8 +2325,10 @@ function App() {
 
   // Función para extraer fecha YYMMDD del nombre del archivo
   const extractDateFromFilename = (filename: string): number => {
-    // Buscar patrón YYMMDD en el nombre del archivo (6 dígitos consecutivos después de un guión y espacio)
-    const match = filename.match(/- (\d{6})/);
+    // Patrón YYMMDD tras guion ("Prefijo - 240617") o al inicio ("260616_Prueba",
+    // formato NODO / display name). Asi el orden del home respeta la fecha del
+    // nombre de presentacion, no solo la del nombre fisico crudo.
+    const match = filename.match(/(?:^|-\s*)(\d{6})/);
     if (match) {
       const dateStr = match[1];
       // Convertir YYMMDD a un número para comparación (más grande = más reciente)
@@ -2347,7 +2401,7 @@ function App() {
     return filteredFiles
       .map((file, originalIndex) => ({
         file,
-        date: extractDateFromFilename(file.name),
+        date: extractDateFromFilename(file.displayName || file.name),
         originalIndex, // For stable sorting fallback
         id: file.id
       }))
@@ -2381,8 +2435,38 @@ function App() {
 
   const timelineDateValues = React.useMemo(() => {
     if (!showTimeline) return [];
-    return sortedFiles.map(f => extractDateFromFilename(f.name));
+    return sortedFiles.map(f => extractDateFromFilename(f.displayName || f.name));
   }, [showTimeline, sortedFiles, extractDateFromFilename]);
+
+  // ── Saltar a fecha al pinchar la onda ───────────────────────────────────
+  // Busca el primer archivo de ese mes, carga lo necesario (scroll infinito) y
+  // ancla el scroll a su tarjeta via data-file-id. Si la tarjeta no aparece
+  // (agrupacion colapsada, fuera de DOM), cae a scroll proporcional con `frac`.
+  const handleTimelineSeek = React.useCallback((monthIndex: number, frac: number) => {
+    const idx = timelineDateValues.findIndex(v => monthIndexOf(v) === monthIndex);
+    const proportionalFallback = () => {
+      const max = document.body.scrollHeight - window.innerHeight;
+      window.scrollTo({ top: Math.max(0, frac * max), behavior: 'smooth' });
+    };
+    if (idx < 0) { proportionalFallback(); return; }
+
+    const fileId = sortedFiles[idx]?.id;
+    // Cargar hasta el objetivo (+ colchon) si el scroll infinito aun no llego.
+    const needed = Math.min(idx + ITEMS_PER_LOAD, MAX_LOADED_ITEMS);
+    if (needed > loadedItemsCount) setLoadedItemsCount(needed);
+
+    // Con agrupacion el indice plano no mapea al DOM: scroll proporcional directo.
+    if (groupingEnabled && viewMode === 'grid') { proportionalFallback(); return; }
+
+    let tries = 0;
+    const tryScroll = () => {
+      const el = fileId ? document.querySelector(`[data-file-id="${CSS.escape(fileId)}"]`) : null;
+      if (el) { (el as HTMLElement).scrollIntoView({ block: 'start', behavior: 'smooth' }); return; }
+      if (tries++ < 40) { requestAnimationFrame(tryScroll); return; }
+      proportionalFallback();
+    };
+    requestAnimationFrame(tryScroll);
+  }, [timelineDateValues, sortedFiles, loadedItemsCount, groupingEnabled, viewMode]);
 
   const getAllDisplayFiles = () => {
     // Get base files first
@@ -2437,6 +2521,7 @@ function App() {
     // Current options (explicit — avoids closure defaults being used when we omit a key)
     const opts = {
       searchQuery: currentSearchQuery,
+      searchTerms: currentSearchTerms,
       searchFilters: currentSearchFilters || undefined,
       tags: includedTags,
       excludeTags: excludedTags,
@@ -2518,6 +2603,12 @@ function App() {
   const handleCollapseGroup = React.useCallback((key: string) => {
     setExpandedGroups(prev => { const next = new Set(prev); next.delete(key); return next; });
     setShowAllGroups(prev => { const next = new Set(prev); next.delete(key); return next; });
+  }, []);
+
+  // Colapsa todas las sesiones abiertas (Esc o click en el fondo de la grid).
+  const handleCollapseAll = React.useCallback(() => {
+    setExpandedGroups(new Set());
+    setShowAllGroups(new Set());
   }, []);
 
   const handleShowMoreGroup = React.useCallback((key: string) => {
@@ -2605,7 +2696,49 @@ function App() {
                 <ArrowLeft className="w-4 h-4" />
                 <span>Volver</span>
               </button>
-              <Statistics />
+              <Statistics
+                files={mediaFiles}
+                onTagClick={(tag) => { handleTagClick(tag); setActiveView('home'); }}
+                onTypeClick={(type) => { setSelectedTypes([type]); setActiveView('home'); }}
+                onYearClick={(year) => { setCurrentSearchFilters(prev => ({ ...(prev || {}), year })); setActiveView('home'); }}
+                onPersonClick={(personId) => { setSelectedPersonIds([personId]); setActiveView('home'); }}
+                onColorClick={async (hex) => {
+                  try {
+                    const r = await api.searchByColor(hex);
+                    if (r.success && Array.isArray(r.data)) {
+                      setColorFilterFileIds(new Set(r.data.map((d: any) => d.fileId)));
+                      setColorFilterHex(hex);
+                      setActiveView('home');
+                    }
+                  } catch (e) {
+                    console.error('[stats] búsqueda por color:', e);
+                  }
+                }}
+              />
+            </div>
+          );
+
+        case 'atlas':
+          return (
+            <div>
+              <button
+                onClick={() => setActiveView('home')}
+                className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Volver</span>
+              </button>
+              <AtlasView
+                files={mediaFiles}
+                onOpenDay={(date) => {
+                  const from = new Date(date); from.setHours(0, 0, 0, 0);
+                  const to = new Date(date); to.setHours(23, 59, 59, 999);
+                  handleDateRangeChange(from, to);
+                  setActiveView('home');
+                }}
+                onPersonClick={(personId) => { setSelectedPersonIds([personId]); setActiveView('home'); }}
+                onTagClick={(tag) => { handleTagClick(tag); setActiveView('home'); }}
+              />
             </div>
           );
 
@@ -2767,6 +2900,7 @@ function App() {
                   {activeView === 'home' && (
                     <div className="flex-1">
                       <SearchBar
+                        ref={searchBarRef}
                         onSearch={handleSearch}
                         includedTags={includedTags}
                         excludedTags={excludedTags}
@@ -3091,6 +3225,7 @@ function App() {
                     sessionItems={useGrouping ? sessionItems : undefined}
                     onExpandGroup={handleExpandGroup}
                     onCollapseGroup={handleCollapseGroup}
+                    onCollapseAll={handleCollapseAll}
                     onShowMoreGroup={handleShowMoreGroup}
                     onSelectSessionFiles={handleSelectSessionFiles}
                     sessionNotes={sessionNotes}
@@ -3218,6 +3353,7 @@ function App() {
   // Check if any filters are active
   const hasActiveFilters = Boolean(
     currentSearchQuery ||
+    currentSearchTerms.length > 0 ||
     currentSearchFilters ||
     filterDateFrom ||
     filterDateTo ||
@@ -3345,7 +3481,7 @@ function App() {
 
       {/* Onda vertical (pasiva) de densidad temporal a la derecha del home */}
       {showTimeline && timelineDateValues.length > 1 && (
-        <TimelineWave sortedDateValues={timelineDateValues} loadedCount={loadedItemsCount} />
+        <TimelineWave sortedDateValues={timelineDateValues} loadedCount={loadedItemsCount} onSeek={handleTimelineSeek} />
       )}
 
       {/* Quick Preview Overlay (Space key) */}

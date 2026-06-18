@@ -795,6 +795,11 @@ async function performSync() {
     activePaths.push({ id: 'default', path: CONTENT_DIR, isActive: true });
   }
 
+  // Inyectar las bibliotecas activas en folderNames para que pueda resolver
+  // carpetas absolutas -> identidad portable (libraryId + relativeDir). Se hace
+  // en cada sync para reflejar remapeos de raiz al instante.
+  folderNames.setLibraries(activePaths.map(p => ({ id: p.id, path: p.path })));
+
   broadcastProgress({ type: 'sync_start', status: 'Contando archivos...', percentage: 0 });
 
   let allFiles = [];
@@ -1272,6 +1277,12 @@ async function initialize() {
 
   // Nombres de presentacion por carpeta (display name editable desde la UI).
   await folderNames.load();
+  // Inyectar bibliotecas ya en arranque (antes del primer sync) para que la
+  // resolucion de claves portables funcione en el inventario inicial.
+  try {
+    const _bootPaths = await loadScanPaths();
+    folderNames.setLibraries(_bootPaths.filter(p => p.isActive).map(p => ({ id: p.id, path: p.path })));
+  } catch {}
 
   // Cargar el indice de embeddings CLIP en memoria. Si no existe, opera vacio.
   // El daemon Python CLIP se carga lazy (solo al primer embedImage / embedText).

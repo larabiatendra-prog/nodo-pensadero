@@ -5,6 +5,8 @@ import { SearchFilters, Person } from '../types';
 import { buildApiUrl, API_CONFIG } from '../config';
 import { api } from '../services/api';
 import config from '../config';
+import { resolveEnterBehavior, normalizeText } from '../utils/smartTags';
+import { TAG_SYNONYM_GROUPS } from '../utils/tagSynonyms';
 
 // Schema canónico del intent que devuelve el LLM (ver aiSearchService.js).
 export interface NaturalIntent {
@@ -68,6 +70,13 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   const [loading, setLoading] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
 
+  // Smart Tag Matching — sugerencias por sinónimos cuando Enter no encuentra
+  // match exacto. `pendingFreeSearchQuery` guarda el texto original para que el
+  // segundo Enter ejecute búsqueda libre. La lógica pura vive en utils/smartTags.
+  const [showSmartSuggestions, setShowSmartSuggestions] = useState(false);
+  const [smartSuggestions, setSmartSuggestions] = useState<string[]>([]);
+  const [pendingFreeSearchQuery, setPendingFreeSearchQuery] = useState('');
+
   // Modo dual de búsqueda. Persiste en localStorage entre sesiones.
   const [searchMode, setSearchMode] = useState<SearchMode>(() => {
     if (typeof window === 'undefined') return 'tags';
@@ -127,10 +136,8 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Helper function to normalize strings (remove accents/tildes)
-  const normalizeString = (str: string): string => {
-    return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  };
+  // Normalizaci\u00f3n compartida con Smart Tag Matching (min\u00fasculas + sin tildes).
+  const normalizeString = normalizeText;
 
   // All active tags (included + excluded)
   const allActiveTags = [...localIncludedTags, ...localExcludedTags];
@@ -206,6 +213,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     const handleClickOutside = (event: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
         setShowSuggestions(false);
+        setShowSmartSuggestions(false);
         setShowFilters(false);
       }
     };
@@ -214,6 +222,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       if (event.key === 'Escape') {
         // Close suggestions and filters when pressing ESC
         setShowSuggestions(false);
+        setShowSmartSuggestions(false);
         setShowFilters(false);
       }
     };
@@ -387,6 +396,10 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     setSelectedSuggestionIndex(-1);
     // Show suggestions when there's a query
     setShowSuggestions(e.target.value.length > 0);
+    // Editar la query invalida las sugerencias smart previas.
+    setShowSmartSuggestions(false);
+    setSmartSuggestions([]);
+    setPendingFreeSearchQuery('');
   };
 
   // handleKeyPress queda solo para el <input> plain del modo tags. En modo
@@ -404,19 +417,45 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         addPerson(personSuggestions[idx].person_id);
         return;
       }
+      // Smart Tag Matching: si hay una sugerencia de sinónimo resaltada con
+      // flecha, Enter la añade como etiqueta.
+      if (showSmartSuggestions && selectedSuggestionIndex >= 0 && smartSuggestions[selectedSuggestionIndex]) {
+        addTag(smartSuggestions[selectedSuggestionIndex]);
+        return;
+      }
       if (e.shiftKey && query.trim()) {
         // Shift+Enter: Convert the query into a tag
         addTag(query.trim());
-      } else if (selectedSuggestionIndex >= 0 && suggestions[selectedSuggestionIndex]) {
+      } else if (!showSmartSuggestions && selectedSuggestionIndex >= 0 && suggestions[selectedSuggestionIndex]) {
         // Enter with selected suggestion: Add as tag
         addTag(suggestions[selectedSuggestionIndex]);
       } else if (query.trim() || allActiveTags.length > 0) {
-        // Enter solo: Perform regular text search (no convertir a etiqueta)
-        handleSearch();
+        // Enter solo: Smart Tag Matching decide (tag exacto / sinónimos / texto).
+        const action = resolveEnterBehavior(query, {
+          availableTags: tagsData?.allTags || [],
+          synonymGroups: TAG_SYNONYM_GROUPS,
+          suggestionsAlreadyShown: showSmartSuggestions,
+        });
+        if (action.kind === 'addTag') {
+          addTag(action.tag);
+        } else if (action.kind === 'showSuggestions') {
+          // Primer Enter sin match exacto pero con sinónimos: ofrecerlos.
+          setSmartSuggestions(action.suggestions);
+          setShowSmartSuggestions(true);
+          setShowSuggestions(false);
+          setSelectedSuggestionIndex(-1);
+          setPendingFreeSearchQuery(query.trim());
+        } else {
+          // Búsqueda de texto libre (incluye el "segundo Enter").
+          setShowSmartSuggestions(false);
+          setSmartSuggestions([]);
+          setPendingFreeSearchQuery('');
+          handleSearch();
+        }
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const list = isPersonMention ? personSuggestions : suggestions;
+      const list = isPersonMention ? personSuggestions : (showSmartSuggestions ? smartSuggestions : suggestions);
       if (list.length > 0) {
         setSelectedSuggestionIndex(prev =>
           prev < list.length - 1 ? prev + 1 : 0
@@ -424,7 +463,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const list = isPersonMention ? personSuggestions : suggestions;
+      const list = isPersonMention ? personSuggestions : (showSmartSuggestions ? smartSuggestions : suggestions);
       if (list.length > 0) {
         setSelectedSuggestionIndex(prev =>
           prev > 0 ? prev - 1 : list.length - 1
@@ -433,6 +472,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     } else if (e.key === 'Escape') {
       e.preventDefault();
       setShowSuggestions(false);
+      setShowSmartSuggestions(false);
       setSelectedSuggestionIndex(-1);
     }
   };
@@ -454,6 +494,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
       setLocalIncludedTags(newIncluded);
       setQuery('');
       setShowSuggestions(false);
+      setShowSmartSuggestions(false);
+      setSmartSuggestions([]);
+      setPendingFreeSearchQuery('');
       setSelectedSuggestionIndex(-1);
 
       // Delay focus to give React time to update the query state
@@ -531,6 +574,9 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
     setLocalIncludedTags([]);
     setLocalExcludedTags([]);
     setQuery('');
+    setShowSmartSuggestions(false);
+    setSmartSuggestions([]);
+    setPendingFreeSearchQuery('');
     // Limpieza también del estado de búsqueda natural — evita resultados zombie
     setNaturalIntent(null);
     setNaturalNotice(null);
@@ -717,7 +763,7 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
                 onFocus={() => query.length > 0 && setShowSuggestions(true)}
                 placeholder={
                   allActiveTags.length === 0
-                    ? "Escribe para autocompletar etiquetas · Enter busca texto · Shift+Enter crea etiqueta nueva"
+                    ? "Escribe y pulsa Enter · etiqueta exacta filtra · Shift+Enter crea etiqueta nueva"
                     : "Añade más etiquetas o texto libre…"
                 }
                 className="flex-1 min-w-0 bg-transparent outline-none text-marfil placeholder-humo transition-all"
@@ -840,8 +886,38 @@ export default function SearchBar({ onSearch, placeholder = "Buscar archivos..."
         </div>
       )}
 
+      {/* Smart Tag Matching — "¿Quisiste decir…?" (sinónimos -> etiquetas reales) */}
+      {!isNatural && !isPersonMention && showSmartSuggestions && smartSuggestions.length > 0 && (
+        <div className="absolute top-full left-0 right-0 mt-2 bg-tinta rounded-xl shadow-lg border border-borde-sutil z-20">
+          <div className="p-2">
+            <div className="text-sm text-humo px-3 py-2">¿Quisiste decir…?</div>
+            {smartSuggestions.map((tag, index) => (
+              <button
+                key={`smart-${tag}`}
+                onClick={() => addTag(tag)}
+                className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
+                  index === selectedSuggestionIndex
+                    ? 'bg-lavanda text-white'
+                    : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                }`}
+              >
+                <Tag className={`w-4 h-4 ${
+                  index === selectedSuggestionIndex ? 'text-noche' : 'text-humo'
+                }`} />
+                <span className={`${
+                  index === selectedSuggestionIndex ? 'text-noche' : 'text-marfil'
+                }`}>{tag}</span>
+              </button>
+            ))}
+            <div className="text-xs text-humo px-3 py-2 border-t border-borde-sutil mt-1">
+              Enter de nuevo busca «{pendingFreeSearchQuery}» como texto · Esc cierra
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Suggestions dropdown — modo Tags */}
-      {!isNatural && !isPersonMention && showSuggestions && suggestions.length > 0 && (
+      {!isNatural && !isPersonMention && !showSmartSuggestions && showSuggestions && suggestions.length > 0 && (
         <div className="absolute top-full left-0 right-0 mt-2 bg-tinta rounded-xl shadow-lg border border-borde-sutil z-10">
           <div className="p-2">
             <div className="text-sm text-humo px-3 py-2">Etiquetas sugeridas</div>

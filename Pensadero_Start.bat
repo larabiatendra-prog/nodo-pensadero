@@ -107,12 +107,10 @@ if %ERRORLEVEL% EQU 0 (
     echo         Ejecuta Pensadero_Doctor.bat para diagnostico.
 )
 
-REM Liberar instancia previa de Pensadero si quedo una ventana abierta (reuso
-REM seguro: solo mata ventanas cuyo titulo sea Pensadero, no procesos ajenos).
-taskkill /FI "WINDOWTITLE eq Pensadero*" /T /F >nul 2>&1
-
 REM Comprobar que el puerto 5000 esta libre. Si lo ocupa otro proceso, avisar
-REM (no matamos a ciegas un PID que podria no ser nuestro).
+REM (no matamos a ciegas un PID que podria no ser nuestro). NO se mata por
+REM titulo de ventana aqui: esta misma ventana se llama Pensadero y se
+REM autodestruiria. El taskkill solo se hace al cerrar (al final del script).
 powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"
 if %ERRORLEVEL% NEQ 0 (
     echo [AVISO] El puerto 5000 esta ocupado por otro proceso.

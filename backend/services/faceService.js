@@ -27,6 +27,20 @@ const PYTHON_EXE_WIN = path.join(PYTHON_DIR, '.venv', 'Scripts', 'python.exe');
 const PYTHON_EXE_NIX = path.join(PYTHON_DIR, '.venv', 'bin', 'python');
 const SCRIPT_PATH = path.join(PYTHON_DIR, 'face_detector.py');
 
+// Pista de diagnostico para el fallo tipico al migrar entre PCs: el shim
+// .venv/Scripts/python.exe guarda en pyvenv.cfg la ruta ABSOLUTA del
+// interprete base (home=C:\Users\<user>\...\PythonXY). Si el venv se copio
+// de otro PC, esa ruta no existe en destino y Python sale con codigo 103
+// ("No Python at ..."). La cura no es tocar Node sino recrear el venv en
+// local. Ver Pensadero_Doctor.bat / Pensadero_Install.bat.
+const VENV_BROKEN_HINT = ' — el venv puede estar roto o copiado de otro PC '
+  + '(pyvenv.cfg apunta a un Python que no existe aqui). Recrea '
+  + 'backend/python/.venv ejecutando Pensadero_Install.bat.';
+
+function looksLikeBrokenVenv(msg) {
+  return /exited with code|No Python at|cannot find|no such file|ENOENT/i.test(msg || '');
+}
+
 // Umbral de coincidencia coseno por defecto. Conservador para minimizar
 // falsos positivos. InsightFace ArcFace: same person típicamente >0.5,
 // different person <0.3.
@@ -103,7 +117,8 @@ class FaceService {
         });
       } catch (err) {
         this.unavailable = true;
-        this.lastError = `No se pudo arrancar Python: ${err.message}`;
+        this.lastError = `No se pudo arrancar Python: ${err.message}`
+          + (looksLikeBrokenVenv(err.message) ? VENV_BROKEN_HINT : '');
         return false;
       }
 
@@ -138,7 +153,8 @@ class FaceService {
         return false;
       } catch (err) {
         this.unavailable = true;
-        this.lastError = `init falló: ${err.message}`;
+        this.lastError = `init falló: ${err.message}`
+          + (looksLikeBrokenVenv(err.message) ? VENV_BROKEN_HINT : '');
         return false;
       }
     })();

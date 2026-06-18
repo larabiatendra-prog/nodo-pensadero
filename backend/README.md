@@ -443,6 +443,53 @@ Ambitos:
 ### WebSocket
 - `ws://localhost:5000/ws` — eventos de progreso de sync, scan, etc.
 
+## Modulo Python (caras + CLIP) y portabilidad entre PCs
+
+El reconocimiento facial (`face_detector.py`, InsightFace) y los embeddings de
+busqueda (`clip_extractor.py`, SigLIP-2) corren en un venv local del proyecto:
+`backend/python/.venv`. Los servicios Node (`faceService.js`, `clipService.js`)
+resuelven el interprete **siempre relativo al repo**:
+`backend/python/.venv/Scripts/python.exe` (Windows) o `.venv/bin/python` (Linux/mac).
+No hay rutas absolutas ni de usuario en el codigo.
+
+### Regla de oro: NUNCA copies `.venv` entre PCs
+
+Un venv **no es relocalizable**. Su `pyvenv.cfg` guarda la ruta ABSOLUTA del
+Python base con el que se creo, p.ej.:
+
+```
+home = C:\Users\<usuario>\AppData\Local\Programs\Python\Python310
+```
+
+El `.venv/Scripts/python.exe` es un *shim*: al arrancar lee ese `home` y salta al
+Python base. Si copias la carpeta del proyecto (con `.venv` dentro) a otro PC
+donde ese Python base no existe en la misma ruta, el shim falla:
+
+```
+No Python at '"C:\Users\<usuario>\AppData\Local\Programs\Python\Python310\python.exe"'
+```
+
+y el daemon muere con `python exited with code 103`. En la UI aparece
+**"Reconocimiento facial no disponible"**. Node esta bien; lo roto es el venv.
+
+Por eso `backend/python/.venv/` esta en `.gitignore` y **debe recrearse en cada
+PC**, no versionarse ni copiarse.
+
+### Migrar limpio a otro PC (p.ej. Dell -> NODO)
+
+1. Copia el repo **sin** `.venv`, `node_modules`, `dist`, caches ni thumbnails
+   (todos regenerables y en `.gitignore`). Lo ideal es `git clone`.
+2. En el PC destino ejecuta `Pensadero_Install.bat`. Crea el venv local, instala
+   `requirements.txt` y deja todo listo. Si encuentra un `.venv` roto o copiado
+   de otro PC (lo detecta ejecutando `python.exe --version`), lo borra y lo
+   recrea automaticamente.
+3. `Pensadero_Doctor.bat` valida el venv ejecutandolo de verdad: si esta roto
+   reporta `[FAIL] venv Python ROTO (probablemente copiado de otro PC)` y la
+   solucion exacta.
+
+Reparacion manual si hiciera falta: borra `backend/python/.venv` y relanza
+`Pensadero_Install.bat`.
+
 ## Persistencia
 
 | Archivo                          | Contenido                                |

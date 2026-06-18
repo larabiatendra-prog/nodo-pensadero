@@ -210,10 +210,27 @@ if defined SKIP_PYTHON (
     goto :models
 )
 cd /d "%ROOT%backend\python"
+
+REM Validar venv existente antes de reutilizarlo. El shim
+REM .venv\Scripts\python.exe guarda en pyvenv.cfg la ruta ABSOLUTA del Python
+REM base (home=C:\Users\<user>\...\PythonXY). Si el venv se copio de otro PC,
+REM esa ruta no existe aqui y el shim sale con codigo 103 ("No Python at ...").
+REM Por eso NO basta con comprobar que el archivo existe: hay que ejecutarlo.
+REM Si esta roto, borrarlo para recrearlo limpio en local (portabilidad).
+if exist ".venv\Scripts\python.exe" (
+    call ".venv\Scripts\python.exe" --version >nul 2>&1
+    if errorlevel 1 (
+        echo [AVISO] venv existente roto o copiado de otro PC ^(pyvenv.cfg apunta
+        echo         a un Python inexistente^). Borrando para recrearlo limpio...
+        rmdir /s /q ".venv"
+    ) else (
+        echo [OK] venv existente valido.
+    )
+)
 if not exist ".venv\Scripts\python.exe" (
     echo Creando venv en backend\python\.venv...
     python -m venv .venv
-    if %ERRORLEVEL% NEQ 0 (
+    if errorlevel 1 (
         echo [AVISO] No se pudo crear el venv. Modulo facial deshabilitado.
         goto :models
     )

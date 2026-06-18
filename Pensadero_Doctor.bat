@@ -48,8 +48,20 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 REM --- venv Python ---
+REM No basta con que exista el archivo: el shim python.exe lee pyvenv.cfg y
+REM localiza el Python base por ruta ABSOLUTA. Un venv copiado de otro PC
+REM conserva el archivo pero el shim sale con codigo 103 ("No Python at ...").
+REM Por eso lo ejecutamos de verdad para distinguir "valido" de "roto".
 if exist "%ROOT%backend\python\.venv\Scripts\python.exe" (
-    echo [OK] venv Python creado en backend\python\.venv
+    "%ROOT%backend\python\.venv\Scripts\python.exe" --version >nul 2>&1
+    if errorlevel 1 (
+        echo [FAIL] venv Python ROTO ^(probablemente copiado de otro PC: pyvenv.cfg
+        echo        apunta a un Python que no existe aqui^).
+        echo        Solucion: borra backend\python\.venv y ejecuta Pensadero_Install.bat.
+        set /a PROBLEMS+=1
+    ) else (
+        echo [OK] venv Python valido en backend\python\.venv
+    )
 ) else (
     echo [FAIL] venv Python no creado. Ejecuta Pensadero_Install.bat.
     set /a PROBLEMS+=1

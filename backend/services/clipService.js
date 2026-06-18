@@ -31,6 +31,19 @@ const EMBEDDING_DIM = 768;
 const COLD_START_TIMEOUT_MS = 120_000; // 2 min para cargar SigLIP-2 (descarga inicial ~600 MB)
 const PER_REQUEST_TIMEOUT_MS = 60_000;
 
+// Pista de diagnostico para el fallo tipico al migrar entre PCs: el shim
+// .venv/Scripts/python.exe guarda en pyvenv.cfg la ruta ABSOLUTA del
+// interprete base. Si el venv se copio de otro PC, esa ruta no existe en
+// destino y Python sale con codigo 103 ("No Python at ..."). La cura es
+// recrear el venv en local. Ver Pensadero_Doctor.bat / Pensadero_Install.bat.
+const VENV_BROKEN_HINT = ' — el venv puede estar roto o copiado de otro PC '
+  + '(pyvenv.cfg apunta a un Python que no existe aqui). Recrea '
+  + 'backend/python/.venv ejecutando Pensadero_Install.bat.';
+
+function looksLikeBrokenVenv(msg) {
+  return /exited with code|No Python at|cannot find|no such file|ENOENT/i.test(msg || '');
+}
+
 class ClipService {
   constructor() {
     this.proc = null;
@@ -93,7 +106,8 @@ class ClipService {
           },
         });
       } catch (err) {
-        this.lastError = `No se pudo arrancar Python: ${err.message}`;
+        this.lastError = `No se pudo arrancar Python: ${err.message}`
+          + (looksLikeBrokenVenv(err.message) ? VENV_BROKEN_HINT : '');
         this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
         this.consecutiveFailures++;
         return false;
@@ -131,7 +145,8 @@ class ClipService {
         console.warn('[clipService] init fallo:', this.lastError);
         return false;
       } catch (err) {
-        this.lastError = `init fallo: ${err.message}`;
+        this.lastError = `init fallo: ${err.message}`
+          + (looksLikeBrokenVenv(err.message) ? VENV_BROKEN_HINT : '');
         this.cooldownUntil = Date.now() + FAIL_COOLDOWN_MS;
         this.consecutiveFailures++;
         console.warn('[clipService] init fallo:', err.message);

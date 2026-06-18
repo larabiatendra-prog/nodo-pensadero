@@ -20,6 +20,7 @@ const crypto = require('crypto');
 // Analizador de colores (stateless - se importa directamente)
 const colorAnalyzer = require('../colorAnalyzer');
 const { atomicWriteFile, quarantineCorrupt } = require('../utils/jsonStore');
+const mediaIdentity = require('../utils/mediaIdentity');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -63,7 +64,10 @@ module.exports = function createSystemRoutes(deps) {
       const data = await fs.readFile(PATHS_CONFIG_FILE, 'utf-8').catch(() => null);
       if (data !== null) {
         try {
-          return JSON.parse(data);
+          // Migracion in-memory al esquema portable (reutiliza el `id` existente
+          // como libraryId, rellena displayName/role si faltan). No reescribe el
+          // archivo aqui: se persiste en el proximo saveScanPaths (sync/toggle).
+          return mediaIdentity.migrateScanPaths(JSON.parse(data));
         } catch (error) {
           // Corrupto y NO regenerable: cuarentena en vez de devolver el default
           // (que un saveScanPaths posterior persistiría, borrando las bibliotecas).
@@ -75,14 +79,14 @@ module.exports = function createSystemRoutes(deps) {
 
     // Configuración por defecto
     const mediaFiles = getMediaFiles();
-    return [{
+    return [mediaIdentity.ensureScanPathSchema({
       id: 'default',
       path: CONTENT_DIR,
       isActive: true,
       lastScan: new Date().toISOString(),
       fileCount: mediaFiles.length,
       status: 'connected'
-    }];
+    })];
   }
 
   /**
@@ -387,14 +391,14 @@ module.exports = function createSystemRoutes(deps) {
         });
       }
 
-      const newPathConfig = {
+      const newPathConfig = mediaIdentity.ensureScanPathSchema({
         id: crypto.randomBytes(8).toString('hex'),
         path: newPath,
         isActive: false,
         lastScan: null,
         fileCount: 0,
         status: 'disconnected'
-      };
+      });
 
       paths.push(newPathConfig);
       await saveScanPaths(paths);
@@ -454,8 +458,9 @@ module.exports = function createSystemRoutes(deps) {
       const totalFiles = await countMediaFiles(pathConfig.path);
       console.log(`📊 Total de archivos multimedia en ${pathConfig.path}: ${totalFiles}`);
 
-      // Escanear archivos de esta ruta específica
-      const scanResult = await scanDirectory(pathConfig.path, pathConfig.path, totalFiles, 0);
+      // Escanear archivos de esta ruta específica. Se pasa pathConfig.id como
+      // libraryId para que cada archivo reciba su mediaKey portable.
+      const scanResult = await scanDirectory(pathConfig.path, pathConfig.path, totalFiles, 0, pathConfig.id);
 
       // Procesar miniaturas para videos nuevos
       let videoCount = 0;
@@ -569,6 +574,58 @@ module.exports = function createSystemRoutes(deps) {
         success: false,
         error: 'Error cambiando estado de ruta'
       });
+    }
+  });
+
+  /**
+   * PATCH /api/scan-paths/:id
+   * Edita una biblioteca CONSERVANDO su id (libraryId estable). Sirve para
+   * REMAPEAR la raiz cuando cambia la letra de unidad o se mueve el disco:
+   * D:\Fotos -> K:\Fotos. Como el libraryId no cambia y los relativePath de los
+   * archivos siguen iguales, las mediaKey portables se conservan -> favoritos,
+   * notas y colecciones NO se pierden.
+   *
+   * Body (todos opcionales): { path, displayName, role, isActive }
+   */
+  router.patch('/scan-paths/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { path: newPath, displayName, role, isActive } = req.body || {};
+
+      const paths = await loadScanPaths();
+      const pathConfig = paths.find(p => p.id === id);
+      if (!pathConfig) {
+        return res.status(404).json({ success: false, error: 'Biblioteca no encontrada' });
+      }
+
+      if (typeof newPath === 'string' && newPath.trim() && newPath !== pathConfig.path) {
+        // Validar accesibilidad de la nueva raiz antes de remapear.
+        try {
+          await fs.access(newPath);
+        } catch {
+          return res.status(400).json({ success: false, error: 'La nueva ruta no existe o no es accesible' });
+        }
+        // Evitar duplicar la ruta de otra biblioteca.
+        if (paths.some(p => p.id !== id && p.path === newPath)) {
+          return res.status(400).json({ success: false, error: 'Esa ruta ya pertenece a otra biblioteca' });
+        }
+        pathConfig.path = newPath;
+        pathConfig.status = isActive === false ? 'disconnected' : 'connected';
+        console.log(`🔀 Biblioteca remapeada (id estable ${id}): ${newPath}`);
+      }
+
+      if (typeof displayName === 'string') pathConfig.displayName = displayName.trim() || mediaIdentity.defaultLibraryDisplayName(pathConfig.path);
+      if (typeof role === 'string' || role === null) pathConfig.role = role || null;
+      if (typeof isActive === 'boolean') {
+        pathConfig.isActive = isActive;
+        pathConfig.status = isActive ? 'connected' : 'disconnected';
+      }
+
+      await saveScanPaths(paths);
+      res.json({ success: true, data: pathConfig });
+    } catch (error) {
+      console.error('❌ Error editando biblioteca:', error);
+      res.status(500).json({ success: false, error: 'Error editando biblioteca' });
     }
   });
 

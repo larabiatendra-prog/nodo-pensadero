@@ -49,6 +49,7 @@ const createAliasRoutes = require('./routes/aliasRoutes');
 const createNotesRoutes = require('./routes/notesRoutes');
 const aliasTable = require('./aliasTable');
 const folderNames = require('./folderNames');
+const mediaIdentity = require('./utils/mediaIdentity');
 const clipIndex = require('./clipIndex');
 const spacesRegistry = require('./spacesRegistry');
 const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
@@ -602,7 +603,7 @@ function svgPlaceholder(label, fileName, bg) {
 
 // === ESCANEO ===
 
-async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles = 0) {
+async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles = 0, libraryId = null) {
   const files = [];
   let newFiles = 0, cachedFiles = 0, modifiedFiles = 0;
   let lastSaveTime = Date.now();
@@ -619,7 +620,7 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
         // el escaner re-indexaria sus propios thumbnails .jpg como medios
         // (duplicados que se persisten en media_cache.json).
         if (entry.name.startsWith('.')) continue;
-        const sub = await scanDirectory(fullPath, baseDir, totalFiles, processedFiles);
+        const sub = await scanDirectory(fullPath, baseDir, totalFiles, processedFiles, libraryId);
         files.push(...sub.files);
         newFiles += sub.stats.newFiles;
         cachedFiles += sub.stats.cachedFiles;
@@ -637,6 +638,19 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
         if (fileCache.has(fullPath)) {
           const cached = fileCache.get(fullPath);
           if (cached.hash === currentHash) {
+            // Backfill de identidad portable en entradas de cache antiguas (que
+            // se cachearon antes de existir mediaKey). No invalida el cache ni
+            // toca el id md5: solo anade los campos portables que falten.
+            if (libraryId && cached.fileData && !cached.fileData.mediaKey) {
+              const relCached = path.relative(baseDir, fullPath);
+              const mkCached = mediaIdentity.makeMediaKey(libraryId, relCached);
+              if (mkCached) {
+                cached.fileData.libraryId = libraryId;
+                cached.fileData.relativePath = mediaIdentity.normalizeRelativePath(relCached);
+                cached.fileData.mediaKey = mkCached;
+                cached.fileData.mediaId = mediaIdentity.mediaIdFromKey(mkCached);
+              }
+            }
             // Re-mergear catalog siempre (puede haber cambiado fuera de banda)
             const merged = await catalogReader.applyCatalog(cached.fileData);
             files.push(merged);
@@ -671,6 +685,10 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
 
         const relativePath = path.relative(baseDir, fullPath);
         const fileId = generateFileId(fullPath);
+        // Identidad portable: mediaKey = "<libraryId>:<relativePathNorm>". No
+        // depende de la ruta absoluta; sobrevive al remapeo de la raiz de la
+        // biblioteca. El id md5 se conserva como token de runtime (URLs).
+        const mediaKey = libraryId ? mediaIdentity.makeMediaKey(libraryId, relativePath) : '';
 
         // baseDir es la raiz de biblioteca (scanRoot): el thumbnail se guarda en
         // <baseDir>\.pensadero\thumbnails.
@@ -703,6 +721,10 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
 
         const fileData = {
           id: fileId,
+          libraryId: libraryId || null,
+          relativePath: mediaIdentity.normalizeRelativePath(relativePath),
+          mediaKey: mediaKey || null,
+          mediaId: mediaKey ? mediaIdentity.mediaIdFromKey(mediaKey) : null,
           name: entry.name,
           path: relativePath,
           fullPath,
@@ -797,7 +819,7 @@ async function performSync() {
         total: totalFiles
       });
 
-      const result = await scanDirectory(pathConfig.path, pathConfig.path, totalFiles, 0);
+      const result = await scanDirectory(pathConfig.path, pathConfig.path, totalFiles, 0, pathConfig.id);
       allFiles.push(...result.files);
       totalStats.newFiles += result.stats.newFiles;
       totalStats.cachedFiles += result.stats.cachedFiles;

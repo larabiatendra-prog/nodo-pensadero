@@ -67,7 +67,7 @@ REM arranque: caras/CLIP quedan degradados pero el resto de Pensadero funciona.
 if exist "%ROOT%backend\python\.venv\Scripts\python.exe" (
     call "%ROOT%backend\python\.venv\Scripts\python.exe" --version >nul 2>&1
     if errorlevel 1 (
-        echo [AVISO] El entorno Python .venv no arranca (probable copia entre PCs).
+        echo [AVISO] El entorno Python .venv no arranca; probable copia entre PCs.
         echo         Reparalo con Pensadero_Install.bat o Pensadero_Doctor.bat.
         echo         Caras y busqueda visual no funcionaran hasta repararlo.
     )
@@ -79,10 +79,10 @@ if exist "%ROOT%backend\python\.venv\Scripts\python.exe" (
 REM Build CONDICIONAL: solo construir si falta dist. Tras cambiar codigo,
 REM reconstruye a mano con: npm run build
 if not exist "%ROOT%dist\index.html" (
-    echo Construyendo build de produccion (no existe dist)...
+    echo Construyendo build de produccion porque no existe dist...
     cd /d "%ROOT%"
     call npm run build
-    if %ERRORLEVEL% NEQ 0 (
+    if errorlevel 1 (
         echo.
         echo [ERROR] El build fallo. Pensadero NO se arrancara.
         echo         Revisa los errores de arriba y vuelve a ejecutar Pensadero_Start.bat.
@@ -97,7 +97,7 @@ REM Asegurar que Ollama corre (si esta instalado). Sin Ollama, la IA local no fu
 where ollama >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     powershell -NoProfile -Command "try { $r = Invoke-WebRequest -Uri http://localhost:11434/ -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
-    if %ERRORLEVEL% NEQ 0 (
+    if errorlevel 1 (
         echo Arrancando servicio Ollama...
         start "" /B ollama serve >nul 2>&1
         timeout /t 3 /nobreak >nul

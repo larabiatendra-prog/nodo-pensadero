@@ -210,14 +210,36 @@ if "%ORT_PROVIDER%"=="CUDA" (
 )
 :skip_cuda
 
+REM --- Portabilidad ---
+echo.
+echo --------------------------------------------------------------
+echo  Portabilidad
+echo --------------------------------------------------------------
+set "PORTPENDING=0"
+where node >nul 2>&1
+if %ERRORLEVEL% NEQ 0 goto :after_port
+node "%ROOT%backend\tools\portability-report.js"
+if errorlevel 1 set "PORTPENDING=1"
+:after_port
+
 REM --- Resumen ---
 echo.
 echo ==============================================================
 if "%PROBLEMS%"=="0" (
-    echo                  TODO OK - Pensadero listo
-    echo ==============================================================
-    echo.
-    echo  Arranca con Pensadero_Start.bat
+    if "%PORTPENDING%"=="0" (
+        echo                  TODO OK - Pensadero listo
+        echo ==============================================================
+        echo.
+        echo  Arranca con Pensadero_Start.bat
+    ) else (
+        echo            Pensadero listo - portabilidad pendiente
+        echo ==============================================================
+        echo.
+        echo  Revisa la seccion Portabilidad de arriba. Para migrar el estado
+        echo  humano a identidad portable ^(dry-run primero^):
+        echo     node backend\tools\migrate-portable-state.js
+        echo     node backend\tools\migrate-portable-state.js --apply
+    )
 ) else (
     echo  %PROBLEMS% problema^(s^) detectado^(s^)
     echo ==============================================================
@@ -226,5 +248,4 @@ if "%PROBLEMS%"=="0" (
 )
 echo.
 pause
-endlocal
-exit /b 0
+if "%PROBLEMS%"=="0" ( endlocal ^& exit /b 0 ) else ( endlocal ^& exit /b 1 )

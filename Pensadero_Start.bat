@@ -12,6 +12,12 @@ echo.
 set "ROOT=%~dp0"
 set "NODE_DIR=%ROOT%tools\node"
 
+REM ============================================================
+REM  PREFLIGHT: Start es el unico entrypoint. Comprueba lo minimo
+REM  y repara o delega en Install. Idempotente: si todo esta bien,
+REM  no toca nada y arranca.
+REM ============================================================
+
 if exist "%NODE_DIR%\node.exe" goto :use_portable
 
 where node >nul 2>&1
@@ -55,18 +61,36 @@ if not exist "%ROOT%backend\.env" (
     )
 )
 
-REM Reconstruir SIEMPRE antes de arrancar. Garantiza que se sirve el codigo
-REM actual y no un dist/ viejo. El coste (unos segundos) es preferible a servir
-REM una build obsoleta sin darse cuenta.
-echo Construyendo build de produccion...
-cd /d "%ROOT%"
-call npm run build
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo [ERROR] El build fallo. Pensadero NO se arrancara.
-    echo         Revisa los errores de arriba y vuelve a ejecutar Pensadero_Start.bat.
-    pause
-    exit /b 1
+REM Validar que el entorno Python ARRANCA, no solo que existe (un .venv copiado
+REM entre PCs puede tener rutas absolutas rotas: code 103). No bloquea el
+REM arranque: caras/CLIP quedan degradados pero el resto de Pensadero funciona.
+if exist "%ROOT%backend\python\.venv\Scripts\python.exe" (
+    call "%ROOT%backend\python\.venv\Scripts\python.exe" --version >nul 2>&1
+    if errorlevel 1 (
+        echo [AVISO] El entorno Python .venv no arranca (probable copia entre PCs).
+        echo         Reparalo con Pensadero_Install.bat o Pensadero_Doctor.bat.
+        echo         Caras y busqueda visual no funcionaran hasta repararlo.
+    )
+) else (
+    echo [AVISO] Falta backend\python\.venv. Caras y busqueda visual no funcionaran.
+    echo         Ejecuta Pensadero_Install.bat para instalarlo.
+)
+
+REM Build CONDICIONAL: solo construir si falta dist. Tras cambiar codigo,
+REM reconstruye a mano con: npm run build
+if not exist "%ROOT%dist\index.html" (
+    echo Construyendo build de produccion (no existe dist)...
+    cd /d "%ROOT%"
+    call npm run build
+    if %ERRORLEVEL% NEQ 0 (
+        echo.
+        echo [ERROR] El build fallo. Pensadero NO se arrancara.
+        echo         Revisa los errores de arriba y vuelve a ejecutar Pensadero_Start.bat.
+        pause
+        exit /b 1
+    )
+) else (
+    echo [OK] Build existente en dist. Para reconstruir tras cambios: npm run build
 )
 
 REM Asegurar que Ollama corre (si esta instalado). Sin Ollama, la IA local no funciona.
@@ -81,6 +105,18 @@ if %ERRORLEVEL% EQU 0 (
 ) else (
     echo [AVISO] Ollama no instalado. Busqueda natural y escaneo visual no funcionaran.
     echo         Ejecuta Pensadero_Doctor.bat para diagnostico.
+)
+
+REM Liberar instancia previa de Pensadero si quedo una ventana abierta (reuso
+REM seguro: solo mata ventanas cuyo titulo sea Pensadero, no procesos ajenos).
+taskkill /FI "WINDOWTITLE eq Pensadero*" /T /F >nul 2>&1
+
+REM Comprobar que el puerto 5000 esta libre. Si lo ocupa otro proceso, avisar
+REM (no matamos a ciegas un PID que podria no ser nuestro).
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"
+if %ERRORLEVEL% NEQ 0 (
+    echo [AVISO] El puerto 5000 esta ocupado por otro proceso.
+    echo         Cierra la aplicacion que lo use. Pensadero intentara arrancar igual.
 )
 
 REM Origen unico: el backend Node sirve el bundle (dist/) Y la API en el mismo

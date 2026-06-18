@@ -63,9 +63,11 @@ Todo en `backend/`, en disco local, formato JSON plano:
 - `media_cache.json` — cache de metadatos de archivos escaneados (la fuente de verdad operativa).
 - `scan_paths.json` — rutas de bibliotecas que el usuario ha añadido.
 - `<scanRoot>/.pensadero/thumbnails/` — miniaturas por biblioteca (regenerables, junto a cada disco escaneado). Es el destino principal; se sirven por `GET /api/thumbnails/:fileId`. `backend/thumbnails/` queda como fallback legacy.
-- `embeddings_index.json` / `visual_search_data/` — índices de búsqueda vectorial (regenerables).
+- `clip_index.json` — índice de embeddings CLIP/SigLIP-2 para búsqueda visual (regenerable desde los `_pensadero.json` por carpeta). Indexado por `mediaId` (md5 de la ruta, mismo que el `id` de runtime).
 
 Ninguno de estos archivos debe versionarse en git (ver `.gitignore`).
+
+**Identidad portable (`backend/utils/mediaIdentity.js`):** la identidad persistente de un archivo es la `mediaKey = "<libraryId>:<relativePathNorm>"`, no su ruta absoluta. `libraryId` = el `id` estable de `scan_paths.json` (hex aleatorio, no depende de la ruta). El `id = md5(rutaAbsoluta)` se conserva solo como token de runtime para URLs de stream/thumbnail. Las bibliotecas se remapean (cambio de letra de unidad) con `PATCH /api/scan-paths/:id` conservando el `id`. Migrador de estado: `backend/tools/migrate-portable-state.js` (dry-run + `--apply`, con backup). Diagnóstico: `backend/tools/portability-report.js` (lo invoca Doctor). Detalle en `GUIA_INSTALACION_NODO.md` → "Portabilidad real". Pendiente: el frontend de favoritos/notas/colecciones aún referencia por ruta/`id`; el almacén ya soporta `mediaKey`.
 
 ## Bibliotecas típicas
 

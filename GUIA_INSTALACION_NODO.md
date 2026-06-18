@@ -322,16 +322,139 @@ Si quieres llevarte cosas del entorno de pruebas del Dell a NODO:
 |---|---|---|
 | `backend/favorites_persistent.json` | Sí, si quieres | Tus favoritos |
 | `backend/collections_persistent.json` | Sí, si quieres | Colecciones manuales |
+| `backend/notes_persistent.json` | **Sí** | Notas humanas (no regenerable) |
+| `backend/data/folder_names.json` | **Sí** | Nombres de presentacion por carpeta (no regenerable) |
 | `backend/data/people_registry.json` | **Sí** | Personas que has registrado |
-| `backend/data/people/<id>/*.jpg` | **Sí** | Fotos de referencia de cada persona |
-| `backend/scan_paths.json` | **NO** | Letras de unidad distintas |
+| `backend/data/people/<id>/*` | **Sí** | Fotos + embeddings de cada persona |
+| `backend/data/spaces_registry.json` | **Sí** | Espacios (lugares) registrados |
+| `backend/scan_paths.json` | **Sí** (ver Portabilidad real) | Conserva el `id` de cada biblioteca; solo se **remapea** la ruta si cambia la letra de unidad |
 | `backend/media_cache.json` | **NO** | Se reconstruye al escanear |
-| `backend/thumbnails/` | **NO** | Se regenera |
+| `backend/clip_index.json` | **NO** | Se reconstruye desde los `_pensadero.json` |
+| `backend/thumbnails/` y `<disco>/.pensadero/thumbnails/` | **NO** | Se regeneran |
 | `node_modules/`, `dist/`, `.venv/` | **NO** | Los recrea el instalador |
 
-Copia solo lo marcado "Sí" antes de lanzar el instalador en NODO. El resto, deja que se construya en limpio.
+Copia lo marcado "Sí". Con el modelo de **identidad portable** (ver siguiente
+seccion), `scan_paths.json` ya NO hay que descartarlo: conserva el `id` estable
+de cada biblioteca y, si la letra de unidad cambia, solo remapeas su ruta —
+favoritos, colecciones, notas y nombres de carpeta se conservan.
 
 ---
+
+## Portabilidad real
+
+Pensadero está diseñado para ser **portable a nivel práctico**: puedes mover la
+carpeta del proyecto a cualquier ruta, mover el archivo audiovisual a otra letra
+de unidad, y conservar tus datos humanos. Esta sección explica el modelo y cómo
+hacerlo.
+
+### Identidad portable (el "por qué")
+
+El problema histórico: el `id` de cada archivo era el `md5` de su **ruta
+absoluta**. Si una biblioteca pasaba de `D:\Fotos` a `K:\Fotos`, ese id cambiaba
+y se rompían favoritos / notas / colecciones.
+
+La solución: la identidad PERSISTENTE de un archivo es la **mediaKey**:
+
+```
+mediaKey = "<libraryId>:<relativePathNormalizado>"
+```
+
+- `libraryId`: id estable de la biblioteca (el campo `id` de `scan_paths.json`,
+  un hex aleatorio que **no** depende de la ruta). Sobrevive al cambio de letra.
+- `relativePath`: ruta del archivo DENTRO de la biblioteca, normalizada (NFC +
+  separadores `/` + minúsculas).
+
+Consecuencia:
+- Si cambia **solo la raíz** de la biblioteca (`D:\Fotos` → `K:\Fotos`), la
+  mediaKey **no cambia** → tus datos se conservan.
+- Si mueves un archivo **dentro** de la biblioteca, su mediaKey cambia (es otro
+  sitio). Es el comportamiento deseado.
+
+El `id` `md5(rutaAbsoluta)` se mantiene solo como **token de runtime** para las
+URLs de stream/thumbnail; ya no es identidad guardada.
+
+### Qué se puede copiar / qué se regenera / qué NO se debe borrar
+
+| Categoría | Ejemplos | Acción al mover |
+|---|---|---|
+| **Regenerable** (borrar antes de copiar, se reconstruye solo) | `node_modules/`, `backend/node_modules/`, `backend/python/.venv/`, `dist/`, `backend/media_cache.json`, `backend/clip_index.json`, thumbnails | El instalador / el primer escaneo los recrean |
+| **Datos humanos NO regenerables** (copiar siempre) | personas (`backend/data/people*`), espacios (`spaces_registry.json`), favoritos, colecciones, `notes_persistent.json`, `data/folder_names.json` | Copiar tal cual; sobreviven |
+| **Configuración de bibliotecas** | `backend/scan_paths.json` | Copiar; remapear la ruta si cambió la letra (conserva el `id`) |
+
+### Cómo mover Pensadero de carpeta
+
+1. Copia la carpeta del proyecto a la nueva ubicación.
+2. (Opcional, ahorra espacio) borra antes `node_modules/`, `backend/node_modules/`,
+   `backend/python/.venv/`, `dist/` — se regeneran.
+3. Doble click en `Pensadero_Start.bat`. El preflight detecta lo que falta y, si
+   hace falta, llama al instalador.
+
+Nada en el código depende de una ruta absoluta del repo como identidad: Node y
+los servicios Python se resuelven relativos al repo.
+
+### Cómo remapear una biblioteca si cambia la letra de unidad
+
+Si `D:\Fotos` pasa a ser `K:\Fotos`, **no** borres ni vuelvas a añadir la
+biblioteca (eso generaría un `id` nuevo y perderías el vínculo). En su lugar,
+**remapea** conservando el `id`:
+
+- Opción API (recomendada):
+  ```powershell
+  # Sustituye <id> por el id de la biblioteca en scan_paths.json
+  Invoke-RestMethod -Method Patch -Uri "http://localhost:5000/api/scan-paths/<id>" `
+    -ContentType "application/json" -Body '{ "path": "K:\\Fotos" }'
+  ```
+- Opción manual: edita `backend/scan_paths.json` y cambia solo el campo `path`
+  de esa entrada (deja `id` igual). Reinicia.
+
+Como el `libraryId` no cambia y los `relativePath` siguen iguales, las mediaKey
+se conservan: favoritos, notas, colecciones y nombres de carpeta siguen ligados.
+
+> Sigue siendo recomendable asignar **letra fija** a cada disco externo en
+> "Administración de discos" de Windows. El remapeo es el plan B cuando no se puede.
+
+### Migrar el estado a identidad portable (migrador)
+
+Hay un script que pasa el estado humano viejo (claves por ruta/`md5`) a mediaKey,
+de forma **segura**:
+
+```powershell
+cd backend
+# 1) DRY-RUN: no escribe nada, solo informa que haria
+node tools/migrate-portable-state.js
+# 2) Aplicar (hace backup .bak de cada JSON antes de tocarlo)
+node tools/migrate-portable-state.js --apply
+```
+
+- Es **aditivo** donde puede (folder_names, notas, favoritos): añade la clave
+  portable sin borrar la vieja, así nunca se pierde nada.
+- Lo que no puede mapear queda intacto y se reporta como "no resuelto".
+- Conviene ejecutarlo **tras un escaneo** (para que `media_cache.json` tenga el
+  mapa ruta→mediaKey de todos los archivos).
+
+`Pensadero_Doctor.bat` incluye una sección **Portabilidad** que te dice qué queda
+pendiente (bibliotecas que no existen, `library_id` duplicados, claves legacy
+pendientes de migrar, entradas de cache sin mediaKey).
+
+### Estado actual y trabajo restante
+
+Ya es portable de punta a punta:
+- **Identidad de archivo** (mediaKey) en el escaneo y en `/api/files`.
+- **Bibliotecas**: `id` estable + remapeo de ruta (PATCH) conservando favoritos/notas/colecciones.
+- **Nombres de carpeta** (`folder_names`): clave portable con dual-read (convive con la legacy).
+- **Personas y espacios**: ya eran identidades abstractas, no dependían de la ruta.
+- **Notas de sesión**: se derivan del nombre, no de la ruta.
+
+Pendiente (requiere prueba manual de la UI, sin datos en riesgo hoy):
+- **Favoritos, notas de archivo y colecciones en el frontend** todavía referencian
+  por ruta normalizada / `id` md5. El almacén y el migrador ya soportan mediaKey,
+  pero falta que el frontend envíe/compare por `file.mediaKey`. Recomendación de
+  implementación: traducir en el **límite del backend** (los endpoints de
+  favoritos/notas/colecciones reciben ruta/`id` y traducen a mediaKey usando la
+  lista en memoria de archivos; al devolver, traducen mediaKey→ruta/`id` actual).
+  Así el frontend no cambia y se evita tocar las decenas de call-sites de
+  `App.tsx`. Hasta entonces, estos tres tipos **no** sobreviven a un remapeo de
+  letra (pero sí folder_names, que es donde hay datos reales).
 
 ## Acceso directo en el escritorio
 
@@ -411,3 +534,4 @@ Todo lo que **no** se versiona en git está en `.gitignore`. Nada va a la nube.
 | 2026-06-01 | Config objetivo NODO: `backend/.env.nodo` (VLM `gemma3:12b`, búsqueda `qwen2.5:7b-instruct`, vídeo 3 frames). VLM sin fallback automático (fallback manual a `qwen2.5vl:7b`). Nueva sección "Validación GPU en NODO (Blackwell)". Drift corregido (`llama3.1:8b` ya no es modelo de búsqueda; tabla de vars no sugiere subir frames). |
 | 2026-06-01 | VLM principal cambiado de `internvl3:14b` a `gemma3:12b`: `internvl3` NO existe en la library oficial de Ollama (registry da 404), el pull fallaría. `gemma3:12b` (~8 GB, verificado en registry) cabe holgado en 16 GB con caras+CLIP. Instalador queda plug-and-play. |
 | 2026-06-06 | Catalogo VLM seleccionable: `gemma4:12b` (default/produccion), `gemma4:27b` (experimento), `gemma3:12b` (legacy/fallback). El selector de la UI muestra siempre los tres; los no instalados salen como "pendiente de descarga" con su `ollama pull`. Default `VLM_MODEL` movido a `gemma4:12b`. Regex de deteccion VLM ampliada `gemma3`→`gemma[3-9]`. Sin fallback automatico (cambio manual). `qwen2.5vl:32b` descartado (no cabe en 16 GB). |
+| 2026-06-18 | Identidad portable (mediaKey = libraryId:relativePath). Nueva seccion "Portabilidad real". `scan_paths.json` conserva un `id` estable por biblioteca + PATCH para remapear la ruta sin perder favoritos/notas/colecciones. `folder_names` portable (dual-read). Migrador `backend/tools/migrate-portable-state.js` (dry-run + --apply, con backup). Doctor: seccion Portabilidad + exit code. Start: preflight (valida que el .venv arranca, build condicional, libera puerto). Pendiente: switch del frontend de favoritos/notas/colecciones a mediaKey. |

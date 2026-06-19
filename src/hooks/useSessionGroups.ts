@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { MediaFile } from '../types';
-import { getSessionKey, parseSmartLabel } from '../utils/filenameParser';
+import { getFileSessionKey, getSessionLabelSource, parseSmartLabel } from '../utils/filenameParser';
 
 export const MIN_GROUP_SIZE = 5;
 export const EXPANDED_PREVIEW = 12;
@@ -23,7 +23,7 @@ function buildOrderedGroups(allFiles: MediaFile[]): { key: string | null; files:
   const order: (string | null)[] = [];
 
   for (const file of allFiles) {
-    const key = getSessionKey(file.name);
+    const key = getFileSessionKey(file);
     if (!groupMap.has(key)) {
       groupMap.set(key, []);
       order.push(key);
@@ -107,12 +107,12 @@ export function useSessionGroups(
         }
       } else if (!expandedGroups.has(key!)) {
         // Grupo colapsado — 1 slot (tarjeta mosaico)
-        const label = parseSmartLabel(files[0].name);
+        const label = parseSmartLabel(getSessionLabelSource(files[0]));
         items.push({ type: 'session-card', key: key!, files, label, dimmed: anyExpanded });
         slotsUsed++;
       } else {
         // Grupo expandido: tarjeta de inicio + archivos + (show-more | tarjeta de fin)
-        const label = parseSmartLabel(files[0].name);
+        const label = parseSmartLabel(getSessionLabelSource(files[0]));
         items.push({ type: 'session-start', key: key!, firstFile: files[0], label });
         slotsUsed++;
         if (slotsUsed >= visibleSlotCount) break;

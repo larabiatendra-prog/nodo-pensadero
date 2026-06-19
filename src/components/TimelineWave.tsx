@@ -21,12 +21,16 @@ interface TimelineWaveProps {
   sortedDateValues: number[];
   // Numero de items actualmente cargados (scroll infinito).
   loadedCount: number;
+  // Al pinchar la onda: indice de mes continuo bajo el cursor + fraccion vertical
+  // (0=arriba/reciente, 1=abajo/antiguo). App lo traduce a scroll real. Si se
+  // omite, la onda sigue siendo pasiva (solo informa).
+  onSeek?: (monthIndex: number, frac: number) => void;
 }
 
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
 // YYYYMMDD -> indice de mes continuo (year*12 + (month-1)); -1 si no hay fecha.
-function monthIndexOf(v: number): number {
+export function monthIndexOf(v: number): number {
   if (!v) return -1;
   const year = Math.floor(v / 10000);
   const month = Math.floor(v / 100) % 100;
@@ -34,7 +38,7 @@ function monthIndexOf(v: number): number {
   return year * 12 + (month - 1);
 }
 
-const TimelineWave: React.FC<TimelineWaveProps> = ({ sortedDateValues, loadedCount }) => {
+const TimelineWave: React.FC<TimelineWaveProps> = ({ sortedDateValues, loadedCount, onSeek }) => {
   // ── Buckets mensuales sobre TODA la biblioteca ──────────────────────────
   const model = React.useMemo(() => {
     const counts = new Map<number, number>();
@@ -159,7 +163,7 @@ const TimelineWave: React.FC<TimelineWaveProps> = ({ sortedDateValues, loadedCou
 
   return (
     <div
-      className="hidden md:flex fixed right-0 top-20 bottom-6 z-30 select-none pointer-events-none"
+      className="hidden md:flex fixed right-0 top-6 bottom-32 z-30 select-none pointer-events-none"
       aria-hidden="true"
     >
       <div className="relative h-full flex items-stretch pr-1">
@@ -178,12 +182,21 @@ const TimelineWave: React.FC<TimelineWaveProps> = ({ sortedDateValues, loadedCou
 
         {/* Onda */}
         <div
-          className="relative w-12 h-full pointer-events-auto"
+          className={`relative w-12 h-full pointer-events-auto ${onSeek ? 'cursor-pointer' : ''}`}
+          title={onSeek ? 'Pincha para saltar a esa fecha' : undefined}
           onMouseMove={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             setHoverY(Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)));
           }}
           onMouseLeave={() => setHoverY(null)}
+          onClick={(e) => {
+            if (!onSeek) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            const frac = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+            // frac vertical -> mes continuo bajo el cursor (mismo mapeo que el tooltip).
+            const mi = Math.round(model.maxIdx - frac * (totalMonths - 1));
+            onSeek(mi, frac);
+          }}
         >
           <svg
             className="w-full h-full overflow-visible"

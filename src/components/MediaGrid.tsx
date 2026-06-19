@@ -15,6 +15,9 @@ interface MediaGridProps {
   sessionItems?: SessionItem[];
   onExpandGroup?: (key: string) => void;
   onCollapseGroup?: (key: string) => void;
+  // Click en el fondo de la grid (hueco entre tarjetas), fuera de cualquier
+  // tarjeta: colapsa la sesion abierta.
+  onCollapseAll?: () => void;
   onShowMoreGroup?: (key: string) => void;
   onSelectSessionFiles?: (files: MediaFile[]) => void;
   // Notas humanas por sesion: mapa session key -> nota, y callback de edicion.
@@ -61,6 +64,7 @@ export default function MediaGrid({
   sessionItems,
   onExpandGroup,
   onCollapseGroup,
+  onCollapseAll,
   onShowMoreGroup,
   onSelectSessionFiles,
   sessionNotes,
@@ -132,8 +136,25 @@ export default function MediaGrid({
 
   // ── Modo sesiones: CSS grid con items mixtos ──────────────────────────────
   if (sessionItems && sessionItems.length > 0 && viewMode === 'grid') {
+    // Una tarjeta atenuada (fuera de la sesion abierta) actua como "fondo":
+    // pulsarla colapsa la sesion en vez de abrir su preview. Capture para
+    // interceptar antes que el onClick propio de la tarjeta.
+    const wrapDimmed = (node: React.ReactNode, key: string) => (
+      <div
+        key={key}
+        onClickCapture={(e) => { e.stopPropagation(); e.preventDefault(); onCollapseAll?.(); }}
+      >
+        {node}
+      </div>
+    );
     return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-6 items-start">
+      <div
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-6 items-start"
+        // Solo el fondo de la grid (huecos) tiene como target el propio div;
+        // los clicks en tarjetas llegan a sus hijos. Asi colapsamos al pulsar
+        // fuera de cualquier tarjeta sin interceptar los clicks de las tarjetas.
+        onClick={(e) => { if (e.target === e.currentTarget) onCollapseAll?.(); }}
+      >
         {sessionItems.map((item, idx) => {
           if (item.type === 'session-header') {
             return (
@@ -159,7 +180,7 @@ export default function MediaGrid({
             );
           }
           if (item.type === 'session-card') {
-            return (
+            const card = (
               <SessionCard
                 key={`session-${item.key}`}
                 sessionKey={item.key}
@@ -173,6 +194,7 @@ export default function MediaGrid({
                 dimmed={item.dimmed}
               />
             );
+            return item.dimmed ? wrapDimmed(card, `dim-session-${item.key}`) : card;
           }
           if (item.type === 'session-show-more') {
             return (
@@ -185,7 +207,9 @@ export default function MediaGrid({
             );
           }
           // type === 'file'
-          return renderFileCard(item.file, item.dimmed);
+          return item.dimmed
+            ? wrapDimmed(renderFileCard(item.file, item.dimmed), `dim-file-${item.file.id}`)
+            : renderFileCard(item.file, item.dimmed);
         })}
       </div>
     );

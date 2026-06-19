@@ -3,6 +3,9 @@
 const DATE_REGEX = /^(.+?-\s*\d{6})/;
 const SUFFIX_REGEX = /^.+?-\s*\d{6}[_\s]*(.*)/;
 const DATE_EXTRACT_REGEX = /-\s*(\d{6})/;
+// Formato NODO / display name: fecha al INICIO "YYMMDD_Sufijo" (sin prefijo, sep "_").
+// Ejemplo: "240412_Viaje Marruecos" → fecha 240412, sufijo "Viaje Marruecos".
+const LEADING_DATE_REGEX = /^(\d{6})[_\s]+(.*)$/;
 
 const sessionKeyCache = new Map<string, string | null>();
 const smartLabelCache = new Map<string, { line1: string; line2: string }>();
@@ -13,6 +16,44 @@ const INITIATIVE_PREFIXES = /^(EDEM|MdE|Lanzadera|Angels)[_\s]*/i;
 /** Elimina la extensión de un nombre de archivo */
 function stripExtension(fileName: string): string {
   return fileName.replace(/\.[^.]+$/, '');
+}
+
+/**
+ * Quita el sufijo de enumeracion "_NNN" (>=3 digitos) que folderNames añade a
+ * cada archivo de una carpeta con >1 elemento. Asi todos los archivos de la
+ * misma carpeta comparten una unica clave de sesion.
+ */
+function stripFolderIndex(name: string): string {
+  return name.replace(/_\d{3,}$/, '');
+}
+
+/** Formatea "YYMMDD" -> "12 abr 2024", o null si no es fecha valida. */
+function formatYYMMDD(s: string): string | null {
+  const yy = parseInt(s.substring(0, 2), 10);
+  const mm = parseInt(s.substring(2, 4), 10);
+  const dd = parseInt(s.substring(4, 6), 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  const year = yy > 50 ? 1900 + yy : 2000 + yy;
+  return `${dd} ${MONTHS_ES[mm - 1]} ${year}`;
+}
+
+/**
+ * Clave de sesion de un archivo. Prioridad:
+ *  1) displayName (nombre de presentacion por carpeta) -> la CARPETA es la sesion;
+ *     se quita el sufijo "_NNN" para que todos sus archivos compartan clave.
+ *     Funciona con cualquier nombre de carpeta, lleve o no patron de fecha.
+ *  2) fallback: patron "Prefijo - YYMMDD" en el nombre fisico (libreria sin rename).
+ */
+export function getFileSessionKey(file: { name: string; displayName?: string | null }): string | null {
+  const dn = file.displayName && file.displayName.trim();
+  if (dn) return stripFolderIndex(dn);
+  return getSessionKey(file.name);
+}
+
+/** String del que derivar etiqueta/fecha: displayName (sin "_NNN") si existe, si no el nombre fisico. */
+export function getSessionLabelSource(file: { name: string; displayName?: string | null }): string {
+  const dn = file.displayName && file.displayName.trim();
+  return dn ? stripFolderIndex(dn) : file.name;
 }
 
 /**
@@ -44,6 +85,17 @@ export function parseSmartLabel(fileName: string): { line1: string; line2: strin
 
   if (smartLabelCache.has(name)) {
     return smartLabelCache.get(name)!;
+  }
+
+  // Formato NODO "YYMMDD_Sufijo" (fecha al inicio): line1 = fecha, line2 = sufijo.
+  const lead = name.match(LEADING_DATE_REGEX);
+  if (lead) {
+    const dateLabel = formatYYMMDD(lead[1]);
+    if (dateLabel) {
+      const label = { line1: dateLabel, line2: lead[2].replace(/_/g, ' ').trim() };
+      smartLabelCache.set(name, label);
+      return label;
+    }
   }
 
   const dateMatch = name.match(DATE_EXTRACT_REGEX);

@@ -39,7 +39,7 @@ function avatarFullUrl(relativePath: string): string {
 // personas entrenadas. Con > MAX se oculta totalmente y se invita a usar la
 // busqueda @nombre. Entre MIN y MAX se muestran MIN colapsadas con un "+".
 const MIN_BUBBLES = 10;
-const MAX_BUBBLES = 30;
+const MAX_BUBBLES = 28;
 
 export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: PersonBubblesProps) {
   const [persons, setPersons] = useState<Person[]>([]);

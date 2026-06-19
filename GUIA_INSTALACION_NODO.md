@@ -468,6 +468,81 @@ Para no ir a la carpeta del proyecto cada vez:
 
 ---
 
+## Navegacion por URL y dominio local amigable
+
+Desde la integracion del routing (Eje B), cada vista tiene su propia URL real
+(no `#hash`). El backend sirve `dist/` en el mismo origen que la API (`:5000`) y
+ya tiene fallback SPA, asi que un refresh directo o un enlace profundo funcionan.
+
+Rutas principales:
+
+| URL | Vista |
+| --- | --- |
+| `/` | Inicio / galeria |
+| `/rutas` | Administrar Rutas |
+| `/personas` | Personas |
+| `/espacios` | Espacios |
+| `/colecciones` | Colecciones (lista) |
+| `/colecciones/:id` | Inicio filtrado por esa coleccion |
+| `/estadisticas` | Estadisticas |
+| `/atlas` | Atlas de recuerdos |
+| `/etiquetas` | Gestion de etiquetas |
+| `/sinonimos` | Sinonimos |
+| `/busqueda-imagen` | Busqueda por imagen |
+| `/favoritos` | Inicio filtrado por favoritos |
+| `/persona/:id` | Inicio filtrado por persona |
+| `/archivo/:id` | Abre el visor del archivo sobre la galeria |
+
+### Dominio local recomendado: `pensadero.localhost`
+
+URL recomendada:
+
+```
+http://pensadero.localhost:5000/
+```
+
+Los navegadores modernos resuelven cualquier subdominio de `.localhost` a
+`127.0.0.1` por especificacion (RFC 6761). **No hay que editar el fichero hosts,
+ni usar permisos de administrador, ni instalar nada.** Funciona directamente
+porque la app y la API comparten origen (mismo host y puerto), asi que no entra
+CORS en juego.
+
+Equivalentes que tambien funcionan sin configurar nada:
+
+```
+http://localhost:5000/
+http://127.0.0.1:5000/
+http://pensadero.localhost:5000/personas
+http://pensadero.localhost:5000/archivo/<id>
+```
+
+> No usar `pensadero.local`: el sufijo `.local` esta reservado para mDNS/Bonjour
+> (RFC 6762) y en Windows con Bonjour (lo instala iTunes) da resolucion lenta o
+> intermitente. `pensadero.localhost` evita ese problema y no necesita hosts.
+
+### Alternativa: `pensadero.test` (si se quiere un nombre sin `localhost`)
+
+`.test` no se autoresuelve, asi que requiere una linea en el fichero hosts.
+Editar como administrador `C:\Windows\System32\drivers\etc\hosts` y anadir:
+
+```
+127.0.0.1 pensadero.test
+```
+
+Luego abrir `http://pensadero.test:5000/`. Es opcional; `pensadero.localhost` no
+necesita esto.
+
+### Notas
+
+- El `HOST` del backend sigue por defecto en `127.0.0.1` (solo local). Para
+  acceso desde otra maquina de la LAN se define `HOST=0.0.0.0` en `backend/.env`
+  (ver "Cosas que SI tienes que tocar manualmente").
+- Sigue en `:5000`. No se ha cambiado a puerto 80.
+- El `vite preview` de `:5173` es solo para desarrollo; el dominio amigable
+  aplica al backend de `:5000`, que es el que usa `Pensadero_Start.bat`.
+
+---
+
 ## Reinstalar desde cero (si nada funciona)
 
 Plan nuclear:

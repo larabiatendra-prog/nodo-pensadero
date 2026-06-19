@@ -66,6 +66,24 @@ function _enqueueWrite(targetPath, task) {
 // que un atomicWriteFile() dentro del callback no se autobloquea.
 const _locks = new Map(); // key -> Promise cola del lock
 
+/**
+ * Normaliza una RUTA de fichero a una clave de lock canonica, para que dos
+ * escritores del mismo fichero acaben en la misma cola del mutex aunque pasen
+ * la ruta con distinto formato. Hace:
+ *   - path.resolve: absoluta, resuelve `.`/`..` y unifica separadores al del SO.
+ *   - sin separador final.
+ *   - minusculas SOLO en Windows (FS case-insensitive): asi `K:\Fotos` y
+ *     `k:\fotos` comparten lock. En FS case-sensitive (Linux) NO se baja a
+ *     minusculas para no fusionar ficheros realmente distintos.
+ * Usar siempre para claves basadas en path (catalogos, embeddings.json).
+ */
+function normalizeLockKey(p) {
+  let k = path.resolve(String(p));
+  if (k.length > 1 && (k.endsWith(path.sep) || k.endsWith('/'))) k = k.slice(0, -1);
+  if (process.platform === 'win32') k = k.toLowerCase();
+  return k;
+}
+
 function withFileLock(key, fn) {
   const prev = _locks.get(key) || Promise.resolve();
   const result = prev.then(() => fn());
@@ -173,4 +191,5 @@ module.exports = {
   quarantineCorrupt,
   quarantineCorruptSync,
   withFileLock,
+  normalizeLockKey,
 };

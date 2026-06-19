@@ -23,7 +23,7 @@ const path = require('path');
 const { getInstance: getFaceService } = require('./faceService');
 const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
-const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount, rebuildFaces, inferDemographics } = require('../utils/faceCatalog');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
@@ -262,7 +262,7 @@ async function reidentifyAll(opts = {}) {
       // path): evita que un promote/assign-face o el re-id de espacios sobre la
       // misma carpeta lean/escriban a la vez y se pierdan asignaciones manuales
       // (lost-update). Carpetas distintas siguen procesandose en paralelo.
-      await withFileLock(catalogPath, async () => {
+      await withFileLock(normalizeLockKey(catalogPath), async () => {
         let catalog;
         try {
           catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));
@@ -403,7 +403,7 @@ async function rewritePersonInCatalogs(fromId, toId, opts = {}) {
   for (const catalogPath of catalogPaths) {
     // Lock por path: serializa con re-id, promote y assign-face sobre la misma
     // carpeta para que la reasignacion/limpieza de persona no pise (ni la pisen).
-    await withFileLock(catalogPath, async () => {
+    await withFileLock(normalizeLockKey(catalogPath), async () => {
       let catalog;
       try {
         catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));

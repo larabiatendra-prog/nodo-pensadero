@@ -31,7 +31,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
-const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount, rebuildFaces } = require('../utils/faceCatalog');
 const { getInstance: getFaceService, decodeEmbedding } = require('../services/faceService');
 const faceReidentifier = require('../services/faceReidentifier');
@@ -94,7 +94,7 @@ module.exports = function createPersonsManageRoutes(deps) {
       // Lock por path: el ciclo leer->mutar->escribir de este catalogo no se
       // solapa con el re-id de fondo (que assign-face/promote disparan) ni con
       // otro promote sobre la misma carpeta. Sin esto se pierden asignaciones.
-      await withFileLock(catalogPath, async () => {
+      await withFileLock(normalizeLockKey(catalogPath), async () => {
         let catalog;
         try {
           const raw = await fsp.readFile(catalogPath, 'utf-8');
@@ -430,7 +430,7 @@ module.exports = function createPersonsManageRoutes(deps) {
       // solapa con el re-id de fondo que este mismo handler dispara mas abajo,
       // ni con otro assign-face/promote sobre la misma carpeta. Sin esto la
       // asignacion manual recien hecha podia perderse (lost-update).
-      await withFileLock(catalogPath, async () => {
+      await withFileLock(normalizeLockKey(catalogPath), async () => {
         let catalog;
         try {
           const raw = await fsp.readFile(catalogPath, 'utf-8');
@@ -491,7 +491,7 @@ module.exports = function createPersonsManageRoutes(deps) {
         // -> escribir) no se solapa con entrenamiento/merge/promote ni con otro
         // assign-face de la MISMA persona; sin esto dos blends concurrentes leen
         // el mismo centroid y el segundo pisa al primero (lost-update).
-        await withFileLock(embFile, async () => {
+        await withFileLock(normalizeLockKey(embFile), async () => {
           const raw = await fsp.readFile(embFile, 'utf-8');
           const existing = JSON.parse(raw);
           if (Array.isArray(existing.centroid) && existing.centroid.length === 512) {
@@ -569,7 +569,7 @@ module.exports = function createPersonsManageRoutes(deps) {
       // Lock por path del embeddings.json del superviviente: la mezcla de
       // centroides no se solapa con un assign-face/entrenamiento sobre esa misma
       // persona (que tambien hacen read-modify-write de este fichero).
-      await withFileLock(survivorEmbFile, async () => {
+      await withFileLock(normalizeLockKey(survivorEmbFile), async () => {
         const survEmb = await readEmbeddingsJson(survivorDir);
         const loseEmb = await readEmbeddingsJson(loserDir);
         let blended = null;

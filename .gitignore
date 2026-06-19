@@ -63,6 +63,15 @@ contexto-chatgpt/
 .audit-report.md
 .audit-workflow.js
 
+# Subproductos de escritura atomica / cuarentena de jsonStore (regenerables):
+#  - <fichero>.<pid>.<seq>.tmp  (temporal de tmp+rename)
+#  - <fichero>.bak              (red de seguridad de la version previa)
+#  - <fichero>.corrupt-<ts>     (JSON ilegible puesto en cuarentena)
+# No versionar nunca; un crash a media escritura puede dejarlos sueltos.
+*.tmp
+*.bak
+*.corrupt-*
+
 # Patrones genericos heredados
 embeddings_index.json
 media_cache.json

@@ -35,7 +35,7 @@ const peopleRegistry = require('../peopleRegistry');
 const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
-const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount } = require('../utils/faceCatalog');
 
 // Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
@@ -664,7 +664,7 @@ async function scanFolder(folderPath, opts = {}) {
     // sobre la misma carpeta, para que no se intercalen dos escrituras del mismo
     // _pensadero.json. (El scan ya tiene su catalogo en memoria; el lock evita el
     // solapamiento fisico, no re-mezcla cambios externos hechos durante el scan.)
-    await withFileLock(targetFile, async () => {
+    await withFileLock(normalizeLockKey(targetFile), async () => {
       try {
         // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
         // verdad y guarda embeddings NO regenerables. Un crash a media escritura

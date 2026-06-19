@@ -21,7 +21,7 @@ const path = require('path');
 const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const { EMBEDDING_DIM } = require('./clipService');
-const { atomicWriteFile, withFileLock } = require('../utils/jsonStore');
+const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 
@@ -188,7 +188,7 @@ async function reidentifyAll(opts = {}) {
     // pre-pasada): si un re-id de caras u otro escritor toco esta carpeta entre
     // el conteo y ahora, escribir la copia vieja perderia esos cambios
     // (lost-update). El lock por path ademas serializa con esos escritores.
-    await withFileLock(catalogPath, async () => {
+    await withFileLock(normalizeLockKey(catalogPath), async () => {
       let catalog;
       try {
         catalog = JSON.parse(await fs.readFile(catalogPath, 'utf-8'));

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Grid, List, LayoutGrid, LayoutList, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { MediaFile, SearchFilters, Collection } from './types';
@@ -39,12 +40,79 @@ import ImageSearchView from './components/ImageSearchView';
 import { QuickPreviewOverlay } from './components/QuickPreviewOverlay';
 import { normalizePath } from './utils/formatData';
 
+// ── Routing por URL (Eje B) ────────────────────────────────────────────────
+// Mapa vista interna -> ruta. El inverso (ruta -> vista) lo hace viewFromPath.
+// Modulo (no dentro de App) para que el shim setActiveView sea estable.
+const VIEW_TO_PATH: Record<string, string> = {
+  home: '/', paths: '/rutas', persons: '/personas', spaces: '/espacios',
+  collections: '/colecciones', statistics: '/estadisticas', atlas: '/atlas',
+  tags: '/etiquetas', synonyms: '/sinonimos', imageSearch: '/busqueda-imagen',
+  admin: '/admin',
+};
+
+// Deriva el nombre de vista interno desde el pathname. El switch de
+// renderMainContent NO cambia: sigue leyendo `activeView`. Las rutas con
+// parametro (/persona/:id, /colecciones/:id, /favoritos, /archivo/:id) mapean
+// a 'home' porque son la galeria filtrada o un modal sobre ella.
+function viewFromPath(pathname: string): string {
+  if (pathname === '/') return 'home';
+  if (pathname.startsWith('/rutas')) return 'paths';
+  if (pathname.startsWith('/personas')) return 'persons';
+  if (pathname.startsWith('/persona/')) return 'home';       // home filtrado por persona
+  if (pathname.startsWith('/espacios')) return 'spaces';
+  if (pathname === '/colecciones') return 'collections';
+  if (pathname.startsWith('/colecciones/')) return 'home';   // home con coleccion abierta
+  if (pathname.startsWith('/estadisticas')) return 'statistics';
+  if (pathname.startsWith('/atlas')) return 'atlas';
+  if (pathname.startsWith('/etiquetas')) return 'tags';
+  if (pathname.startsWith('/sinonimos')) return 'synonyms';
+  if (pathname.startsWith('/busqueda-imagen')) return 'imageSearch';
+  if (pathname.startsWith('/favoritos')) return 'home';      // home filtrado por favoritos
+  if (pathname.startsWith('/archivo/')) return 'home';       // modal sobre home (refresh directo)
+  if (pathname.startsWith('/admin')) return 'admin';
+  return '__notfound__';
+}
+
 function App() {
   // Uso personal single-user: sin login, sin user.id, sin roles.
-  const [activeView, setActiveView] = useState('home');
+
+  // ── Routing por URL (Eje B) ──────────────────────────────────────────────
+  // La vista activa se DERIVA de la URL; `setActiveView` es un shim que navega.
+  // Asi todos los call-sites historicos (setActiveView('home'), etc.) siguen
+  // funcionando sin tocarlos, pero la fuente de verdad es location/navigate.
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // El modal /archivo/:id se abre SOBRE una vista de fondo guardada en
+  // location.state.backgroundLocation. La galeria de fondo NO se desmonta:
+  // derivamos vista/filtros de la location de fondo, no de /archivo/:id. Sin
+  // fondo (refresh directo) el modal cae sobre home.
+  const backgroundLocation = (location.state as { backgroundLocation?: typeof location } | null)?.backgroundLocation;
+  const displayLocation = backgroundLocation || location;
+
+  const activeView = viewFromPath(displayLocation.pathname);
+  // Shim estable: conserva la firma setActiveView(view) pero navega.
+  const setActiveView = React.useCallback((view: string) => {
+    navigate(VIEW_TO_PATH[view] ?? '/');
+  }, [navigate]);
+
+  // Ref a la location actual (raw): la usa openFile para anclar el modal sobre
+  // la vista desde la que se abrio sin recrear el handler en cada navegacion.
+  const locationRef = useRef(location);
+  useEffect(() => { locationRef.current = location; }, [location]);
+
+  // Abre el modal de un archivo navegando a /archivo/:id. backgroundLocation =
+  // la vista actual → la galeria queda montada debajo y al cerrar se vuelve a
+  // ella (scroll y paginas de scroll infinito intactos).
+  const openFile = React.useCallback((file: MediaFile) => {
+    navigate(`/archivo/${encodeURIComponent(file.id)}`, { state: { backgroundLocation: locationRef.current } });
+  }, [navigate]);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [selectedFile, setSelectedFile] = useState<MediaFile | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  // Modal por deep-link (/archivo/:id) cuando el archivo aun no esta en mediaFiles.
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
   const [filteredFiles, setFilteredFiles] = useState<MediaFile[]>([]);
   const [showFolderScanner, setShowFolderScanner] = useState(false);
@@ -216,6 +284,8 @@ function App() {
   useEffect(() => { userFavsRef.current = userFavs; }, [userFavs]);
   const mediaFilesRef = useRef(mediaFiles);
   useEffect(() => { mediaFilesRef.current = mediaFiles; }, [mediaFiles]);
+  const selectedFileRef = useRef(selectedFile);
+  useEffect(() => { selectedFileRef.current = selectedFile; }, [selectedFile]);
   const scanningFilesRef = useRef(scanningFiles);
   useEffect(() => { scanningFilesRef.current = scanningFiles; }, [scanningFiles]);
   const isSelectionModeRef = useRef(isSelectionMode);
@@ -343,6 +413,109 @@ function App() {
     };
     init();
   }, []);
+
+  // ── Sincronizacion URL -> estado navegacional ─────────────────────────────
+  // Estas rutas con parametro mapean a 'home' filtrado. Derivamos el filtro
+  // desde la URL (una sola direccion: la URL manda). Clave en displayLocation
+  // para que un modal /archivo/:id abierto encima NO altere los filtros de fondo.
+
+  // /colecciones/:id -> coleccion abierta. Cualquier otra ruta la cierra (su
+  // ciclo de vida esta atado 1:1 a la ruta).
+  useEffect(() => {
+    const p = displayLocation.pathname;
+    const id = p.startsWith('/colecciones/') ? decodeURIComponent(p.slice('/colecciones/'.length)) : null;
+    setSelectedCollectionId(prev => (prev === id ? prev : id));
+  }, [displayLocation.pathname]);
+
+  // /persona/:id -> home filtrado por esa persona (punto de entrada / deep-link).
+  // No limpia al salir: el filtro de persona es "pegajoso" como ya lo era antes
+  // (clearAllFilters / Esc lo limpian). Selecciones multiples via burbujas/@
+  // siguen en estado local y no se reflejan en la URL (deuda conocida).
+  useEffect(() => {
+    const p = displayLocation.pathname;
+    if (!p.startsWith('/persona/')) return;
+    const pid = decodeURIComponent(p.slice('/persona/'.length));
+    if (!pid) return;
+    setSelectedPersonIds(prev => (prev.length === 1 && prev[0] === pid ? prev : [pid]));
+  }, [displayLocation.pathname]);
+
+  // /favoritos -> home filtrado por favoritos (punto de entrada / deep-link).
+  useEffect(() => {
+    if (displayLocation.pathname.startsWith('/favoritos')) setShowFavoritesOnly(true);
+  }, [displayLocation.pathname]);
+
+  // Titulo del documento por vista.
+  useEffect(() => {
+    const titles: Record<string, string> = {
+      home: 'Pensadero', paths: 'Rutas · Pensadero', persons: 'Personas · Pensadero',
+      spaces: 'Espacios · Pensadero', collections: 'Colecciones · Pensadero',
+      statistics: 'Estadísticas · Pensadero', atlas: 'Atlas · Pensadero',
+      tags: 'Etiquetas · Pensadero', synonyms: 'Sinónimos · Pensadero',
+      imageSearch: 'Búsqueda por imagen · Pensadero', admin: 'Admin · Pensadero',
+      __notfound__: 'No encontrado · Pensadero',
+    };
+    document.title = titles[activeView] ?? 'Pensadero';
+  }, [activeView]);
+
+  // ── Modal de archivo dirigido por la URL (/archivo/:id) ───────────────────
+  // Id de archivo presente en la URL real (no la de fondo) — null si no hay modal.
+  const fileIdInRoute = location.pathname.startsWith('/archivo/')
+    ? decodeURIComponent(location.pathname.slice('/archivo/'.length))
+    : null;
+
+  // Resuelve el MediaFile: primero en mediaFiles ya cargado; si no esta (refresh
+  // directo o archivo fuera del filtro actual) lo pide a la API con estado de
+  // carga/error. Re-corre al cambiar mediaFiles para refrescar la card del modal
+  // (p.ej. tras togglear favorito o re-escanear).
+  useEffect(() => {
+    if (!fileIdInRoute) {
+      setIsModalOpen(false);
+      setSelectedFile(null);
+      setModalError(null);
+      setModalLoading(false);
+      return;
+    }
+    const found = mediaFilesRef.current.find(f => f.id === fileIdInRoute);
+    if (found) {
+      setSelectedFile(found);
+      setIsModalOpen(true);
+      setModalError(null);
+      setModalLoading(false);
+      return;
+    }
+    // Ya cargado por API en una pasada anterior (no esta en la grid filtrada).
+    if (selectedFileRef.current?.id === fileIdInRoute) {
+      setIsModalOpen(true);
+      // Limpiar estados de error/carga como hacen las otras ramas: si quedo un
+      // modalError pendiente (id invalido previo) taparia este modal valido.
+      setModalError(null);
+      setModalLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setModalLoading(true);
+    setModalError(null);
+    api.getFile(fileIdInRoute)
+      .then((res: any) => {
+        if (cancelled) return;
+        if (res.success && res.data) {
+          const mapped: MediaFile = {
+            ...res.data,
+            createdAt: new Date(res.data.createdAt),
+            modifiedAt: new Date(res.data.modifiedAt),
+            extractedDate: res.data.extractedDate ? new Date(res.data.extractedDate) : undefined,
+            isFavorite: userFavsRef.current.some(f => normalizePath(res.data.fullPath) === normalizePath(f.photo_url)),
+          };
+          setSelectedFile(mapped);
+          setIsModalOpen(true);
+        } else {
+          setModalError('No se encontró el archivo solicitado.');
+        }
+      })
+      .catch(() => { if (!cancelled) setModalError('No se pudo cargar el archivo.'); })
+      .finally(() => { if (!cancelled) setModalLoading(false); });
+    return () => { cancelled = true; };
+  }, [fileIdInRoute, mediaFiles]);
 
 
 
@@ -1199,10 +1372,10 @@ function App() {
       return;
     }
 
-    // Click normal - abrir modal
-    setSelectedFile(file);
-    setIsModalOpen(true);
-  }, []);
+    // Click normal - abrir el modal navegando a /archivo/:id (sobre la vista
+    // actual, sin desmontar la galeria de fondo).
+    openFile(file);
+  }, [openFile]);
 
   const exitSelectionMode = () => {
     setIsSelectionMode(false);
@@ -2701,7 +2874,7 @@ function App() {
                 onTagClick={(tag) => { handleTagClick(tag); setActiveView('home'); }}
                 onTypeClick={(type) => { setSelectedTypes([type]); setActiveView('home'); }}
                 onYearClick={(year) => { setCurrentSearchFilters(prev => ({ ...(prev || {}), year })); setActiveView('home'); }}
-                onPersonClick={(personId) => { setSelectedPersonIds([personId]); setActiveView('home'); }}
+                onPersonClick={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
                 onColorClick={async (hex) => {
                   try {
                     const r = await api.searchByColor(hex);
@@ -2736,7 +2909,7 @@ function App() {
                   handleDateRangeChange(from, to);
                   setActiveView('home');
                 }}
-                onPersonClick={(personId) => { setSelectedPersonIds([personId]); setActiveView('home'); }}
+                onPersonClick={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
                 onTagClick={(tag) => { handleTagClick(tag); setActiveView('home'); }}
               />
             </div>
@@ -2780,7 +2953,7 @@ function App() {
             <SpacesManager
               onBack={() => setActiveView('home')}
               mediaFiles={mediaFiles}
-              onSelectFile={(file) => setSelectedFile(file)}
+              onSelectFile={openFile}
               onFilterBySpace={(_spaceId) => {
                 // Por simpleza inicial: solo cerrar vista (filter por espacio
                 // requeriria un nuevo estado en App, pendiente para fase futura).
@@ -2795,10 +2968,7 @@ function App() {
               onBack={() => setActiveView('home')}
               collections={collections}
               mediaFiles={mediaFiles}
-              onCollectionSelect={(id) => {
-                setSelectedCollectionId(id);
-                setActiveView('home');
-              }}
+              onCollectionSelect={(id) => navigate('/colecciones/' + encodeURIComponent(id))}
               onCreateCollection={() => setShowCreateCollection(true)}
               onEditCollection={(id) => {
                 const col = collections.find(c => c.id === id);
@@ -2820,11 +2990,8 @@ function App() {
             <PersonsManager
               onBack={() => setActiveView('home')}
               mediaFiles={mediaFiles}
-              onSelectFile={(file) => setSelectedFile(file)}
-              onFilterByPerson={(personId) => {
-                setSelectedPersonIds([personId]);
-                setActiveView('home');
-              }}
+              onSelectFile={openFile}
+              onFilterByPerson={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
             />
           );
 
@@ -2883,6 +3050,20 @@ function App() {
               isAdmin={true}
               onBack={() => setActiveView('home')}
             />
+          );
+
+        case '__notfound__':
+          return (
+            <div className="text-center py-16">
+              <h3 className="text-lg font-medium text-marfil mb-2">Página no encontrada</h3>
+              <p className="text-lavanda-archivo mb-4">La ruta solicitada no existe.</p>
+              <button
+                onClick={() => navigate('/')}
+                className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-opacity-90 transition-colors"
+              >
+                Volver al inicio
+              </button>
+            </div>
           );
 
         case 'home':
@@ -3441,37 +3622,9 @@ function App() {
         }}
       />
 
-      {/* Header global: logo a la izquierda, MoreOptionsMenu a la derecha.
-          Disponible desde cualquier vista — no quedarse atrapado en
-          Estadísticas/Rutas/Etiquetas. Inicio = clic en el logo. */}
-      <header className="sticky top-0 z-30 bg-tinta/80 backdrop-blur border-b border-borde-sutil">
-        <div className="px-4 md:px-8 py-2.5 flex items-center justify-between gap-3">
-          <button
-            onClick={() => {
-              setActiveView('home');
-              setShowFavoritesOnly(false);
-              setSelectedCollectionId(null);
-            }}
-            className="flex items-center gap-2.5 group"
-            title="Ir al inicio"
-          >
-            <img src="/pensadero-logo.png" alt="Pensadero" className="h-8 w-8 rounded-lg" />
-            <span className="font-sans font-semibold text-marfil tracking-tight group-hover:text-lavanda transition-colors">
-              Pensadero
-            </span>
-          </button>
-          {/* Nav global. Siempre visible aunque la vista activa no sea home. */}
-          <MoreOptionsMenu
-            activeView={activeView}
-            onViewChange={(view) => {
-              // Volver de cualquier vista al cambiar también limpia foco de favoritos/colección
-              setShowFavoritesOnly(false);
-              setSelectedCollectionId(null);
-              setActiveView(view);
-            }}
-          />
-        </div>
-      </header>
+      {/* Header global eliminado: la navegacion vive ahora en la burbuja
+          flotante Pensadero (esquina inferior-derecha). Asi se recupera el
+          espacio vertical superior para el contenido. */}
 
       <main className="bg-noche">
         <div className={`p-4 md:p-8${showTimeline ? ' md:pr-24' : ''}`}>
@@ -3510,21 +3663,22 @@ function App() {
         onSaveNote={handleSaveFileNote}
         onOpenPath={handleOpenPath}
         onClose={() => {
-          setIsModalOpen(false);
-          setSelectedFile(null);
+          // Volver a la vista de fondo si existe; si no (deep-link directo), a home.
+          const bg = (location.state as { backgroundLocation?: typeof location } | null)?.backgroundLocation;
+          navigate(bg ? (bg as any) : '/');
         }}
         onToggleFavorite={handleToggleFavorite}
         onDownload={handleDownload}
         onAddToCollection={handleAddToCollection}
         allFiles={allDisplayFiles}
         onFileSelect={(newFile) => {
-          setSelectedFile(newFile);
+          // Navegar entre archivos preservando la vista de fondo. replace para no
+          // apilar una entrada de historial por cada archivo visitado.
+          const bg = (location.state as { backgroundLocation?: typeof location } | null)?.backgroundLocation;
+          navigate(`/archivo/${encodeURIComponent(newFile.id)}`, { state: bg ? { backgroundLocation: bg } : undefined, replace: true });
         }}
         onTagClick={handleTagClick}
-        onPersonFilter={(personId) => {
-          setSelectedPersonIds([personId]);
-          setActiveView('home');
-        }}
+        onPersonFilter={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
         onBackgroundRemoved={async (newFileId, newFileName) => {
           // Mostrar toast de éxito
           toast.success(`Imagen sin fondo creada: ${newFileName}`, {
@@ -3540,6 +3694,27 @@ function App() {
           }
         }}
       />
+
+      {/* Estado de carga del modal cuando se abre por deep-link (/archivo/:id)
+          y el archivo aun no esta cargado. */}
+      {modalLoading && (
+        <div className="fixed inset-0 z-[120] bg-noche/80 backdrop-blur-sm flex items-center justify-center">
+          <RefreshCw className="w-8 h-8 text-lavanda animate-spin" />
+        </div>
+      )}
+
+      {/* Error: el archivo de la URL no existe o no se pudo cargar. */}
+      {modalError && (
+        <div className="fixed inset-0 z-[120] bg-noche/90 backdrop-blur-sm flex flex-col items-center justify-center gap-4 px-6 text-center">
+          <p className="text-marfil">{modalError}</p>
+          <button
+            onClick={() => navigate('/')}
+            className="px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-opacity-90 transition-colors"
+          >
+            Volver al inicio
+          </button>
+        </div>
+      )}
 
       {showFolderScanner && (
         <FolderScanner
@@ -3647,27 +3822,44 @@ function App() {
         fileIds={Array.from(selectedFiles)}
       />
 
-      {/* Floating Action Buttons Container */}
-      <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2">
+      {/* Floating Action Buttons Container.
+          Orden visual: [ ↑ ScrollToTop ] [ Burbuja Pensadero ]. La burbuja es
+          el elemento principal (siempre presente); la flecha es contextual
+          (solo con scroll). La burbuja es z-50 y se renderiza DESPUES que los
+          modales: a igual z-index gana el ultimo en el DOM, asi que el
+          contenedor se OCULTA mientras haya CUALQUIER overlay/dialogo a
+          pantalla completa o el modo seleccion activo; si no, la burbuja
+          taparia su contenido y seguiria clickable encima. Mantener esta lista
+          al dia con los modales z-50 nuevos. */}
+      {!(
+        isModalOpen || showPresentationMode || quickPreviewFile || modalLoading || modalError || isDraggingImage
+        || showCreateCollection || editingCollectionId !== null || showCoverSelector
+        || showAddToCollection || showBulkAddToCollection || showFolderScanner
+        || editingSessionNote || (isSelectionMode && selectedFiles.size > 0)
+      ) && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
+          {/* Scroll to Top Button — solo en home */}
+          {activeView === 'home' && <ScrollToTopButton />}
 
-        {/* Selection Mode Button */}
-        {/* <SelectionModeButton
-            isSelectionMode={isSelectionMode}
-            selectedCount={selectedFiles.size}
-            onToggle={() => {
-              setIsSelectionMode(!isSelectionMode);
-              // Si desactivamos el modo, limpiamos la selección
-              if (isSelectionMode) {
-                setSelectedFiles(new Set());
-              }
+          {/* Navegacion global: punto unico de acceso (sustituye al header). */}
+          <MoreOptionsMenu
+            activeView={activeView}
+            variant="bubble"
+            placement="top"
+            onViewChange={(view) => {
+              // Cambiar de vista limpia foco de favoritos/colección (igual que
+              // hacia el logo del antiguo header).
+              setShowFavoritesOnly(false);
+              setSelectedCollectionId(null);
+              // "Inicio" promete "galería principal": limpiar tambien el filtro
+              // de persona pegajoso (/persona/:id) y el resto de filtros activos,
+              // o la home apareceria filtrada pese a la etiqueta.
+              if (view === 'home') clearAllFilters();
+              setActiveView(view);
             }}
-          /> */}
-
-        {/* Scroll to Top Button — solo en home */}
-        {activeView === 'home' && <ScrollToTopButton />}
-
-        {/* User FAB eliminado: uso personal sin auth */}
-      </div>
+          />
+        </div>
+      )}
 
     </div>
   );

@@ -22,11 +22,11 @@ export function ScrollToTopButton() {
   return (
     <button
       onClick={scrollToTop}
-      className="p-3 bg-lavanda text-white rounded-full shadow-lg hover:bg-opacity-90 transition-all duration-300 hover:scale-110"
+      className="p-6 bg-lavanda text-white rounded-full shadow-lg hover:bg-opacity-90 transition-all duration-300 hover:scale-110"
       aria-label="Volver arriba"
       title="Volver arriba"
     >
-      <ChevronUp className="w-5 h-5" />
+      <ChevronUp className="w-10 h-10" />
     </button>
   );
 }

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   MoreVertical,
+  Home,
   Tag,
   BarChart3,
   FolderSync,
@@ -8,6 +9,7 @@ import {
   Users,
   MapPin,
   Languages,
+  Sparkles,
   X
 } from 'lucide-react';
 
@@ -15,24 +17,40 @@ import {
 // Sin "Administración" (no hay panel de admin en uso personal).
 // La busqueda por imagen ya no esta aqui: ahora se hace arrastrando la
 // imagen sobre la vista home (drag & drop).
+//
+// Menu global reutilizable. Dos presentaciones del disparador (`variant`) y dos
+// direcciones de apertura del desplegable (`placement`). UNA sola fuente de
+// items: el header global murio y ahora el unico disparador es la burbuja
+// flotante (variant='bubble', placement='top'), pero conservamos el boton de
+// tres puntos (variant='icon') por compatibilidad y para no duplicar el menu.
 interface MoreOptionsMenuProps {
   activeView: string;
   onViewChange: (view: string) => void;
+  // 'top' abre hacia arriba (desde la burbuja inferior-derecha); 'bottom' hacia abajo.
+  placement?: 'top' | 'bottom';
+  // 'bubble' = burbuja redonda con el logo Pensadero; 'icon' = boton de tres puntos.
+  variant?: 'bubble' | 'icon';
 }
 
-export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuProps) {
+export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom', variant = 'icon' }: MoreOptionsMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  // Disparador (burbuja o tres puntos): se le devuelve el foco al cerrar para
+  // mantener la continuidad de teclado (patron menu-button de WAI-ARIA).
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
-  // Items del menu. Todos son 'view' tras retirar la accion de busqueda por
-  // imagen (que ahora es drag & drop en home).
+  // Items del menu. 'home' es el primero: hereda la accion que antes tenia el
+  // logo del header (volver a la galeria + limpiar favoritos/coleccion). Esa
+  // limpieza la hace el onViewChange del call-site, igual que para el resto.
   const menuItems = [
+    { id: 'home',        icon: Home,       label: 'Inicio',               description: 'Volver a la galería principal' },
     { id: 'collections', icon: FolderOpen, label: 'Colecciones',          description: 'Colecciones manuales y Smart Folders con reglas' },
     { id: 'tags',        icon: Tag,        label: 'Gestión de Etiquetas', description: 'Administrar etiquetas del sistema' },
     { id: 'synonyms',    icon: Languages,  label: 'Sinónimos',            description: 'Agrupar palabras parecidas para la búsqueda' },
     { id: 'persons',     icon: Users,      label: 'Personas',             description: 'Registrar caras y entrenar identidades' },
     { id: 'spaces',      icon: MapPin,     label: 'Espacios',             description: 'Lugares físicos identificables con CLIP' },
     { id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
+    { id: 'atlas',       icon: Sparkles,   label: 'Atlas de recuerdos',   description: 'Mapa de sesiones conectadas por personas, lugares y tiempo' },
     { id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
   ];
 
@@ -53,58 +71,90 @@ export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuPro
     };
   }, [isOpen]);
 
-  // Cerrar menú con Escape
+  // Cerrar menú con Escape. Se registra en WINDOW en fase de captura: window
+  // precede a document en el path del evento, asi que este handler corre ANTES
+  // que los listeners globales de App (colapsar sesion / limpiar filtros), que
+  // estan en document. stopImmediatePropagation impide que el mismo Esc los
+  // dispare: con el menu abierto, el primer Esc SOLO cierra el menu. Asi no
+  // dependemos del orden de montaje/remontaje del componente.
   useEffect(() => {
+    if (!isOpen) return;
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setIsOpen(false);
-      }
+      if (e.key !== 'Escape') return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      setIsOpen(false);
+      triggerRef.current?.focus();
     };
-
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape);
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-    };
+    window.addEventListener('keydown', handleEscape, true);
+    return () => window.removeEventListener('keydown', handleEscape, true);
   }, [isOpen]);
-
-  // Siempre mostrar el botón pero con contenido diferente según rol
-  // Si el usuario no tiene permisos, mostrar un mensaje
 
   const handleItemClick = (viewId: string) => {
     onViewChange(viewId);
     setIsOpen(false);
+    // Devolver el foco al disparador (continuidad de teclado tras navegar).
+    triggerRef.current?.focus();
   };
+
+  // Posicion del desplegable segun direccion de apertura.
+  const dropdownPos = placement === 'top'
+    ? 'bottom-full right-0 mb-3 origin-bottom-right'
+    : 'top-full right-0 mt-2 origin-top-right';
 
   return (
     <div className="relative" ref={menuRef}>
-      {/* Botón del menú */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`
-          p-2 rounded-full transition-all duration-200
-          ${isOpen
-            ? 'bg-lavanda text-white shadow-lg'
-            : 'text-lavanda-archivo hover:bg-pizarra'
-          }
-        `}
-        title="Más opciones"
-        aria-label="Abrir menú de opciones"
-        aria-expanded={isOpen}
-      >
-        <MoreVertical className="w-4 h-4" />
-      </button>
+      {/* Disparador */}
+      {variant === 'bubble' ? (
+        // Burbuja flotante permanente: punto unico de navegacion global.
+        <button
+          ref={triggerRef}
+          onClick={() => setIsOpen(!isOpen)}
+          className={`
+            flex items-center justify-center rounded-full
+            transition-all duration-200 shadow-2xl ring-1 backdrop-blur
+            ${isOpen
+              ? 'ring-lavanda bg-grafito scale-105'
+              : 'ring-borde-sutil bg-tinta/90 hover:ring-lavanda hover:bg-grafito hover:scale-105'
+            }
+          `}
+          title="Menú Pensadero"
+          aria-label="Abrir menú de navegación"
+          aria-haspopup="true"
+          aria-expanded={isOpen}
+        >
+          <img src="/pensadero-logo.png" alt="Pensadero" className="h-24 w-24 rounded-full p-3" />
+        </button>
+      ) : (
+        <button
+          ref={triggerRef}
+          onClick={() => setIsOpen(!isOpen)}
+          className={`
+            p-2 rounded-full transition-all duration-200
+            ${isOpen
+              ? 'bg-lavanda text-white shadow-lg'
+              : 'text-lavanda-archivo hover:bg-pizarra'
+            }
+          `}
+          title="Más opciones"
+          aria-label="Abrir menú de opciones"
+          aria-haspopup="true"
+          aria-expanded={isOpen}
+        >
+          <MoreVertical className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Dropdown menu */}
       {isOpen && (
-        <div className="absolute top-full right-0 mt-2 w-64 sm:w-72 origin-top-right z-50">
+        <div className={`absolute ${dropdownPos} w-64 sm:w-72 z-50`}>
           {/* Backdrop para blur en móvil */}
           <div className="fixed inset-0 z-40 sm:hidden" onClick={() => setIsOpen(false)} />
 
-          {/* Menú */}
-          <div className="relative z-50 bg-tinta rounded-xl shadow-2xl border border-pizarra overflow-hidden">
+          {/* Menú. max-height + scroll: abriendo hacia arriba (placement='top')
+              desde la burbuja inferior, en portatiles de poca altura el menu
+              (9 items) se saldria por arriba dejando los primeros inaccesibles. */}
+          <div className="relative z-50 bg-tinta rounded-xl shadow-2xl border border-pizarra overflow-y-auto max-h-[calc(100vh-7rem)]">
             {/* Header */}
             <div className="px-4 py-3 bg-gradient-to-r from-lavanda/10 to-lavanda-claro/10 border-b border-pizarra">
               <div className="flex items-center justify-between">
@@ -127,6 +177,10 @@ export function MoreOptionsMenu({ activeView, onViewChange }: MoreOptionsMenuPro
 
                 return (
                   <React.Fragment key={item.id}>
+                    {/* Separador tras "Inicio" para destacarlo del resto */}
+                    {item.id === 'collections' && (
+                      <div className="mx-3 my-2 border-t border-pizarra" />
+                    )}
                     {/* Separador antes de "Administrar Rutas" */}
                     {item.id === 'paths' && index > 0 && (
                       <div className="mx-3 my-2 border-t border-pizarra" />

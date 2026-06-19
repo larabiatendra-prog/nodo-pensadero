@@ -228,6 +228,22 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/statistics`);
   }
 
+  // Personas agregadas (person_id, display_name, count, avatar_url). Mismo
+  // endpoint que consume PersonBubbles; lo usa el grafo de personas.
+  async getPersons() {
+    return this.fetchWithErrorHandling<ApiResponse<any[]>>(`${API_BASE_URL}/persons`);
+  }
+
+  // Paleta global de color: [{ color: hex, frequency, usage }] ordenada.
+  async getColors() {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      totalFiles: number;
+      filesWithColors: number;
+      globalPalette: Array<{ color: string; frequency: number; usage: number }>;
+      dominantColors: Array<{ color: string; frequency: number; usage: number }>;
+    }>>(`${API_BASE_URL}/colors`);
+  }
+
   // =====================
   // Gestión de Rutas de Escaneo
   // =====================

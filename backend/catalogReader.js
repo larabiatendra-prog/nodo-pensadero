@@ -1,7 +1,8 @@
 /**
  * Catalog Reader — Pensadero
  *
- * Lee y mergea metadatos enriquecidos generados por Marina Video Batch.
+ * Lee y mergea los metadatos enriquecidos que Pensadero genera al escanear
+ * (o de catálogos/sidecars legados, incluido el formato `_marina.json`).
  *
  * Soporta dos formatos:
  *  Precedencia (específico gana sobre general):
@@ -18,7 +19,7 @@
  *     `{clips: {...}}`, en cuyo caso se trata como tal).
  *
  * Para cada `MediaFile`, el lookup es:
- *   1. catálogo por carpeta (`_marina.json` → `_pensadero.json`)
+ *   1. catálogo por carpeta (`_pensadero.json` → `_marina.json` legado)
  *   2. sidecar `<archivo.ext>.json`
  *   3. sidecar `<archivo>.json`
  *

@@ -4,10 +4,10 @@
  * Servidor Express + WebSocket para gestionar la biblioteca local
  * de medios del usuario. Sin auth, sin multi-tenant, sin Supabase.
  *
- * Lee opcionalmente un catalog JSON `_marina.json` por carpeta, generado
- * por la herramienta externa Marina Video Batch personal, y mergea los
- * datos enriquecidos del clip correspondiente sobre el MediaFile en
- * memoria. Ver `catalogReader.js` para el formato y comportamiento.
+ * Lee el catalog JSON por carpeta (`_pensadero.json`, o `_marina.json`
+ * legado) que Pensadero genera al escanear, y mergea los datos enriquecidos
+ * del clip correspondiente sobre el MediaFile en memoria. Ver
+ * `catalogReader.js` para el formato y comportamiento.
  */
 
 const express = require('express');

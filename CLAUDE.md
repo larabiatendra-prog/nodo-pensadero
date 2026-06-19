@@ -4,14 +4,14 @@ Guía para futuras sesiones de Claude Code dentro de este repositorio.
 
 ## Identidad
 
-**Pensadero** es la aplicacion principal de gestion, indexacion, busqueda y reproduccion del archivo audiovisual personal de Daniel Fernandez en el ecosistema NODO. Es un fork (refactor profundo) de **Marina Finder**, despojado de todo lo corporativo: sin auth, sin multiusuario.
+**Pensadero** es la aplicacion principal de gestion, indexacion, busqueda y reproduccion del archivo audiovisual personal de Daniel Fernandez en el ecosistema NODO. Es una aplicacion single-user, despojada de todo lo corporativo: sin auth, sin multiusuario.
 
 **Rutas canonicas:**
 - Desarrollo (Dell, espejo NODO): `D:\projects\Nuevo PC - NODO\DEV\pensadero`
 - Destino final en NODO (PC fisico): `C:\DEV\pensadero` (desarrollo) -> `C:\TOOLS\Pensadero` (cuando estable)
 - Repo GitHub: `larabiatendra-prog/nodo-pensadero` (privado)
 
-**Direccion arquitectonica (Vision B):** Pensadero absorbe progresivamente las capacidades de procesamiento del ecosistema (originalmente en "Marina Video Batch personal"). Face recognition ya esta integrado dentro de Pensadero (ver regla 2). Space recognition y otras capacidades pendientes siguen el mismo camino: traerlas aqui dentro en vez de depender de generadores externos.
+**Direccion arquitectonica (Vision B):** Pensadero absorbe progresivamente las capacidades de procesamiento que antes vivian en generadores externos, trayendolas aqui dentro. Face recognition ya esta integrado (ver regla 2). Space recognition y otras capacidades pendientes siguen el mismo camino en vez de depender de pipelines externas.
 
 **Nombrar archivos brutos:** los archivos de camara (`P1246646.mp4`, `IMG_3421.JPG`) NO se renombran nunca. En Pensadero, cada archivo hereda el display name y los tags de su carpeta contenedora. La carpeta es la unidad atomica de significado.
 
@@ -47,7 +47,7 @@ Guía para futuras sesiones de Claude Code dentro de este repositorio.
      - `backend/routes/personsManageRoutes.js` — CRUD registry + clustering + promote + merge.
      - `src/components/PersonsManager.tsx` — UI completa (registry, fotos, entrenamiento, re-id, discovery, merge).
    - **Persistencia:** `<avatarsBase>/people/<id>/embeddings.json` (centroid + meta) + `people_registry.json`. Embeddings de detecciones se guardan en `_pensadero.json` por carpeta (campo `identity.detections[].embedding_b64`).
-   - **No reintroducir** `face-api.js` (legacy de Marina Finder). Cualquier UI nueva de personas/caras debe integrarse con el daemon InsightFace existente.
+   - **No reintroducir** `face-api.js` (legacy de la version anterior). Cualquier UI nueva de personas/caras debe integrarse con el daemon InsightFace existente.
    - **Spaces (lugares):** todavia se *leen* desde sidecar; siguen el camino de absorcion (Vision B) cuando se aborde.
 3. **Comments en español.** Los nombres de tokens semánticos (colores, espaciados, roles) también van en español.
 4. **README y CLAUDE.md sin emojis.**

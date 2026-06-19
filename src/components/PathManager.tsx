@@ -310,7 +310,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       // Si no existe el endpoint, usar ruta por defecto
       setPaths([{
         id: 'default',
-        path: 'D:\\Biblioteca_Prueba_MarinaFinder',
+        path: 'D:\\Biblioteca_Prueba',
         isActive: true,
         lastScan: new Date(),
         fileCount: 0,

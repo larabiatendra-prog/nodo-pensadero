@@ -53,20 +53,22 @@ usuario añade desde la UI. Empieza vacío `[]`. Cada entrada tiene la forma:
 
 ## Catalog y sidecars
 
-El backend lee opcionalmente metadatos enriquecidos de la herramienta
-externa **Marina Video Batch personal**. Soporta dos formatos:
+El backend **genera su propia metadata al escanear** (VLM vía Ollama,
+InsightFace, CLIP/SigLIP-2) y la escribe como catálogo `_pensadero.json`
+por carpeta. También lee catálogos/sidecars pre-existentes con este mismo
+contrato, incluido el formato `_marina.json` legado. Soporta dos formatos:
 
-1. **Catálogo por carpeta**: `_marina.json` o `_pensadero.json` con
+1. **Catálogo por carpeta**: `_pensadero.json` o `_marina.json` (legado) con
    estructura `{ clips | photos | audios: { <basename>: {...} } }`. La
    clave de envoltorio depende del tipo de media; el primer match gana
    sin merge. Si están los dos archivos en la misma carpeta, prevalece
-   `_marina.json`.
+   `_pensadero.json` (la data fresca tapa a la legada, no al revés).
 2. **Sidecar individual** junto al archivo: `<archivo.ext>.json` o
    `<archivo>.json`. Mismo schema (puede ser un clip directo sin envoltorio
    `{ clips: {...} }`, en cuyo caso se trata como tal).
 
 Para cada `MediaFile`, el lookup es:
-1. catálogo por carpeta (`_marina.json` → `_pensadero.json`)
+1. catálogo por carpeta (`_pensadero.json` → `_marina.json` legado)
 2. sidecar `<archivo.ext>.json`
 3. sidecar `<archivo>.json`
 
@@ -237,8 +239,8 @@ Implementación: `backend/catalogReader.js`.
 ## Personas y registry
 
 El backend mantiene una **dimensión propia para personas** (no son tags).
-Las identidades vienen del pipeline externo (Marina Video Batch) en
-`identity.faces[]` y se cruzan con un registry local opcional.
+Las identidades las genera InsightFace al escanear (o vienen en sidecars
+legados) en `identity.faces[]` y se cruzan con el registry local de personas.
 
 ### Archivo `people_registry.json`
 
@@ -566,8 +568,8 @@ Reparacion manual si hiciera falta: borra `backend/python/.venv` y relanza
 ## Notas
 
 - **Sin auth**: este backend asume que solo tú lo usas. CORS abierto a localhost.
-- **Sin Supabase, sin embeddings, sin background removal**: la versión personal
-  delega el análisis visual a la herramienta externa (Marina Video Batch personal),
-  que vuelca el resultado como sidecar JSON.
+- **Sin Supabase, sin multiusuario**: la versión personal hace su propio
+  análisis visual en local (VLM vía Ollama + InsightFace + CLIP/SigLIP-2) y
+  escribe el resultado en el catálogo `_pensadero.json` por carpeta.
 - **Compresión gzip** activada para respuestas API.
 - **Cache headers** largos para `/api/thumbnails/:fileId` (y la ruta legacy `/thumbnails`) y moderados para `/media`.

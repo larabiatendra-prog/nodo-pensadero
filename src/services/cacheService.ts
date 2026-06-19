@@ -44,7 +44,7 @@ const DEFAULT_CONFIGS: Record<string, CacheConfig> = {
 };
 
 class CacheService {
-  private cachePrefix = 'marinafinder_cache_';
+  private cachePrefix = 'pensadero_cache_';
   private syncQueue: Map<string, any> = new Map();
   private syncTimers: Map<string, NodeJS.Timeout> = new Map();
 

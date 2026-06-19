@@ -1,12 +1,15 @@
 # Pensadero
 
-Archivo audiovisual personal de uso individual. Pensadero escanea carpetas locales (incluidos discos externos con letra fija) y construye una biblioteca navegable de fotos, vídeos y audio. No tiene autenticación ni multiusuario: es para una sola persona en un único PC. Los metadatos enriquecidos (etiquetas, descripción visual, paleta, caras, espacios) se leen desde ficheros sidecar JSON colocados junto a cada archivo, generados externamente por Marina Video Batch personal.
+Archivo audiovisual personal de uso individual. Pensadero escanea carpetas locales (incluidos discos externos con letra fija) y construye una biblioteca navegable y buscable de fotos, vídeos y audio. Es single-user: sin autenticación, sin multiusuario, todo en un único PC.
+
+Pensadero **genera su propia metadata enriquecida** durante el escaneo —descripción visual y etiquetas con un modelo de visión local (Ollama), reconocimiento de caras (InsightFace) y de lugares (CLIP/SigLIP-2), paleta de color, tipo de plano y movimiento de cámara— y la guarda junto a cada archivo. La búsqueda en lenguaje natural usa un LLM local opcional. Sin Ollama ni Python, Pensadero funciona como visor de la biblioteca, pero no genera metadata nueva.
 
 ## Requisitos
 
 - Windows 11
 - Node.js 20 o superior — https://nodejs.org/
-- Opcional: Ollama corriendo en `http://localhost:11434` con el modelo `llama3.1:8b` para búsqueda semántica con IA.
+- Opcional (escaneo con IA): [Ollama](https://ollama.com/) en `http://localhost:11434` con un modelo de visión (p.ej. `gemma3:12b`) para la descripción visual y un LLM (p.ej. `qwen2.5:7b-instruct`) para la búsqueda en lenguaje natural.
+- Opcional (caras/lugares): entorno Python con InsightFace y CLIP/SigLIP-2 (`backend/python`, lo prepara el instalador).
 
 ## Instalación
 
@@ -70,11 +73,11 @@ Pon `HOST=0.0.0.0` en `backend/.env` y reinicia. Pensadero quedará accesible de
 
 Las rutas de escaneo se gestionan desde la propia interfaz, en la pestaña **Rutas**. Puedes añadir cualquier carpeta local o de un disco externo. Para discos externos, asegúrate de que la letra de la unidad es fija en Windows (Administración de discos → Cambiar letra y rutas), de lo contrario las rutas se romperán al reconectar.
 
-## Sidecar JSON de metadatos
+## Metadata por carpeta y sidecar JSON
 
-Junto a cada archivo multimedia (`video.mp4`), Pensadero busca opcionalmente un sidecar con el mismo nombre y sufijo `.json` (`video.mp4.json`). Este sidecar lo genera **Marina Video Batch personal**: Pensadero solo lo consume.
+Al escanear, Pensadero escribe un catálogo `_pensadero.json` por carpeta con la metadata que él mismo genera (descripción, etiquetas, caras, lugares, color, composición). Además, junto a cada archivo (`video.mp4`) puede leer un sidecar pre-existente con el mismo nombre y sufijo `.json` (`video.mp4.json`) si lo hay, con el mismo contrato. Los catálogos `_marina.json` de versiones anteriores se leen por compatibilidad.
 
-Formato esperado (campos opcionales — Pensadero ignora los que no estén presentes):
+Formato del sidecar/entrada (campos opcionales — Pensadero ignora los que no estén presentes):
 
 ```json
 {
@@ -100,9 +103,9 @@ Formato esperado (campos opcionales — Pensadero ignora los que no estén prese
 
 ## Limitaciones conocidas
 
-- **Sin reconocimiento facial dentro de Pensadero.** El entrenamiento de caras y espacios se hace en **Marina Video Batch personal** y se entrega ya resuelto en los sidecar JSON. Pensadero solo lee los resultados; nunca entrena ni vuelve a calcular embeddings.
+- **El escaneo con IA necesita Ollama y Python.** La descripción visual usa un modelo de visión vía Ollama; las caras (InsightFace) y los lugares (CLIP/SigLIP-2) usan el entorno Python de `backend/python`. Sin ellos, Pensadero sirve la biblioteca y su metadata ya existente, pero no genera metadata nueva.
 - **Single-user, sin auth.** No hay login: cualquiera con acceso al PC ve todo el archivo.
-- **Sin sincronización en la nube.** Toda la persistencia (favoritos, colecciones, miniaturas) vive en `backend/` en disco local.
+- **Sin sincronización en la nube.** Toda la persistencia (favoritos, colecciones, notas, miniaturas) vive en `backend/` y junto a cada biblioteca, en disco local.
 
 ## Datos persistentes (no tocar a mano)
 

@@ -222,6 +222,11 @@ def detect_in_image(path: str) -> dict:
     app = get_app()
     faces = app.get(img)
 
+    # Dims de la imagen orientada (mismo espacio que las bbox). Se adjuntan a
+    # cada cara para que el consumidor (shot_type) calcule la ratio cara/frame
+    # sin releer la imagen y sobreviva a la agregacion multi-frame de video.
+    img_h, img_w = int(img.shape[0]), int(img.shape[1])
+
     out = []
     for f in faces:
         bbox = f.bbox.astype(float).tolist()  # [x1, y1, x2, y2]
@@ -233,6 +238,8 @@ def detect_in_image(path: str) -> dict:
             "det_score": det_score,
             "age": float(getattr(f, "age", 0)) if hasattr(f, "age") else None,
             "gender": int(getattr(f, "gender", -1)) if hasattr(f, "gender") else None,
+            "img_h": img_h,
+            "img_w": img_w,
         })
     return {"faces": out, "count": len(out)}
 

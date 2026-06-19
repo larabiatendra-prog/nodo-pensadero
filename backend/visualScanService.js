@@ -44,6 +44,9 @@ const VIDEO_MAX_FRAMES = 6;
 // (900) porque la descripcion temporal (que ocurre a lo largo del clip) + todos
 // los campos del schema necesitan mas tokens antes de cerrar el JSON.
 const VIDEO_NUM_PREDICT = parseInt(process.env.VLM_VIDEO_NUM_PREDICT || '1400', 10);
+// Tokens estimados que consume cada imagen en el encoder de vision (~1.3-1.7k
+// segun resolucion). Se usa para dimensionar num_ctx en la llamada multi-imagen.
+const VIDEO_IMG_TOKENS_EST = parseInt(process.env.VLM_VIDEO_IMG_TOKENS || '1700', 10);
 // Lado mayor objetivo al pre-redimensionar la imagen antes de enviarla al VLM.
 // La mayoria de encoders de vision aceptan hasta ~1568px y reescalan internamente
 // con perdida si reciben mas. Controlandolo nosotros con sharp (Lanczos) preservamos
@@ -255,6 +258,7 @@ class VisualScanService {
           resolution: `${probe.width}x${probe.height}`,
           fps: probe.fps || null,
           codec: probe.codec || null,
+          creation_time: probe.creation_time || null,
           // movement_type heurístico legacy: hay accion si el VLM listo acciones.
           movement_type: (entry.semantics?.actions?.length > 0) ? 'moving' : 'estatico',
         };
@@ -302,6 +306,12 @@ class VisualScanService {
         options: {
           temperature: 0.2,
           num_predict: VIDEO_NUM_PREDICT,
+          // num_ctx dimensionado al nº de imagenes. Sin esto, un modelo con
+          // contexto por defecto pequeño (p.ej. qwen2.5vl:7b = 4096) NO cabe la
+          // llamada multi-imagen, FALLA en silencio y degrada a per-frame,
+          // perdiendo todo el razonamiento temporal (movimiento, scene_changes).
+          num_ctx: parseInt(process.env.VLM_VIDEO_NUM_CTX || '0', 10)
+            || Math.max(8192, images.length * VIDEO_IMG_TOKENS_EST + VIDEO_NUM_PREDICT + 2048),
         },
         signal: controller.signal,
       });
@@ -429,8 +439,8 @@ ESQUEMA EXACTO (debes rellenar TODOS los campos; usa null en los enums solo si r
   "description_mood": "frase en ESPAÑOL describiendo el AMBIENTE (luz, atmosfera, sensacion). Concisa pero evocadora.",
   "shot_type": uno de los valores listados abajo o null,
   "camera_angle": "normal" | "picado" | "contrapicado" | "cenital" | "nadir" | null,
-  "camera_movement": "fijo" | "panoramica" | "travelling" | "dolly" | "zoom_in" | "zoom_out" | "handheld" | "steady" | null,
-  "people_framing": "ninguno" | "individual" | "pareja" | "grupo" | "multitud",
+  "camera_movement": "fijo" | "paneo" | "cabeceo" | "acercamiento" | "alejamiento" | "inestable" | null,
+  "people_framing": "ninguno" | "individual" | "pareja" | "grupo_pequeno" | "grupo_grande" | "multitud",
   "mood": "alegre" | "neutro" | "serio" | "intimo" | "festivo" | "melancolico" | "energico" | "formal" | "contemplativo" | null,
   "lighting": "luz_natural" | "luz_dorada" | "contraluz" | "interior" | "neon" | "nocturna" | "mixta" | null,
   "space_type": "interior" | "exterior" | "urbano" | "naturaleza" | "oficina" | "escenario" | "hogar" | "transito" | null,
@@ -453,7 +463,7 @@ DEFINICIONES de shot_type (siempre intentar rellenar — solo null si es imposib
 
 REGLAS:
 1. description_what y description_mood: 2 frases concisas en español. Cada una rica en informacion concreta y NO redundante con la otra. NO inventes lo que no veas.
-2. NO inferir edad ni genero de las personas — otro modulo lo hace con mas precision. Solo people_framing como conteo aproximado.
+2. NO inferir edad ni genero de las personas — otro modulo lo hace con mas precision. Solo people_framing como escala aproximada: individual=1, pareja=2, grupo_pequeno=3-6, grupo_grande=7-15, multitud=16+.
 3. camera_movement: solo si es un VIDEO (frame de video); en fotos devuelve null.
 4. ocr_text: solo si hay texto legible visible. NO inventes texto.
 5. NO incluyas el campo palette/dominant_colors — el color lo extrae otro modulo.
@@ -468,7 +478,7 @@ EJEMPLO de salida bien hecha (input: foto de un grupo de amigos brindando en la 
   "shot_type": "plano_conjunto",
   "camera_angle": "normal",
   "camera_movement": null,
-  "people_framing": "grupo",
+  "people_framing": "grupo_pequeno",
   "mood": "festivo",
   "lighting": "luz_dorada",
   "space_type": "urbano",
@@ -507,7 +517,7 @@ Describe esta imagen siguiendo el esquema. Devuelve solo el JSON.`;
     return `Eres un asistente experto en describir VIDEOS para un archivo personal indexable y buscable en lenguaje natural espanol. Recibes VARIOS frames extraidos en ORDEN CRONOLOGICO del MISMO clip (el primer frame es el inicio, el ultimo es el final). NO los describas por separado: razona sobre la SECUENCIA y describe el video como un todo.
 
 CLAVE — lo que solo se puede deducir viendo varios frames juntos:
-- camera_movement: compara la posicion de los objetos/encuadre entre frames. Si el encuadre se desplaza lateralmente es "panoramica"/"travelling"; si se acerca/aleja es "zoom_in"/"zoom_out"; si tiembla es "handheld"; si todo queda igual es "fijo".
+- camera_movement: compara la posicion de los objetos/encuadre entre frames. Si el encuadre se desplaza en horizontal es "paneo"; en vertical es "cabeceo"; si el encuadre se acerca/aleja (los sujetos crecen/menguan) es "acercamiento"/"alejamiento"; si tiembla es "inestable"; si todo queda igual es "fijo".
 - actions: que ACCIONES ocurren a lo largo del clip (no lo que hay en un frame). Ej: "entrar por la puerta", "abrazarse", "caminar".
 - scene_changes: true si el clip salta entre escenas/planos distintos (cambio brusco de lugar o encuadre entre frames); false si es una toma continua.
 - description_what: NARRA lo que sucede en el clip de principio a fin, no un instante congelado.
@@ -518,9 +528,9 @@ ESQUEMA EXACTO (rellena TODOS los campos; usa null en los enums solo si realment
   "description_mood": "frase en ESPAÑOL describiendo el AMBIENTE (luz, atmosfera, sensacion). Concisa pero evocadora.",
   "shot_type": uno de los valores listados abajo o null,
   "camera_angle": "normal" | "picado" | "contrapicado" | "cenital" | "nadir" | null,
-  "camera_movement": "fijo" | "panoramica" | "travelling" | "dolly" | "zoom_in" | "zoom_out" | "handheld" | "steady" | null,
+  "camera_movement": "fijo" | "paneo" | "cabeceo" | "acercamiento" | "alejamiento" | "inestable" | null,
   "scene_changes": true | false,
-  "people_framing": "ninguno" | "individual" | "pareja" | "grupo" | "multitud",
+  "people_framing": "ninguno" | "individual" | "pareja" | "grupo_pequeno" | "grupo_grande" | "multitud",
   "mood": "alegre" | "neutro" | "serio" | "intimo" | "festivo" | "melancolico" | "energico" | "formal" | "contemplativo" | null,
   "lighting": "luz_natural" | "luz_dorada" | "contraluz" | "interior" | "neon" | "nocturna" | "mixta" | null,
   "space_type": "interior" | "exterior" | "urbano" | "naturaleza" | "oficina" | "escenario" | "hogar" | "transito" | null,
@@ -543,7 +553,7 @@ DEFINICIONES de shot_type (siempre intentar rellenar — solo null si es imposib
 
 REGLAS:
 1. description_what y description_mood: 2 frases concisas en español. NO inventes lo que no veas.
-2. NO inferir edad ni genero de las personas — otro modulo lo hace. Solo people_framing como conteo aproximado.
+2. NO inferir edad ni genero de las personas — otro modulo lo hace. Solo people_framing como escala aproximada: individual=1, pareja=2, grupo_pequeno=3-6, grupo_grande=7-15, multitud=16+.
 3. camera_movement: dedúcelo COMPARANDO frames. Si solo hubiera un frame, devuelve "fijo".
 4. scene_changes: true solo si ves un salto claro de escena/plano entre frames.
 5. ocr_text: solo texto legible visible. NO inventes texto.
@@ -558,7 +568,7 @@ EJEMPLO de salida bien hecha (input: 3 frames de una mujer que entra en un salon
   "description_mood": "Ambiente domestico y tranquilo con luz natural suave entrando por la ventana",
   "shot_type": "plano_conjunto",
   "camera_angle": "normal",
-  "camera_movement": "panoramica",
+  "camera_movement": "paneo",
   "scene_changes": false,
   "people_framing": "individual",
   "mood": "contemplativo",
@@ -650,8 +660,17 @@ ${head}`;
       'plano_general','plano_conjunto','plano_americano','plano_medio','plano_medio_corto','primer_plano','plano_detalle'
     ]);
     const cameraAngle = enumVal(r.camera_angle, ['normal','picado','contrapicado','cenital','nadir']);
-    const cameraMovement = enumVal(r.camera_movement, ['fijo','panoramica','travelling','dolly','zoom_in','zoom_out','handheld','steady']);
-    const framing = enumVal(r.people_framing, ['ninguno','individual','pareja','grupo','multitud'], 'ninguno');
+    // Enum colapsado a buckets gruesos: lo que el VLM (fallback) y el
+    // optical-flow (fuente principal en video) distinguen con fiabilidad. El
+    // VLM falla los matices finos (dolly vs travelling, zoom_in vs dolly_in);
+    // el optical-flow los unifica en pan/tilt/acercamiento/alejamiento.
+    const cameraMovement = enumVal(r.camera_movement, ['fijo','paneo','cabeceo','acercamiento','alejamiento','inestable','indeterminado']);
+    // Nuevo enum con grupo dividido en pequeno/grande. El valor final lo afina
+    // el orquestador con el conteo real de InsightFace (computePeopleFraming);
+    // aqui solo validamos lo que dijo el VLM. Compat: scans/VLM que digan
+    // "grupo" se mapean a grupo_pequeno.
+    let framing = enumVal(r.people_framing, ['ninguno','individual','pareja','grupo_pequeno','grupo_grande','multitud'], null);
+    if (!framing) framing = (str(r.people_framing).toLowerCase() === 'grupo') ? 'grupo_pequeno' : 'ninguno';
     // scene_changes: solo aplica a video (multi-frame). En fotos queda null.
     const sceneChanges = typeof r.scene_changes === 'boolean' ? r.scene_changes : null;
 
@@ -792,12 +811,17 @@ async function probeVideo(filePath) {
       const [a, b] = stream.avg_frame_rate.split('/').map(parseFloat);
       if (b > 0) fps = a / b;
     }
+    // creation_time: hora de captura (UTC) de los tags del contenedor. Ya viene
+    // en -show_format, coste cero. La usa time_of_day. Puede faltar.
+    const creationTime = (format.tags && (format.tags.creation_time || format.tags.com_apple_quicktime_creationdate))
+      || (stream.tags && stream.tags.creation_time) || null;
     return {
       duration,
       width,
       height,
       fps: Math.round(fps * 100) / 100,
       codec: stream.codec_name || null,
+      creation_time: creationTime,
     };
   } catch {
     return null;
@@ -933,6 +957,7 @@ function aggregateFrameEntries(frames, probe) {
       resolution: probe ? `${probe.width}x${probe.height}` : null,
       fps: probe?.fps || null,
       codec: probe?.codec || null,
+      creation_time: probe?.creation_time || null,
       movement_type: movementType,
     },
     identity: {

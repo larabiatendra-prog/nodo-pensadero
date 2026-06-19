@@ -28,6 +28,7 @@ function fileIdFor(filePath) {
 const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
 const { getInstance: getClipService } = require('./clipService');
+const { getInstance: getCameraMotionService } = require('./cameraMotionService');
 const clipIndex = require('../clipIndex');
 const colorAnalyzer = require('../colorAnalyzer');
 const { enrichPalette } = require('../colorNamer');
@@ -37,6 +38,11 @@ const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
 const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount } = require('../utils/faceCatalog');
+const { computeShotType } = require('../utils/shotType');
+const { computePeopleFraming } = require('../utils/peopleFraming');
+const { computeTimeOfDay } = require('../utils/timeOfDay');
+const { computeLighting } = require('../utils/lighting');
+const exifReader = require('exif-reader');
 
 // Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
 const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
@@ -168,10 +174,20 @@ async function extractTechnical(filePath) {
     else if (Math.abs(ratio - 1) < 0.02) aspect = '1:1';
     else if (Math.abs(ratio - 9 / 16) < 0.02) aspect = '9:16';
     else aspect = 'other';
-    return {
+    const out = {
       resolution: `${meta.width}x${meta.height}`,
       aspect_ratio: aspect,
     };
+    // capture_time desde EXIF (hora LOCAL de pared). La usa time_of_day. Coste
+    // casi cero: el buffer exif ya viene en meta. Tolerante a fallos de parseo.
+    if (meta.exif) {
+      try {
+        const ex = exifReader(meta.exif);
+        const d = ex?.Photo?.DateTimeOriginal || ex?.Image?.DateTime;
+        if (d instanceof Date && !isNaN(d.getTime())) out.capture_time = d.toISOString();
+      } catch { /* exif ilegible: se omite */ }
+    }
+    return out;
   } catch {
     return {};
   }
@@ -223,6 +239,7 @@ async function scanFolder(folderPath, opts = {}) {
   const scanner = getScanner();
   const faceSvc = getFaceService();
   const clipSvc = getClipService();
+  const motionSvc = getCameraMotionService();
 
   // Cargar embeddings del registry en el cache del faceService antes del
   // batch. Si falla (sin Python/InsightFace), seguimos sin reconocimiento.
@@ -258,6 +275,22 @@ async function scanFolder(folderPath, opts = {}) {
   } catch (err) {
     console.warn('[scan] CLIP service no disponible:', err.message);
     clipEnabled = false;
+  }
+
+  // Camera motion (optical-flow CPU): detecta el movimiento de camara en video,
+  // que el VLM hace mal. Corre en CPU en paralelo a la GPU. Si no esta
+  // disponible (sin Python), seguimos con el camera_movement del VLM.
+  let motionEnabled = false;
+  try {
+    if (await motionSvc.init()) {
+      motionEnabled = true;
+      console.log('[scan] camera motion (optical-flow) listo');
+    } else {
+      console.warn('[scan] camera motion no disponible:', motionSvc.lastError);
+    }
+  } catch (err) {
+    console.warn('[scan] camera motion no disponible:', err.message);
+    motionEnabled = false;
   }
 
   // Estado inicial del job
@@ -406,6 +439,7 @@ async function scanFolder(folderPath, opts = {}) {
       let technical = {};
       let faceDetections = [];
       let videoFrameTime = null; // segundo del frame con mas caras (default del visor)
+      let sceneBrightness = null; // brillo medio (0-1) de colorAnalyzer, para lighting
 
       // Componer el contexto de la carpeta (con herencia desde la raíz del
       // scan). Si no hay `_contexto.md` en ningún nivel, devolverá string
@@ -421,9 +455,42 @@ async function scanFolder(folderPath, opts = {}) {
         // sola llamada multi-imagen (descripcion temporal: movimiento de camara,
         // acciones, cambios de escena) y nos los DEVUELVE para reutilizarlos.
         // Asi evitamos extraer frames por separado para cada cosa.
+        // Optical-flow de camara en CPU, EN PARALELO a la llamada VLM (GPU). Se
+        // lanza antes del await de scanVideo para solapar ambos y no sumar tiempo
+        // de pared. Se resuelve mas abajo, tras la GPU.
+        const motionPromise = motionEnabled
+          ? motionSvc.analyze(filePath).catch(() => null)
+          : null;
+
         const videoResult = await scanner.scanVideo(filePath, { folderContext: folderContextStr });
         entry = videoResult.entry;
         const videoFrames = Array.isArray(videoResult.frames) ? videoResult.frames : []; // [{ path, timestamp }]
+
+        // camera_movement: el optical-flow (medicion real de dx/dy/escala) manda
+        // sobre el VLM, que es ciego al zoom lento y a paneos sutiles. Si el
+        // flujo no esta disponible o sale con baja confianza, se conserva lo del
+        // VLM. scene_changes (cortes) tambien lo aporta el flujo, mas fiable.
+        if (motionPromise) {
+          const motion = await motionPromise;
+          if (motion && entry.composition) {
+            if (motion.confidence !== 'baja' && motion.movement) {
+              entry.composition.camera_movement = motion.movement;
+            }
+            if (typeof motion.scene_changes === 'boolean') {
+              entry.composition.scene_changes = motion.scene_changes;
+            }
+            // Metricas crudas para depurar/auditar (no las consume el frontend aun)
+            entry.composition.motion_debug = {
+              movements: motion.movements,
+              zoom: motion.zoom,
+              pan_x: motion.pan_x,
+              pan_y: motion.pan_y,
+              jitter: motion.jitter,
+              cuts: motion.cuts,
+              confidence: motion.confidence,
+            };
+          }
+        }
         try {
           // 1) Deteccion facial en CADA frame (mejor cobertura que un solo frame:
           //    captura personas que solo aparecen en un tramo del clip). Cada
@@ -453,6 +520,7 @@ async function scanFolder(folderPath, opts = {}) {
               if (colorResult && Array.isArray(colorResult.palette) && colorResult.palette.length > 0) {
                 entry.colors = entry.colors || {};
                 entry.colors.palette = enrichPalette(colorResult.palette.slice(0, 3));
+                if (typeof colorResult.brightness === 'number') sceneBrightness = colorResult.brightness;
               }
             } catch (cErr) {
               console.warn(`[scan-video] color analysis ${basename}: ${cErr.message}`);
@@ -506,6 +574,7 @@ async function scanFolder(folderPath, opts = {}) {
           if (colorResult && Array.isArray(colorResult.palette) && colorResult.palette.length > 0) {
             entry.colors = entry.colors || {};
             entry.colors.palette = enrichPalette(colorResult.palette.slice(0, 3));
+            if (typeof colorResult.brightness === 'number') sceneBrightness = colorResult.brightness;
           }
         } catch (cErr) {
           console.warn(`[scan-photo] color analysis ${basename}: ${cErr.message}`);
@@ -618,6 +687,61 @@ async function scanFolder(folderPath, opts = {}) {
           if (ageRanges.size > 0) entry.demographics.age_ranges = Array.from(ageRanges);
           if (genders.size > 0) entry.demographics.genders = Array.from(genders);
         }
+      }
+
+      // shot_type final (coste cero, reusa datos ya calculados): si hay caras
+      // detectadas, la ratio alto_cara/alto_frame manda — arregla la ceguera
+      // del VLM al TAMAÑO de la persona (llama "plano_medio" a todo). Si no hay
+      // caras, se conserva el shot_type del VLM (bueno en escena: general/
+      // conjunto). plano_detalle siempre lo decide el VLM (es semantico).
+      if (entry.composition) {
+        const st = computeShotType({
+          detections: faceDetections,
+          vlmShotType: entry.composition.shot_type,
+        });
+        entry.composition.shot_type = st.shot_type;
+        entry.composition.shot_type_source = st.source;
+        entry.composition.shot_type_confidence = st.confidence;
+        if (st.ratio != null) entry.composition.shot_type_face_ratio = st.ratio;
+
+        // people_framing (coste cero): el conteo real de InsightFace afina el
+        // bucket del VLM. Se combinan por maximo (ambos subcuentan, ninguno
+        // sobrecuenta): asi una "multitud de espaldas" que InsightFace no ve
+        // pero el VLM si, no se reporta como menos gente de la que hay.
+        const pf = computePeopleFraming({
+          faceCount: entry.identity ? entry.identity.face_count : null,
+          vlmFraming: entry.composition.people_framing,
+        });
+        entry.composition.people_framing = pf.people_framing;
+        entry.composition.people_framing_source = pf.source;
+      }
+
+      // time_of_day (coste ~cero): la hora REAL de captura (metadata) manda
+      // sobre la luz que adivina el VLM (un interior de noche parece de dia).
+      // video = creation_time (UTC+offset), foto = EXIF (hora local de pared).
+      // Sin timestamp valido, se conserva el VLM.
+      {
+        entry.atmosphere = entry.atmosphere || {};
+        const captureISO = isVideo
+          ? (entry.technical && entry.technical.creation_time)
+          : (entry.technical && entry.technical.capture_time);
+        const tod = computeTimeOfDay({
+          captureTimeISO: captureISO || null,
+          isVideo,
+          vlmTimeOfDay: entry.atmosphere.time_of_day,
+        });
+        entry.atmosphere.time_of_day = tod.time_of_day;
+        entry.atmosphere.time_of_day_source = tod.source;
+
+        // lighting (coste cero, conservador): unico override seguro es
+        // oscuro + capturado de noche -> nocturna. El resto lo deja al VLM.
+        const lt = computeLighting({
+          brightness: sceneBrightness,
+          timeOfDay: entry.atmosphere.time_of_day,
+          vlmLighting: entry.atmosphere.lighting,
+        });
+        entry.atmosphere.lighting = lt.lighting;
+        if (lt.source !== 'vlm') entry.atmosphere.lighting_source = lt.source;
       }
 
       const c = catalogsByDir.get(dir);

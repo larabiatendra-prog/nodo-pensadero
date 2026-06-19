@@ -106,7 +106,7 @@ clip físico se busca en `catalog.clips` por su **basename** exacto.
         "spaces": [{ "id": "Auditorio", "name": "Auditorio", "confidence": 0.0 }]
       },
       "demographics": { "age_ranges": [], "genders": [], "attire": "" },
-      "composition": { "shot_type": "plano_general", "people_framing": "ninguno" },
+      "composition": { "shot_type": "plano_general", "people_framing": "ninguno", "camera_angle": "normal", "camera_movement": "fijo", "scene_changes": false },
       "semantics": {
         "objects": ["libro"],
         "expressions": [],
@@ -118,6 +118,62 @@ clip físico se busca en `catalog.clips` por su **basename** exacto.
   }
 }
 ```
+
+### `composition.camera_movement` (solo vídeo)
+
+Enum colapsado a buckets gruesos (lo que se distingue con fiabilidad):
+`fijo` | `paneo` (horizontal) | `cabeceo` (vertical) | `acercamiento` (zoom/dolly
+in) | `alejamiento` (zoom/dolly out) | `inestable` (handheld) | `indeterminado`.
+
+En vídeo, este campo NO lo decide el VLM (es ciego al zoom lento y a paneos
+sutiles): lo mide `services/cameraMotionService.js` (daemon `python/camera_motion.py`)
+por **optical-flow en CPU** (features + LK + `estimateAffinePartial2D` con RANSAC,
+que separa cámara de sujetos). El mismo cálculo aporta `composition.scene_changes`
+(detección de cortes). El valor del VLM solo se conserva como fallback si el
+daemon no está disponible o sale con confianza baja. En fotos, `camera_movement`
+es siempre `null`.
+
+### `composition.shot_type` (hibrido cara + VLM)
+
+Se decide combinando dos fuentes, sin coste extra (reusa el bbox de InsightFace
+y el shot_type del VLM):
+
+- **Hay cara detectada** → `shot_type` por **ratio `alto_cara / alto_frame`**
+  (`utils/shotType.js`). El VLM es ciego al TAMAÑO de la persona en el cuadro
+  (llama `plano_medio` a casi todo); la ratio geométrica lo arregla. Buckets:
+  `primer_plano` (≥0.40) | `plano_medio` (≥0.18) | `plano_americano` (≥0.10) |
+  `plano_conjunto` (≥0.045) | `plano_general` (<0.045). Umbrales en
+  `SHOT_THRESHOLDS`, provisionales (calibrar con InsightFace real).
+- **No hay cara** → se conserva el `shot_type` del VLM (acierta la escala de
+  escena: general/conjunto/detalle).
+- **`plano_detalle`** lo decide siempre el VLM (es semántico: una mano, un ojo,
+  una textura; la ratio no lo puede saber).
+
+Campos auxiliares en `composition`: `shot_type_source` (`face`|`vlm`|`vlm-detalle`),
+`shot_type_confidence` (`alta`|`media`), `shot_type_face_ratio` (la ratio medida,
+para auditar/calibrar). `people_framing` (ninguno/individual/pareja/grupo/multitud)
+lo sigue dando el VLM y es independiente del tamaño del plano.
+
+### Señales deterministas que sustituyen/afinan al VLM (coste ~cero)
+
+Filosofia: donde el VLM adivina y hay una señal medible, manda la señal. Ya se
+hacia en colores (colorAnalyzer), tecnico (ffprobe), edad/genero y caras
+(InsightFace). Añadido:
+
+- **`people_framing`** ← `face_count` de InsightFace (`utils/peopleFraming.js`).
+  Buckets `ninguno|individual|pareja|grupo_pequeno|grupo_grande|multitud`. Se
+  combina con el VLM por **maximo** (ambos subcuentan, ninguno sobrecuenta): una
+  multitud de espaldas que InsightFace no ve pero el VLM si no se reporta de
+  menos. `people_framing_source`: `face|vlm|vlm-floor`.
+- **`time_of_day`** ← hora REAL de captura (`utils/timeOfDay.js`). Video:
+  `creation_time` de ffprobe (UTC + `CAPTURE_TZ_OFFSET_HOURS`, default +1).
+  Foto: EXIF `DateTimeOriginal` via `exif-reader` (hora local de pared). Manda
+  sobre la luz que adivina el VLM. Sin timestamp valido → VLM.
+  `time_of_day_source`: `meta-exif|meta-video|vlm`.
+- **`lighting`** ← ajuste CONSERVADOR (`utils/lighting.js`): unico override es
+  oscuro (brillo bajo de colorAnalyzer) + capturado de noche → `nocturna`. El
+  resto lo decide el VLM (las stats de imagen son ambiguas para luz_dorada/
+  contraluz/neon). `lighting_source` solo se marca cuando hubo override.
 
 ### Mapeo a `MediaFile`
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
 import { MediaFile } from '../types';
 
@@ -13,221 +13,58 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  
-  // Estados para doble buffer
+  // Doble buffer: que player ('A'/'B') muestra el video activo
   const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A');
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const [nextVideoPreloaded, setNextVideoPreloaded] = useState(false);
-  
+  const [isPreloaded, setIsPreloaded] = useState(false);
+
   // Referencias duales para doble buffer
   const videoRefA = useRef<HTMLVideoElement>(null);
   const videoRefB = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const controlsTimeoutRef = useRef<NodeJS.Timeout>();
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Filtrar solo videos
+  // Solo videos
   const videoFiles = videos.filter(file => file.type === 'video');
+  const total = videoFiles.length;
 
-  useEffect(() => {
-    if (!isOpen) return;
+  const getActiveVideoRef = () => (activePlayer === 'A' ? videoRefA : videoRefB);
+  const getInactiveVideoRef = () => (activePlayer === 'A' ? videoRefB : videoRefA);
 
-    // Entrar en pantalla completa al abrir
-    const enterFullscreen = async () => {
-      if (containerRef.current) {
-        try {
-          await containerRef.current.requestFullscreen();
-          setIsFullscreen(true);
-        } catch (error) {
-          console.warn('No se pudo entrar en pantalla completa:', error);
-        }
-      }
-    };
+  const nextIndex = total > 0 ? (currentVideoIndex + 1) % total : 0;
+  const prevIndex = currentVideoIndex === 0 ? total - 1 : currentVideoIndex - 1;
 
-    enterFullscreen();
+  const activeUrl = videoFiles[currentVideoIndex]?.url ?? '';
+  const inactiveUrl = videoFiles[nextIndex]?.url ?? '';
 
-    // Listener para detectar cambios de pantalla completa
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      if (!document.fullscreenElement) {
-        // Si se salió de pantalla completa, cerrar el modo presentación
-        onClose();
-      }
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-
-    // Listener para ESC
-    const handleKeyDown = (event: KeyboardEvent) => {
-      switch (event.key) {
-        case 'Escape':
-          onClose();
-          break;
-        case ' ':
-          event.preventDefault();
-          togglePlayPause();
-          break;
-        case 'ArrowRight':
-          event.preventDefault();
-          nextVideo();
-          break;
-        case 'ArrowLeft':
-          event.preventDefault();
-          previousVideo();
-          break;
-        case 'm':
-        case 'M':
-          event.preventDefault();
-          toggleMute();
-          break;
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, onClose]);
-
-  // Auto-ocultar controles
-  useEffect(() => {
-    if (showControls) {
-      if (controlsTimeoutRef.current) {
-        clearTimeout(controlsTimeoutRef.current);
-      }
-      controlsTimeoutRef.current = setTimeout(() => {
-        setShowControls(false);
-      }, 3000);
-    }
-
-    return () => {
-      if (controlsTimeoutRef.current) {
-        clearTimeout(controlsTimeoutRef.current);
-      }
-    };
-  }, [showControls]);
-
-  // Inicialización del doble buffer
-  useEffect(() => {
-    if (isOpen && videoFiles.length > 0 && videoRefA.current) {
-      // Cargar el primer video en el player A
-      const currentVideo = videoFiles[currentVideoIndex];
-      videoRefA.current.src = currentVideo.url;
-      videoRefA.current.muted = isMuted;
-      
-      console.log(`🎬 Cargando video inicial: ${currentVideo.name}`);
-      
-      // Pre-cargar el siguiente video después de un breve delay
-      if (videoFiles.length > 1) {
-        setTimeout(() => preloadNextVideo(), 2000);
-      }
-    }
-  }, [isOpen, videoFiles.length, currentVideoIndex, isMuted]);
-
-  const togglePlayPause = () => {
-    const activeVideoRef = getActiveVideoRef();
-    if (activeVideoRef.current) {
-      if (isPlaying) {
-        activeVideoRef.current.pause();
-      } else {
-        activeVideoRef.current.play();
-      }
-      setIsPlaying(!isPlaying);
-    }
+  // Avanzar: swap de player + indice. El inactivo ya tiene precargado el siguiente,
+  // asi que el corte es instantaneo. Setters funcionales => sin estado obsoleto.
+  const advance = () => {
+    if (total <= 1) return;
+    setActivePlayer(p => (p === 'A' ? 'B' : 'A'));
+    setCurrentVideoIndex(i => (i + 1) % total);
   };
 
-  const toggleMute = () => {
-    const activeVideoRef = getActiveVideoRef();
-    const inactiveVideoRef = getInactiveVideoRef();
-    
-    if (activeVideoRef.current) {
-      activeVideoRef.current.muted = !isMuted;
-    }
-    if (inactiveVideoRef.current) {
-      inactiveVideoRef.current.muted = !isMuted;
-    }
-    setIsMuted(!isMuted);
+  // Retroceder: no precargamos hacia atras, solo cambiamos indice (recarga el activo).
+  const goPrev = () => {
+    if (total <= 1) return;
+    setCurrentVideoIndex(i => (i === 0 ? total - 1 : i - 1));
   };
 
-  const nextVideo = () => {
-    if (nextVideoPreloaded && !isTransitioning) {
-      // Transición inmediata usando el video pre-cargado
-      setIsTransitioning(true);
-      const nextIndex = getNextVideoIndex();
-      
-      // Swap de players
-      setActivePlayer(prev => prev === 'A' ? 'B' : 'A');
-      setCurrentVideoIndex(nextIndex);
-      setNextVideoPreloaded(false);
-      
-      // Reproducir el video que ya estaba pre-cargado
-      const newActiveVideoRef = getInactiveVideoRef(); // Será el nuevo activo después del swap
-      if (newActiveVideoRef.current && isPlaying) {
-        newActiveVideoRef.current.play().catch(error => {
-          console.error('Error reproduciendo video pre-cargado:', error);
-        });
-      }
-      
-      // Pre-cargar el siguiente video
-      setTimeout(() => {
-        preloadNextVideo();
-        setIsTransitioning(false);
-      }, 100);
-      
-    } else {
-      // Fallback al método tradicional si no hay pre-carga
-      const nextIndex = getNextVideoIndex();
-      setCurrentVideoIndex(nextIndex);
+  const togglePlayPause = () => setIsPlaying(p => !p);
+  const toggleMute = () => setIsMuted(m => !m);
+
+  // Reset al abrir
+  useEffect(() => {
+    if (isOpen) {
+      setCurrentVideoIndex(0);
+      setActivePlayer('A');
       setIsPlaying(true);
+      setShowControls(true);
     }
-  };
+  }, [isOpen]);
 
-  const previousVideo = () => {
-    // Para ir hacia atrás, usar método tradicional (no pre-cargamos hacia atrás)
-    const prevIndex = getPrevVideoIndex();
-    const activeVideoRef = getActiveVideoRef();
-    
-    if (activeVideoRef.current) {
-      const prevVideo = videoFiles[prevIndex];
-      activeVideoRef.current.src = prevVideo.url;
-      activeVideoRef.current.muted = isMuted;
-    }
-    
-    setCurrentVideoIndex(prevIndex);
-    setIsPlaying(true);
-    setNextVideoPreloaded(false);
-    
-    // Pre-cargar el siguiente video después del cambio
-    setTimeout(() => preloadNextVideo(), 100);
-  };
-
-  const handleVideoEnded = () => {
-    // Siguiente video automáticamente (loop infinito)
-    nextVideo();
-  };
-
-  const handleVideoLoadedData = () => {
-    const activeVideoRef = getActiveVideoRef();
-    if (activeVideoRef.current && isPlaying) {
-      activeVideoRef.current.play().catch(error => {
-        console.error('Error reproduciendo video:', error);
-      });
-    }
-    
-    // Iniciar pre-carga del siguiente video
-    if (!nextVideoPreloaded) {
-      setTimeout(() => preloadNextVideo(), 1000);
-    }
-  };
-
-  const handleMouseMove = () => {
-    setShowControls(true);
-  };
-
+  // Salir limpio: abandona pantalla completa y cierra
   const handleClose = async () => {
-    // Salir de pantalla completa
     if (document.fullscreenElement) {
       try {
         await document.exitFullscreen();
@@ -238,100 +75,158 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
     onClose();
   };
 
-  // Funciones para doble buffer
-  const getActiveVideoRef = () => activePlayer === 'A' ? videoRefA : videoRefB;
-  const getInactiveVideoRef = () => activePlayer === 'A' ? videoRefB : videoRefA;
-  
-  const getNextVideoIndex = () => (currentVideoIndex + 1) % videoFiles.length;
-  const getPrevVideoIndex = () => currentVideoIndex === 0 ? videoFiles.length - 1 : currentVideoIndex - 1;
+  // Pantalla completa + teclado. handleClose y los setters son funcionales,
+  // por eso este efecto solo depende de isOpen/total y no captura estado obsoleto.
+  useEffect(() => {
+    if (!isOpen) return;
 
-  const preloadNextVideo = () => {
-    if (videoFiles.length <= 1) return;
-    
-    const nextIndex = getNextVideoIndex();
-    const nextVideo = videoFiles[nextIndex];
-    const inactiveVideoRef = getInactiveVideoRef();
-    
-    if (inactiveVideoRef.current && nextVideo) {
-      console.log(`🔄 Pre-cargando video: ${nextVideo.name}`);
-      inactiveVideoRef.current.src = nextVideo.url;
-      inactiveVideoRef.current.muted = isMuted;
-      inactiveVideoRef.current.load();
-      
-      const handleCanPlayThrough = () => {
-        setNextVideoPreloaded(true);
-        console.log(`✅ Video pre-cargado: ${nextVideo.name}`);
-        inactiveVideoRef.current?.removeEventListener('canplaythrough', handleCanPlayThrough);
-      };
-      
-      inactiveVideoRef.current.addEventListener('canplaythrough', handleCanPlayThrough);
+    const enterFullscreen = async () => {
+      if (containerRef.current) {
+        try {
+          await containerRef.current.requestFullscreen();
+        } catch (error) {
+          console.warn('No se pudo entrar en pantalla completa:', error);
+        }
+      }
+    };
+    enterFullscreen();
+
+    // Si el usuario sale de fullscreen (ESC del navegador), cerramos el modo
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement) onClose();
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      switch (event.key) {
+        case 'Escape':
+          event.preventDefault();
+          handleClose();
+          break;
+        case ' ':
+          event.preventDefault();
+          togglePlayPause();
+          break;
+        case 'ArrowRight':
+          event.preventDefault();
+          advance();
+          break;
+        case 'ArrowLeft':
+          event.preventDefault();
+          goPrev();
+          break;
+        case 'm':
+        case 'M':
+          event.preventDefault();
+          toggleMute();
+          break;
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, total]);
+
+  // Auto-ocultar controles
+  useEffect(() => {
+    if (!showControls) return;
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
+    return () => {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
+  }, [showControls]);
+
+  // Control unico de reproduccion: reacciona al swap/indice/play/mute.
+  // El activo reproduce segun isPlaying; el inactivo queda pausado y silenciado
+  // (precarga). Asi no hay logica de play dispersa ni audio del buffer oculto.
+  useEffect(() => {
+    if (!isOpen) return;
+    const active = getActiveVideoRef().current;
+    const inactive = getInactiveVideoRef().current;
+    if (active) {
+      active.muted = isMuted;
+      if (isPlaying) {
+        active.play().catch(error => console.warn('Error reproduciendo video:', error));
+      } else {
+        active.pause();
+      }
     }
-  };
+    if (inactive) {
+      inactive.muted = true;
+      inactive.pause();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, currentVideoIndex, activePlayer, isPlaying, isMuted]);
 
-  if (!isOpen || videoFiles.length === 0) {
-    return null;
-  }
+  // Resetear indicador de precarga al cambiar de video
+  useEffect(() => {
+    setIsPreloaded(false);
+  }, [currentVideoIndex]);
+
+  const handleMouseMove = () => setShowControls(true);
+
+  if (!isOpen || total === 0) return null;
 
   const currentVideo = videoFiles[currentVideoIndex];
+  const isActiveA = activePlayer === 'A';
 
   return (
-    <div 
+    <div
       ref={containerRef}
       className="fixed inset-0 bg-noche z-[9999] flex items-center justify-center"
       onMouseMove={handleMouseMove}
       style={{ cursor: showControls ? 'default' : 'none' }}
     >
-      {/* Doble buffer de videos - Corte instantáneo */}
-      {/* Video Player A */}
+      {/* Doble buffer: el src se controla SOLO de forma declarativa.
+          Activo = video actual; inactivo = siguiente (precarga). Al hacer swap,
+          el inactivo ya cargado pasa a activo sin recargar => corte instantaneo. */}
       <video
         ref={videoRefA}
-        src={activePlayer === 'A' ? currentVideo.url : ''}
-        className={`absolute inset-0 w-full h-full object-contain ${
-          activePlayer === 'A' ? 'z-50' : 'z-10'
-        }`}
-        style={{ 
-          opacity: activePlayer === 'A' ? 1 : 0,
-          pointerEvents: activePlayer === 'A' ? 'auto' : 'none'
-        }}
-        onEnded={activePlayer === 'A' ? handleVideoEnded : undefined}
-        onLoadedData={activePlayer === 'A' ? handleVideoLoadedData : undefined}
-        muted={isMuted}
-        autoPlay={activePlayer === 'A'}
+        src={isActiveA ? activeUrl : inactiveUrl}
+        preload="auto"
+        className={`absolute inset-0 w-full h-full object-contain ${isActiveA ? 'z-10' : 'z-0'}`}
+        style={{ opacity: isActiveA ? 1 : 0, pointerEvents: 'none' }}
+        onEnded={isActiveA ? advance : undefined}
+        onCanPlayThrough={!isActiveA ? () => setIsPreloaded(true) : undefined}
         playsInline
       />
-      
-      {/* Video Player B */}
       <video
         ref={videoRefB}
-        src={activePlayer === 'B' ? currentVideo.url : ''}
-        className={`absolute inset-0 w-full h-full object-contain ${
-          activePlayer === 'B' ? 'z-50' : 'z-10'
-        }`}
-        style={{ 
-          opacity: activePlayer === 'B' ? 1 : 0,
-          pointerEvents: activePlayer === 'B' ? 'auto' : 'none'
-        }}
-        onEnded={activePlayer === 'B' ? handleVideoEnded : undefined}
-        onLoadedData={activePlayer === 'B' ? handleVideoLoadedData : undefined}
-        muted={isMuted}
-        autoPlay={activePlayer === 'B'}
+        src={!isActiveA ? activeUrl : inactiveUrl}
+        preload="auto"
+        className={`absolute inset-0 w-full h-full object-contain ${!isActiveA ? 'z-10' : 'z-0'}`}
+        style={{ opacity: !isActiveA ? 1 : 0, pointerEvents: 'none' }}
+        onEnded={!isActiveA ? advance : undefined}
+        onCanPlayThrough={isActiveA ? () => setIsPreloaded(true) : undefined}
         playsInline
       />
 
+      {/* Overlay de click (toggle play). Encima del video (z-10), debajo de controles (z-30). */}
+      <div
+        className="absolute inset-0 z-20"
+        onClick={togglePlayPause}
+        style={{ cursor: showControls ? 'pointer' : 'none' }}
+      />
+
       {/* Controles superpuestos */}
-      <div 
-        className={`absolute inset-0 transition-opacity duration-300 ${
+      <div
+        className={`absolute inset-0 z-30 transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
       >
-        {/* Header con información del video */}
+        {/* Header con informacion del video */}
         <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/70 to-transparent p-6">
           <div className="flex items-center justify-between">
             <div className="text-white">
               <h1 className="text-xl font-semibold mb-2" title={currentVideo.name}>{currentVideo.displayName || currentVideo.name}</h1>
               <p className="text-white/80 text-sm flex items-center gap-3">
-                <span>Video {currentVideoIndex + 1} de {videoFiles.length}</span>
-                {nextVideoPreloaded && videoFiles.length > 1 && (
+                <span>Video {currentVideoIndex + 1} de {total}</span>
+                {isPreloaded && total > 1 && (
                   <span className="inline-flex items-center gap-1 text-green-400 text-xs">
                     <span className="w-2 h-2 bg-green-400 rounded-full"></span>
                     Pre-cargado
@@ -340,7 +235,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
                 {currentVideo.tags.length > 0 && (
                   <span className="inline-flex items-center gap-2">
                     {currentVideo.tags.slice(0, 3).map((tag) => (
-                      <span 
+                      <span
                         key={tag}
                         className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium"
                       >
@@ -367,13 +262,13 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="flex items-center space-x-8">
             <button
-              onClick={previousVideo}
+              onClick={goPrev}
               className="text-white/80 hover:text-white transition-colors p-4 rounded-full hover:bg-tinta/20"
-              disabled={videoFiles.length <= 1}
+              disabled={total <= 1}
             >
               <SkipBack className="w-8 h-8" />
             </button>
-            
+
             <button
               onClick={togglePlayPause}
               className="text-white bg-tinta/20 hover:bg-tinta/30 transition-colors p-6 rounded-full"
@@ -384,11 +279,11 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
                 <Play className="w-10 h-10 ml-1" />
               )}
             </button>
-            
+
             <button
-              onClick={nextVideo}
+              onClick={advance}
               className="text-white/80 hover:text-white transition-colors p-4 rounded-full hover:bg-tinta/20"
-              disabled={videoFiles.length <= 1}
+              disabled={total <= 1}
             >
               <SkipForward className="w-8 h-8" />
             </button>
@@ -433,7 +328,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
               <div
                 className="bg-tinta rounded-full h-1 transition-all duration-300"
                 style={{
-                  width: `${((currentVideoIndex + 1) / videoFiles.length) * 100}%`
+                  width: `${((currentVideoIndex + 1) / total) * 100}%`
                 }}
               />
             </div>
@@ -445,13 +340,6 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
           </div>
         </div>
       </div>
-
-      {/* Overlay para clicks en el video */}
-      <div 
-        className="absolute inset-0 cursor-pointer"
-        onClick={togglePlayPause}
-        style={{ cursor: showControls ? 'pointer' : 'none' }}
-      />
     </div>
   );
 }

@@ -638,6 +638,9 @@ class ApiService {
         hasContext: boolean;
         context: { meta: Record<string, any>; body: string } | null;
         folderName: string | null;
+        // Cobertura de escaneo visual de los archivos DIRECTOS de la carpeta.
+        visualTotal: number;
+        visualScanned: number;
       }>;
     }>>(`${API_BASE_URL}/scan/inventory?${qs}`);
   }

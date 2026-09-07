@@ -37,23 +37,87 @@ function formatYYMMDD(s: string): string | null {
   return `${dd} ${MONTHS_ES[mm - 1]} ${year}`;
 }
 
+/** Carpeta cuyo nombre empieza por fecha "YYMMDD_" o "YYMMDD ". */
+const FOLDER_DATE_PREFIX = /^\d{6}[_\s]/;
+
+/** Archivo con lo minimo para resolver su sesion. */
+export interface SessionFileRef {
+  name: string;
+  displayName?: string | null;
+  mediaKey?: string | null;
+  fullPath?: string | null;
+}
+
+/**
+ * Clave de sesion derivada de la CARPETA contenedora, en identidad portable
+ * ("<libraryId>:ruta/relativa/de/la/carpeta", sin el archivo).
+ *
+ * Es la clave mas robusta disponible porque no depende de como se llamen los
+ * archivos: el material de camara sale como "P1248470.MP4" y no hay patron
+ * alguno que extraer. La carpeta, en cambio, es la unidad atomica de
+ * significado del proyecto y siempre existe.
+ *
+ * Portable a proposito (misma forma que folder_names.json): si cambia la letra
+ * de unidad, la sesion y sus notas siguen siendo la misma.
+ */
+export function getFolderSessionKey(file: SessionFileRef): string | null {
+  const mk = file.mediaKey && file.mediaKey.trim();
+  if (!mk) return null;
+  const idx = mk.lastIndexOf('/');
+  // Sin '/' el archivo cuelga de la raiz de la biblioteca. Ahi la "sesion"
+  // seria la biblioteca entera, que no agrupa nada util: mejor archivo suelto.
+  if (idx === -1) return null;
+  return mk.slice(0, idx);
+}
+
+/**
+ * Texto legible del que derivar la etiqueta de una sesion de carpeta. Sale de
+ * `fullPath` y no de `mediaKey` para conservar mayusculas y acentos, que
+ * mediaKey normaliza a minusculas.
+ *
+ * Si la carpeta no lleva fecha en el nombre ("clips", "seleccion"), se
+ * antepone el ancestro que si la lleve: una tarjeta que solo dijera "clips"
+ * no situa el material en ningun sitio.
+ */
+export function getFolderLabelSource(file: SessionFileRef): string | null {
+  const fp = file.fullPath;
+  if (!fp) return null;
+  const segs = fp.split(/[\\/]/).filter(Boolean);
+  if (segs.length < 2) return null;
+  const carpeta = segs[segs.length - 2]; // el ultimo segmento es el archivo
+  if (FOLDER_DATE_PREFIX.test(carpeta)) return carpeta;
+  for (let i = segs.length - 3; i >= 0; i--) {
+    if (FOLDER_DATE_PREFIX.test(segs[i])) return `${segs[i]} / ${carpeta}`;
+  }
+  return carpeta;
+}
+
 /**
  * Clave de sesion de un archivo. Prioridad:
  *  1) displayName (nombre de presentacion por carpeta) -> la CARPETA es la sesion;
  *     se quita el sufijo "_NNN" para que todos sus archivos compartan clave.
- *     Funciona con cualquier nombre de carpeta, lleve o no patron de fecha.
- *  2) fallback: patron "Prefijo - YYMMDD" en el nombre fisico (libreria sin rename).
+ *     Dos carpetas con el MISMO displayName se funden en una sola sesion, que
+ *     es como se unen una carpeta y su subcarpeta "clips".
+ *  2) patron "Prefijo - YYMMDD" en el nombre fisico (bibliotecas ya nombradas
+ *     asi). Va antes que la carpeta para no re-agrupar lo que hoy ya funciona.
+ *  3) la carpeta contenedora, en identidad portable. Es la red de seguridad:
+ *     con nombres de camara ("P1248470") los dos primeros no dan nada y sin
+ *     esto el material quedaba suelto, sin poder colapsarse.
  */
-export function getFileSessionKey(file: { name: string; displayName?: string | null }): string | null {
+export function getFileSessionKey(file: SessionFileRef): string | null {
   const dn = file.displayName && file.displayName.trim();
   if (dn) return stripFolderIndex(dn);
-  return getSessionKey(file.name);
+  const porNombre = getSessionKey(file.name);
+  if (porNombre) return porNombre;
+  return getFolderSessionKey(file);
 }
 
-/** String del que derivar etiqueta/fecha: displayName (sin "_NNN") si existe, si no el nombre fisico. */
-export function getSessionLabelSource(file: { name: string; displayName?: string | null }): string {
+/** String del que derivar etiqueta/fecha. Sigue la misma prioridad que la clave. */
+export function getSessionLabelSource(file: SessionFileRef): string {
   const dn = file.displayName && file.displayName.trim();
-  return dn ? stripFolderIndex(dn) : file.name;
+  if (dn) return stripFolderIndex(dn);
+  if (getSessionKey(file.name)) return file.name;
+  return getFolderLabelSource(file) || file.name;
 }
 
 /**

@@ -1115,6 +1115,11 @@ const scanRoutes = createScanRoutes({
   syncFiles,
   loadScanPaths,
   refreshDir: refreshFilesInDir,
+  // El inventario lo usa para contar, por subcarpeta, cuantos archivos tienen
+  // ya descripcion visual. Sin esto la UI de Rutas puede listar subcarpetas
+  // pero no decir cuales estan pendientes, que es lo que hace falta para
+  // decidir donde lanzar un escaneo.
+  getMediaFiles: () => mediaFiles,
 });
 app.use('/api', scanRoutes);
 

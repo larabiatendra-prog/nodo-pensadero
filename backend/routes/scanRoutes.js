@@ -30,7 +30,7 @@ const folderNames = require('../folderNames');
 const pathsConfig = require('../config/paths');
 
 module.exports = function createScanRoutes(deps) {
-  const { broadcastProgress, syncFiles, loadScanPaths, refreshDir } = deps || {};
+  const { broadcastProgress, syncFiles, loadScanPaths, refreshDir, getMediaFiles } = deps || {};
 
   // Normaliza una ruta para comparación: absoluta, minúsculas, sin separador
   // final. En Windows el FS es case-insensitive, así que comparar en minúsculas
@@ -453,14 +453,33 @@ module.exports = function createScanRoutes(deps) {
         return res.status(404).json({ success: false, error: `Ruta no encontrada o no es directorio: ${folderPath}` });
       }
       const folders = await scanOrchestrator.listFoldersWithMedia(folderPath);
+
+      // Cobertura de escaneo visual por carpeta (solo archivos DIRECTOS de cada
+      // una, no recursivo: cada subcarpeta se escanea y se reporta por separado).
+      // Se cuenta sobre la lista en memoria, que es la que refleja el estado real.
+      const media = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const normDir = (s) => (s || '').replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+      const descritosPorDir = new Map();
+      for (const f of media) {
+        if (!f.fullPath) continue;
+        const dir = normDir(f.fullPath.replace(/[\\/][^\\/]+$/, ''));
+        let e = descritosPorDir.get(dir);
+        if (!e) { e = { total: 0, descritos: 0 }; descritosPorDir.set(dir, e); }
+        e.total++;
+        if (typeof f.visual_description === 'string' && f.visual_description.trim()) e.descritos++;
+      }
+
       const enriched = await Promise.all(folders.map(async (f) => {
         const ctx = await folderContext.readFolderContext(f.dir);
+        const cobertura = descritosPorDir.get(normDir(f.dir)) || { total: 0, descritos: 0 };
         return {
           ...f,
           hasContext: ctx.exists,
           context: ctx.exists ? { meta: ctx.meta, body: ctx.body } : null,
           // Display name editable de la carpeta (null si conserva el original).
           folderName: folderNames.getName(f.dir),
+          visualTotal: cobertura.total,
+          visualScanned: cobertura.descritos,
         };
       }));
       // Estado de la raíz también — interesa saber si tiene _contexto.md

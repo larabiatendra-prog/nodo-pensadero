@@ -57,6 +57,12 @@ export interface MediaFile {
   displayName?: string;
   folderIndex?: number;  // posicion 1..N dentro de la carpeta con override
   folderTotal?: number;  // total de archivos de la carpeta con override
+  // Identidad portable "<libraryId>:<ruta/relativa/normalizada>" (ver
+  // backend/utils/mediaIdentity.js). El backend ya la enviaba; se declara aqui
+  // porque la agrupacion en sesiones deriva de ella la clave de carpeta.
+  mediaKey?: string;
+  libraryId?: string;
+  relativePath?: string;
   // Campos enriquecidos del catalog (_marina.json) — opcionales
   visual_description?: string;
   ocr_text?: string;

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square, Tag, AlertTriangle } from 'lucide-react';
+import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square, Tag, AlertTriangle, ChevronRight, ChevronDown, Folder } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { api } from '../services/api';
 import type { VlmModel } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -34,6 +35,19 @@ interface AiScanState {
   // degradado termina "con exito" pero deja el catalogo incompleto: sin esto,
   // no habia forma de enterarse hasta buscar una cara meses despues.
   degraded?: string[];
+}
+
+/** Subcarpeta de una biblioteca, tal como la devuelve /api/scan/inventory. */
+interface SubfolderInfo {
+  dir: string;
+  relPath: string;
+  mediaCount: number;
+  imageCount: number;
+  videoCount: number;
+  hasContext: boolean;
+  folderName: string | null;
+  visualTotal: number;
+  visualScanned: number;
 }
 
 // Nombres legibles de las capacidades que pueden caerse durante un escaneo.
@@ -99,6 +113,59 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [batchScan, setBatchScan] = useState<{ running: boolean; total: number; processed: number; force: boolean } | null>(null);
   // Resumen transitorio al terminar el batch (tiempo total). Se autolimpia.
   const [batchSummary, setBatchSummary] = useState<{ processed: number; total: number; elapsedMs: number; aborted: boolean } | null>(null);
+
+  // --- Subcarpetas desplegables por ruta ---
+  // Una biblioteca como C:\VIDEO\BRUTOS es en realidad un arbol de sesiones, y
+  // desde aqui solo se podia operar sobre la raiz: escanear todo o nada. El
+  // inventario se pide bajo demanda (al desplegar), no al cargar la pagina,
+  // porque recorrer el arbol de una biblioteca grande no es gratis.
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [subfolders, setSubfolders] = useState<Map<string, SubfolderInfo[]>>(new Map());
+  const [loadingSubfolders, setLoadingSubfolders] = useState<Set<string>>(new Set());
+
+  const toggleSubfolders = async (pathId: string, rootPath: string) => {
+    const abierto = expandedPaths.has(pathId);
+    setExpandedPaths(prev => {
+      const next = new Set(prev);
+      if (abierto) next.delete(pathId); else next.add(pathId);
+      return next;
+    });
+    if (abierto || subfolders.has(pathId)) return;
+
+    setLoadingSubfolders(prev => new Set(prev).add(pathId));
+    try {
+      const r = await api.scanInventory(rootPath);
+      if (r.success && r.data) {
+        // Solo carpetas con archivos propios: las que solo contienen
+        // subcarpetas no son una sesion, son un contenedor.
+        const utiles = r.data.folders.filter(f => (f.visualTotal ?? 0) > 0);
+        setSubfolders(prev => new Map(prev).set(pathId, utiles));
+      }
+    } catch {
+      toast.error('No se pudo leer el contenido de la ruta');
+    } finally {
+      setLoadingSubfolders(prev => {
+        const next = new Set(prev);
+        next.delete(pathId);
+        return next;
+      });
+    }
+  };
+
+  // Lanza el escaneo de UNA subcarpeta. Reutiliza /scan/start, que ya acepta
+  // cualquier ruta contenida en una biblioteca configurada.
+  const handleScanSubfolder = async (dir: string, force: boolean) => {
+    try {
+      const r: any = await api.startScan(dir, force);
+      if (r.success) {
+        toast.success(force ? 'Re-escaneando la subcarpeta' : 'Escaneando lo pendiente de la subcarpeta');
+      } else {
+        toast.error(r.error || 'No se pudo iniciar el escaneo');
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'No se pudo iniciar el escaneo');
+    }
+  };
 
   // WebSocket para progreso en tiempo real
   // El estado de conexion lo pinta ConnectionBanner desde App, global a toda
@@ -839,6 +906,16 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               <div className="flex items-start justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-3">
+                    <button
+                      onClick={() => toggleSubfolders(path.id, path.path)}
+                      className="p-1 -ml-1 rounded-lg text-lavanda-archivo hover:text-marfil hover:bg-pizarra transition-colors"
+                      title={expandedPaths.has(path.id) ? 'Ocultar subcarpetas' : 'Ver y operar sobre las subcarpetas'}
+                      aria-expanded={expandedPaths.has(path.id)}
+                    >
+                      {expandedPaths.has(path.id)
+                        ? <ChevronDown className="w-4 h-4" />
+                        : <ChevronRight className="w-4 h-4" />}
+                    </button>
                     {getStatusIcon(path.status)}
                     <h3 className="font-semibold text-lg text-marfil">{path.path}</h3>
                     <span className={`px-2 py-1 text-xs rounded-full ${
@@ -1063,6 +1140,76 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                   </div>
                 );
               })()}
+
+              {/* Subcarpetas: cada una es una sesion y se puede escanear por
+                  separado, sin arrastrar el resto de la biblioteca. */}
+              {expandedPaths.has(path.id) && (
+                <div className="mt-4 border-t border-pizarra pt-3">
+                  {loadingSubfolders.has(path.id) ? (
+                    <div className="flex items-center gap-2 text-sm text-lavanda-archivo py-2">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Leyendo el contenido de la ruta...
+                    </div>
+                  ) : (subfolders.get(path.id) || []).length === 0 ? (
+                    <p className="text-sm text-lavanda-archivo py-2">
+                      Esta ruta no tiene subcarpetas con archivos propios.
+                    </p>
+                  ) : (
+                    <div className="space-y-1">
+                      {(subfolders.get(path.id) || []).map((sf) => {
+                        const pendientes = Math.max(0, sf.visualTotal - sf.visualScanned);
+                        const pct = sf.visualTotal > 0
+                          ? Math.round((sf.visualScanned / sf.visualTotal) * 100)
+                          : 0;
+                        const color = pct === 100 ? 'text-salvia' : pct > 0 ? 'text-lavanda' : 'text-humo';
+                        return (
+                          <div
+                            key={sf.dir}
+                            className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl hover:bg-pizarra/60 transition-colors group"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Folder className="w-4 h-4 text-lavanda-archivo shrink-0" />
+                              <div className="min-w-0">
+                                <p className="text-sm text-marfil truncate" title={sf.dir}>
+                                  {sf.folderName || sf.relPath}
+                                </p>
+                                <p className="text-xs text-humo">
+                                  {sf.videoCount > 0 && `${sf.videoCount} video${sf.videoCount === 1 ? '' : 's'}`}
+                                  {sf.videoCount > 0 && sf.imageCount > 0 && ' · '}
+                                  {sf.imageCount > 0 && `${sf.imageCount} foto${sf.imageCount === 1 ? '' : 's'}`}
+                                  {sf.hasContext && ' · con contexto'}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 shrink-0">
+                              <span className={`text-xs font-medium ${color}`} title={`${sf.visualScanned} de ${sf.visualTotal} descritos`}>
+                                {pct}%
+                              </span>
+                              <button
+                                onClick={() => handleScanSubfolder(sf.dir, false)}
+                                disabled={!vlmHealth?.ollamaRunning || pendientes === 0}
+                                className="px-2 py-1 rounded-lg text-xs font-medium bg-lavanda/20 text-lavanda hover:bg-lavanda hover:text-noche transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-lavanda/20 disabled:hover:text-lavanda"
+                                title={pendientes > 0 ? `Describir los ${pendientes} pendientes` : 'No queda nada pendiente aqui'}
+                              >
+                                Escanear
+                              </button>
+                              <button
+                                onClick={() => handleScanSubfolder(sf.dir, true)}
+                                disabled={!vlmHealth?.ollamaRunning}
+                                className="px-2 py-1 rounded-lg text-xs font-medium bg-pizarra text-lavanda-archivo hover:bg-melocoton hover:text-noche transition-colors disabled:opacity-40 disabled:cursor-not-allowed opacity-0 group-hover:opacity-100"
+                                title="Volver a describir TODOS los archivos de esta subcarpeta"
+                              >
+                                Re-escanear
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}

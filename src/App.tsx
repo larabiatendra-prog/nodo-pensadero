@@ -39,6 +39,7 @@ import { EditCollectionModal } from './components/EditCollectionModal';
 import ImageSearchView from './components/ImageSearchView';
 import { QuickPreviewOverlay } from './components/QuickPreviewOverlay';
 import { ConnectionBanner } from './components/ConnectionBanner';
+import { getFileSortDate } from './utils/filenameParser';
 import { normalizePath } from './utils/formatData';
 
 // ── Routing por URL (Eje B) ────────────────────────────────────────────────
@@ -1456,8 +1457,8 @@ function App() {
             // 3. Apply natural sorting to collection files
             files = files.sort((a, b) => {
               // Primary: Sort by extracted date (if different)
-              const dateA = extractDateFromFilename(a.displayName || a.name);
-              const dateB = extractDateFromFilename(b.displayName || b.name);
+              const dateA = getFileSortDate(a);
+              const dateB = getFileSortDate(b);
               if (dateA !== dateB) {
                 return dateB - dateA; // Descending (newest first)
               }
@@ -2523,26 +2524,6 @@ function App() {
   };
 
   // Función para extraer fecha YYMMDD del nombre del archivo
-  const extractDateFromFilename = (filename: string): number => {
-    // Patrón YYMMDD tras guion ("Prefijo - 240617") o al inicio ("260616_Prueba",
-    // formato NODO / display name). Asi el orden del home respeta la fecha del
-    // nombre de presentacion, no solo la del nombre fisico crudo.
-    const match = filename.match(/(?:^|-\s*)(\d{6})/);
-    if (match) {
-      const dateStr = match[1];
-      // Convertir YYMMDD a un número para comparación (más grande = más reciente)
-      // Asumimos que YY > 50 es 19XX, y YY <= 50 es 20XX
-      const yy = parseInt(dateStr.substring(0, 2));
-      const mm = parseInt(dateStr.substring(2, 4));
-      const dd = parseInt(dateStr.substring(4, 6));
-
-      const year = yy > 50 ? 1900 + yy : 2000 + yy;
-
-      // Retornar como número YYYYMMDD para facilitar comparación
-      return year * 10000 + mm * 100 + dd;
-    }
-    return 0; // Si no tiene fecha, va al final
-  };
 
   // Intl.Collator reutilizable para mejor rendimiento
   const collator = React.useMemo(() => new Intl.Collator(undefined, {
@@ -2600,7 +2581,7 @@ function App() {
     return filteredFiles
       .map((file, originalIndex) => ({
         file,
-        date: extractDateFromFilename(file.displayName || file.name),
+        date: getFileSortDate(file),
         originalIndex, // For stable sorting fallback
         id: file.id
       }))
@@ -2621,7 +2602,7 @@ function App() {
       })
       .map(item => item.file); // Extract back to original file objects
 
-  }, [filteredFiles, activeView, selectedCollectionId, extractDateFromFilename, optimizedNameCompare, imageSearchFileIds, naturalSearchIds]);
+  }, [filteredFiles, activeView, selectedCollectionId, optimizedNameCompare, imageSearchFileIds, naturalSearchIds]);
 
   // ── Timeline-onda (pasiva) del home ─────────────────────────────────────
   // Solo cuando el grid esta en orden cronologico real: home, sin coleccion,
@@ -2634,8 +2615,8 @@ function App() {
 
   const timelineDateValues = React.useMemo(() => {
     if (!showTimeline) return [];
-    return sortedFiles.map(f => extractDateFromFilename(f.displayName || f.name));
-  }, [showTimeline, sortedFiles, extractDateFromFilename]);
+    return sortedFiles.map(f => getFileSortDate(f));
+  }, [showTimeline, sortedFiles]);
 
   // ── Saltar a fecha al pinchar la onda ───────────────────────────────────
   // Busca el primer archivo de ese mes, carga lo necesario (scroll infinito) y

@@ -92,6 +92,61 @@ export function getFolderLabelSource(file: SessionFileRef): string | null {
   return carpeta;
 }
 
+/** "YYMMDD" -> numero YYYYMMDD comparable, o 0 si no es fecha valida. */
+function yymmddToNumber(s: string): number {
+  const yy = parseInt(s.substring(0, 2), 10);
+  const mm = parseInt(s.substring(2, 4), 10);
+  const dd = parseInt(s.substring(4, 6), 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return 0;
+  return (yy > 50 ? 1900 + yy : 2000 + yy) * 10000 + mm * 100 + dd;
+}
+
+/** Fecha YYMMDD al inicio del texto o tras un guion ("Prefijo - 240617"). */
+function dateFromText(texto: string): number {
+  const m = texto.match(/(?:^|-\s*)(\d{6})/);
+  return m ? yymmddToNumber(m[1]) : 0;
+}
+
+/**
+ * Fecha de un archivo para ORDENAR, como numero YYYYMMDD (mas grande = mas
+ * reciente). Cadena de resolucion, de la senal mas intencional a la mas cruda:
+ *
+ *  1) el nombre de presentacion o el fisico, si llevan fecha;
+ *  2) la CARPETA contenedora (o el ancestro con fecha). Es lo que rescata el
+ *     material de camara: "P1248458.MP4" no dice nada, pero vive en
+ *     "260906_La Fenix" y esa fecha es la buena;
+ *  3) la fecha del propio archivo en disco.
+ *
+ * Sin el paso 2 todo el material de camara empataba en 0 y el orden colapsaba
+ * a alfabetico por nombre, con el efecto perverso de que las pocas carpetas
+ * con fecha en el nombre se colocaban DELANTE por viejas que fuesen.
+ */
+export function getFileSortDate(file: SessionFileRef & { createdAt?: Date | string; modifiedAt?: Date | string }): number {
+  const porNombre = dateFromText((file.displayName && file.displayName.trim()) || file.name || '');
+  if (porNombre) return porNombre;
+
+  const fp = file.fullPath;
+  if (fp) {
+    const segs = fp.split(/[\\/]/).filter(Boolean);
+    // De la carpeta contenedora hacia arriba; se ignora el ultimo segmento
+    // (el archivo), que ya se ha probado en el paso 1.
+    for (let i = segs.length - 2; i >= 0; i--) {
+      const d = dateFromText(segs[i]);
+      if (d) return d;
+    }
+  }
+
+  const bruto = file.createdAt || file.modifiedAt;
+  if (bruto) {
+    const d = bruto instanceof Date ? bruto : new Date(bruto);
+    if (!isNaN(d.getTime())) {
+      return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    }
+  }
+
+  return 0; // Sin fecha por ningun lado: al final.
+}
+
 /**
  * Clave de sesion de un archivo. Prioridad:
  *  1) displayName (nombre de presentacion por carpeta) -> la CARPETA es la sesion;

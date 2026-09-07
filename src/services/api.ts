@@ -13,7 +13,10 @@ export interface ApiResponse<T> {
 // produccion | experimento | legacy | otro. installed=false → "pendiente de descarga".
 export interface VlmModel {
   name: string;
-  tier: 'produccion' | 'experimento' | 'legacy' | 'otro';
+  // 'no_cabe': modelo valido pero que no entra en la VRAM de esta maquina.
+  // Se ofrece igual, avisando, en vez de dejar que el escaneo se arrastre sin
+  // explicacion.
+  tier: 'produccion' | 'experimento' | 'legacy' | 'otro' | 'no_cabe';
   label: string;
   notes: string;
   installed: boolean;

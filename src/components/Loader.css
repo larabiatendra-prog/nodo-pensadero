@@ -1,0 +1,191 @@
+/* ============================================
+   Pensadero — Loader (animaciones de carga)
+   Paleta noche/lavanda · 8 variantes temáticas
+   Prefijo pl- en keyframes/clases para no colisionar
+   con utilidades de Tailwind (p.ej. animate-spin).
+   ============================================ */
+
+/* ---- Keyframes ---- */
+@keyframes pl-ambientDrift  { 0%,100%{transform:translate(0,0) scale(1)}    50%{transform:translate(5%,-4%) scale(1.12)} }
+@keyframes pl-ambientDrift2 { 0%,100%{transform:translate(0,0) scale(1.05)} 50%{transform:translate(-6%,5%) scale(0.94)} }
+@keyframes pl-beamSweep     { 0%{top:-14%;opacity:0}7%{opacity:.95}93%{opacity:.95}100%{top:100%;opacity:0} }
+@keyframes pl-tileScan      { 0%{opacity:0;box-shadow:0 0 0 0 rgba(200,182,255,0)}4%{opacity:1;box-shadow:0 0 0 2px #C8B6FF,0 0 20px 2px rgba(200,182,255,.45)}22%{opacity:1;box-shadow:0 0 0 1.5px rgba(200,182,255,.5),0 0 0 0 rgba(0,0,0,0)}90%{opacity:1}100%{opacity:0;box-shadow:0 0 0 0 rgba(200,182,255,0)} }
+@keyframes pl-spin          { to{transform:rotate(360deg)} }
+@keyframes pl-spinRev       { to{transform:rotate(-360deg)} }
+@keyframes pl-pulseGlow     { 0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.22);opacity:.9} }
+@keyframes pl-progSlide     { 0%{transform:translateX(-110%)}100%{transform:translateX(360%)} }
+@keyframes pl-dotsBlink     { 0%,80%,100%{opacity:.25}40%{opacity:1} }
+@keyframes pl-facePop       { 0%,100%{opacity:0;transform:scale(.55)}16%,68%{opacity:1;transform:scale(1)} }
+@keyframes pl-reticleScan   { 0%{transform:translateY(-84px)}50%{transform:translateY(84px)}100%{transform:translateY(-84px)} }
+@keyframes pl-dashDraw      { 0%{stroke-dashoffset:260}45%,100%{stroke-dashoffset:0} }
+@keyframes pl-nodePulse     { 0%,100%{transform:scale(1);opacity:.78}50%{transform:scale(1.28);opacity:1} }
+@keyframes pl-atlasOrbit    { 0%{transform:rotateX(16deg) rotateY(-30deg)}50%{transform:rotateX(-12deg) rotateY(30deg)}100%{transform:rotateX(16deg) rotateY(-30deg)} }
+@keyframes pl-blip          { 0%,100%{opacity:0;transform:scale(.4)}22%,58%{opacity:1;transform:scale(1)} }
+@keyframes pl-pinPulse      { 0%,100%{transform:translate(-50%,-50%) scale(.85);opacity:.65}50%{transform:translate(-50%,-50%) scale(1.15);opacity:1} }
+@keyframes pl-dlFill        { 0%{height:0%}100%{height:100%} }
+@keyframes pl-dlArrow       { 0%{transform:translate(-50%,-14px);opacity:0}18%{opacity:1}82%{opacity:1}100%{transform:translate(-50%,16px);opacity:0} }
+@keyframes pl-dlBob         { 0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)} }
+@keyframes pl-dlBar         { 0%{width:6%}100%{width:96%} }
+@keyframes pl-drawRing      { from{stroke-dashoffset:252}to{stroke-dashoffset:0} }
+@keyframes pl-drawCheck     { from{stroke-dashoffset:52}to{stroke-dashoffset:0} }
+
+/* Respeta usuarios con movimiento reducido */
+@media (prefers-reduced-motion: reduce) {
+  .pl-root *,
+  .pl-root *::before,
+  .pl-root *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* ---- Contenedor / overlay ---- */
+.pl-root { font-family: 'Geist', Inter, system-ui, sans-serif; }
+
+.pl-overlay {
+  position: fixed; inset: 0; overflow: hidden; background: #0F111A;
+  display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 50;
+}
+.pl-glow {
+  position: absolute; border-radius: 50%; pointer-events: none;
+}
+.pl-glow-1 { width:640px;height:640px;left:-12%;top:-18%;background:radial-gradient(circle,rgba(200,182,255,.22),transparent 64%);filter:blur(38px);animation:pl-ambientDrift 15s ease-in-out infinite; }
+.pl-glow-2 { width:600px;height:600px;right:-14%;top:6%;background:radial-gradient(circle,rgba(142,164,255,.16),transparent 64%);filter:blur(42px);animation:pl-ambientDrift2 19s ease-in-out infinite; }
+.pl-glow-3 { width:560px;height:560px;left:24%;bottom:-26%;background:radial-gradient(circle,rgba(242,184,160,.10),transparent 64%);filter:blur(44px);animation:pl-ambientDrift 22s ease-in-out infinite; }
+
+/* Tarjeta de cristal (modo fullscreen) */
+.pl-card {
+  position: relative; width: 560px; max-width: 92vw; padding: 46px 40px 42px; border-radius: 30px;
+  background: rgba(21,25,39,.72); backdrop-filter: blur(26px); -webkit-backdrop-filter: blur(26px);
+  border: 1px solid rgba(245,241,255,.12);
+  box-shadow: 0 8px 32px rgba(0,0,0,.45), inset 0 1px 0 rgba(245,241,255,.10);
+  display: flex; flex-direction: column; align-items: center;
+}
+
+/* Lienzo donde vive el gráfico de cada variante */
+.pl-stage { height: 324px; width: 100%; display: flex; align-items: center; justify-content: center; }
+.pl-stage--inline { height: auto; }
+
+/* ---- Caption (micro / título / sub / barra) ---- */
+.pl-caption { margin-top: 28px; display: flex; flex-direction: column; align-items: center; gap: 11px; width: 100%; }
+.pl-caption--inline { margin-top: 18px; }
+.pl-micro { font: 500 11px 'IBM Plex Mono', monospace; letter-spacing: .18em; color: #7C6BB2; text-transform: uppercase; }
+.pl-title { display: flex; align-items: baseline; font: 600 21px 'Geist', sans-serif; color: #F5F1FF; letter-spacing: -.01em; text-align: center; }
+.pl-dots { display: inline-flex; margin-left: 2px; color: #C8B6FF; }
+.pl-dots span { animation: pl-dotsBlink 1.4s ease-in-out infinite; }
+.pl-dots span:nth-child(2) { animation-delay: .2s; }
+.pl-dots span:nth-child(3) { animation-delay: .4s; }
+.pl-sub { font: 400 12.5px 'IBM Plex Mono', monospace; color: #7D8197; text-align: center; }
+.pl-progress { margin-top: 6px; width: 260px; height: 4px; border-radius: 999px; background: rgba(37,42,66,.55); overflow: hidden; }
+.pl-progress > i { display:block; width: 38%; height: 100%; border-radius: 999px; background: linear-gradient(90deg,rgba(200,182,255,.2),#C8B6FF,rgba(200,182,255,.2)); animation: pl-progSlide 1.7s ease-in-out infinite; }
+.pl-progress--determinate > i { width: auto; animation: none; transition: width .3s ease; }
+
+/* helpers de centrado absoluto reutilizados */
+.pl-abs-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); }
+
+/* ============================================
+   Variante: ESCANEO — grid + haz de escaneo
+   ============================================ */
+.pl-escaneo { position: relative; width: 344px; padding: 8px; }
+.pl-escaneo__corner { position: absolute; width: 22px; height: 22px; opacity: .85; }
+.pl-escaneo__corner--tl { left:-6px; top:-6px; border-left:2px solid #C8B6FF; border-top:2px solid #C8B6FF; border-radius:4px 0 0 0; }
+.pl-escaneo__corner--tr { right:-6px; top:-6px; border-right:2px solid #C8B6FF; border-top:2px solid #C8B6FF; border-radius:0 4px 0 0; }
+.pl-escaneo__corner--bl { left:-6px; bottom:-6px; border-left:2px solid #C8B6FF; border-bottom:2px solid #C8B6FF; border-radius:0 0 0 4px; }
+.pl-escaneo__corner--br { right:-6px; bottom:-6px; border-right:2px solid #C8B6FF; border-bottom:2px solid #C8B6FF; border-radius:0 0 4px 0; }
+.pl-escaneo__grid { position: relative; display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; }
+.pl-tile { position: relative; aspect-ratio: 1/1; border-radius: 11px; background: #1C2033; box-shadow: inset 0 0 0 1px rgba(245,241,255,.04); }
+.pl-tile__scan { position: absolute; inset: 0; border-radius: 11px; opacity: 0; background: linear-gradient(155deg,rgba(200,182,255,.20),rgba(142,164,255,.08)); animation: pl-tileScan 3.4s linear infinite; }
+.pl-tile__dots { position: absolute; left: 7px; bottom: 7px; display: flex; gap: 3px; }
+.pl-tile__dots span { width: 7px; height: 7px; border-radius: 50%; }
+.pl-escaneo__beam { position: absolute; left: -8px; right: -8px; top: 0; height: 58px; pointer-events: none; animation: pl-beamSweep 3.4s linear infinite; }
+.pl-escaneo__beam-bg { position: absolute; inset: 0; background: linear-gradient(180deg,transparent,rgba(200,182,255,.05),rgba(200,182,255,.16),transparent); }
+.pl-escaneo__beam-line { position: absolute; left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%); background: linear-gradient(90deg,transparent,#C8B6FF 20%,#DACDFF 50%,#C8B6FF 80%,transparent); box-shadow: 0 0 16px 2px rgba(200,182,255,.55); }
+
+/* ============================================
+   Variante: CARGANDO — anillo + logo
+   ============================================ */
+.pl-cargando { position: relative; width: 200px; height: 200px; }
+.pl-cargando__track { animation: none; }
+.pl-cargando__ring { animation: pl-spin 1.25s linear infinite; transform-origin: center; }
+.pl-cargando__halo { width: 96px; height: 96px; border-radius: 50%; background: radial-gradient(circle,rgba(200,182,255,.35),transparent 70%); animation: pl-pulseGlow 2.4s ease-in-out infinite; }
+.pl-cargando__logo { width: 60px; height: 60px; border-radius: 16px; }
+
+/* ============================================
+   Variante: CARAS — retícula de reconocimiento
+   ============================================ */
+.pl-caras { position: relative; width: 208px; height: 208px; border-radius: 50%; overflow: hidden; }
+.pl-caras__ring-out { animation: pl-spin 18s linear infinite; transform-origin: center; }
+.pl-caras__ring-in  { animation: pl-spinRev 11s linear infinite; transform-origin: center; }
+.pl-caras__cross-v { position: absolute; left: 50%; top: 14px; bottom: 14px; width: 1px; transform: translateX(-50%); background: rgba(200,182,255,.16); }
+.pl-caras__cross-h { position: absolute; top: 50%; left: 14px; right: 14px; height: 1px; transform: translateY(-50%); background: rgba(200,182,255,.16); }
+.pl-caras__face { position: absolute; border-radius: 8px; animation: pl-facePop 4s ease-in-out infinite; }
+.pl-caras__face--1 { left:46px; top:58px; width:38px; height:38px; border:1.5px solid #C8B6FF; box-shadow:0 0 12px rgba(200,182,255,.35); }
+.pl-caras__face--2 { right:42px; top:48px; width:32px; height:32px; border:1.5px solid #8EA4FF; box-shadow:0 0 12px rgba(142,164,255,.3); animation-delay:1.1s; }
+.pl-caras__face--3 { left:74px; bottom:42px; width:42px; height:42px; border:1.5px solid #DACDFF; box-shadow:0 0 12px rgba(218,205,255,.35); animation-delay:2.2s; }
+.pl-caras__scan { position: absolute; left: 6px; right: 6px; top: 50%; height: 2px; background: linear-gradient(90deg,transparent,#C8B6FF,transparent); box-shadow: 0 0 14px 1px rgba(200,182,255,.5); animation: pl-reticleScan 3.2s ease-in-out infinite; }
+
+/* ============================================
+   Variante: SYNC — órbitas
+   ============================================ */
+.pl-sync { position: relative; width: 200px; height: 200px; }
+.pl-sync__ring-out { animation: pl-spin 13s linear infinite; transform-origin: center; }
+.pl-sync__ring-in  { animation: pl-spinRev 9s linear infinite; transform-origin: center; }
+.pl-sync__orbit { position: absolute; top: 50%; left: 50%; }
+.pl-sync__orbit--1 { width:184px; height:184px; margin:-92px 0 0 -92px; animation: pl-spin 8s linear infinite; }
+.pl-sync__orbit--2 { width:130px; height:130px; margin:-65px 0 0 -65px; animation: pl-spinRev 6s linear infinite; }
+.pl-sync__orbit--3 { width:184px; height:184px; margin:-92px 0 0 -92px; animation: pl-spin 11s linear infinite; animation-delay:-3s; }
+.pl-sync__sat { position: absolute; left: 50%; border-radius: 50%; }
+.pl-sync__sat--top { top: -6px; transform: translateX(-50%); }
+.pl-sync__sat--bot { bottom: -5px; transform: translateX(-50%); }
+.pl-sync__core { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(155deg,#252A42,#1C2033); box-shadow: inset 0 0 0 1px rgba(200,182,255,.4),0 0 18px rgba(200,182,255,.25); display: flex; align-items: center; justify-content: center; }
+.pl-sync__core span { width: 12px; height: 12px; border-radius: 50%; background: #C8B6FF; animation: pl-pulseGlow 1.8s ease-in-out infinite; }
+
+/* ============================================
+   Variante: ATLAS — grafo 3D
+   ============================================ */
+.pl-atlas { perspective: 760px; width: 300px; height: 280px; }
+.pl-atlas__scene { position: relative; width: 300px; height: 280px; transform-style: preserve-3d; animation: pl-atlasOrbit 11s ease-in-out infinite; }
+.pl-atlas__web { position: absolute; inset: 0; }
+.pl-atlas__web line { animation: pl-dashDraw 3.6s ease-in-out infinite; }
+.pl-atlas__halo { position: absolute; left: 150px; top: 140px; transform: translateZ(38px); }
+.pl-atlas__halo > div { width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%; background: radial-gradient(circle,rgba(200,182,255,.32),transparent 70%); animation: pl-pulseGlow 2.6s ease-in-out infinite; }
+.pl-atlas__node { position: absolute; }
+.pl-atlas__node > div { border-radius: 50%; animation: pl-nodePulse 2.6s ease-in-out infinite; }
+
+/* ============================================
+   Variante: ESPACIOS — radar
+   ============================================ */
+.pl-espacios { position: relative; width: 204px; height: 204px; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at 50% 50%,#161B2C,#0F111A); box-shadow: inset 0 0 0 1px rgba(245,241,255,.05),inset 0 0 40px rgba(0,0,0,.4); }
+.pl-espacios__circle { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); border-radius: 50%; }
+.pl-espacios__circle--1 { width:204px; height:204px; border:1px solid rgba(200,182,255,.12); }
+.pl-espacios__circle--2 { width:136px; height:136px; border:1px solid rgba(200,182,255,.10); }
+.pl-espacios__circle--3 { width:68px;  height:68px;  border:1px solid rgba(200,182,255,.08); }
+.pl-espacios__cross-v { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; transform: translateX(-50%); background: rgba(200,182,255,.08); }
+.pl-espacios__cross-h { position: absolute; top: 50%; left: 0; right: 0; height: 1px; transform: translateY(-50%); background: rgba(200,182,255,.08); }
+.pl-espacios__sweep { position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(from 0deg,rgba(200,182,255,.32),rgba(200,182,255,.04) 48deg,transparent 90deg); animation: pl-spin 2.8s linear infinite; }
+.pl-espacios__blip { position: absolute; border-radius: 50%; animation: pl-blip 2.8s ease-in-out infinite; }
+.pl-espacios__blip--1 { left:66%; top:36%; width:8px; height:8px; background:#8EA4FF; box-shadow:0 0 10px #8EA4FF; }
+.pl-espacios__blip--2 { left:34%; top:62%; width:8px; height:8px; background:#F2B8A0; box-shadow:0 0 10px #F2B8A0; animation-delay:1s; }
+.pl-espacios__blip--3 { left:58%; top:70%; width:7px; height:7px; background:#9CB7A5; box-shadow:0 0 10px #9CB7A5; animation-delay:1.8s; }
+.pl-espacios__pin { position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: #C8B6FF; box-shadow: 0 0 16px rgba(200,182,255,.7); animation: pl-pinPulse 2s ease-in-out infinite; }
+
+/* ============================================
+   Variante: DESCARGA — bandeja + barra
+   ============================================ */
+.pl-descarga { display: flex; flex-direction: column; align-items: center; gap: 26px; }
+.pl-descarga__icon { position: relative; width: 150px; height: 150px; animation: pl-dlBob 3s ease-in-out infinite; }
+.pl-descarga__glow { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 120px; height: 120px; border-radius: 50%; background: radial-gradient(circle,rgba(142,164,255,.30),transparent 70%); animation: pl-pulseGlow 2.6s ease-in-out infinite; }
+.pl-descarga__ring { animation: pl-spin 8s linear infinite; transform-origin: center; }
+.pl-descarga__tray { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 86px; height: 104px; border-radius: 14px; background: linear-gradient(160deg,#252A42,#1A1E30); box-shadow: inset 0 0 0 1px rgba(142,164,255,.28),0 12px 30px rgba(0,0,0,.45); overflow: hidden; }
+.pl-descarga__fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: linear-gradient(180deg,rgba(142,164,255,.45),rgba(142,164,255,.16)); animation: pl-dlFill 2.6s ease-in-out infinite; }
+.pl-descarga__fold { position: absolute; right: 0; top: 0; width: 0; height: 0; border-top: 20px solid #0F111A; border-left: 20px solid transparent; opacity: .5; }
+.pl-descarga__arrow { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); animation: pl-dlArrow 1.5s ease-in-out infinite; }
+.pl-descarga__base { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: 50px; height: 2.4px; border-radius: 2px; background: #8EA4FF; box-shadow: 0 0 10px rgba(142,164,255,.5); }
+.pl-descarga__bar { width: 230px; height: 5px; border-radius: 999px; background: rgba(37,42,66,.6); overflow: hidden; }
+.pl-descarga__bar > i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg,rgba(142,164,255,.4),#8EA4FF); animation: pl-dlBar 2.6s ease-in-out infinite; }
+
+/* ============================================
+   Variante: LISTO — éxito
+   ============================================ */
+.pl-listo { position: relative; width: 200px; height: 200px; }
+.pl-listo__halo { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 120px; height: 120px; border-radius: 50%; background: radial-gradient(circle,rgba(168,213,186,.30),transparent 70%); animation: pl-pulseGlow 2.6s ease-in-out infinite; }
+.pl-listo__svg { position: absolute; inset: 0; }
+.pl-listo__ring { animation: pl-drawRing .7s ease-out forwards; }
+.pl-listo__check { animation: pl-drawCheck .45s ease-out .55s both; }

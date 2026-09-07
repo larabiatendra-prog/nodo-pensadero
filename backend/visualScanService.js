@@ -21,6 +21,7 @@ const os = require('os');
 const { spawn } = require('child_process');
 const { Ollama } = require('ollama');
 const sharp = require('sharp');
+const runtime = require('./config/runtime');
 
 const DEFAULT_VLM_MODEL = 'gemma4:12b';
 
@@ -32,10 +33,26 @@ const DEFAULT_VLM_MODEL = 'gemma4:12b';
 //   - experimento: mayor calidad, mas coste/VRAM. Manual, nunca sustituye al de
 //                  produccion automaticamente. Riesgo OOM en GPUs de 16 GB.
 //   - legacy     : conservado como fallback manual mientras siga util.
+// Presupuesto real de VRAM en NODO: 16 GB en la RTX 5070 Ti, compartidos con
+// CLIP/SigLIP-2 y InsightFace durante el escaneo. Deja ~13 GB utiles para el
+// VLM: por eso los de 27B/31B/32B entran como 'no_cabe' en vez de ofrecerse en
+// igualdad de condiciones. Se pueden elegir igual, pero avisando: sin el aviso
+// el escaneo simplemente se arrastra y no se sabe por que.
 const VLM_CATALOG = [
   { name: 'gemma4:12b', tier: 'produccion',  label: 'Gemma 4 12B',  notes: 'Principal. Equilibrio calidad/velocidad/VRAM.' },
-  { name: 'gemma4:27b', tier: 'experimento', label: 'Gemma 4 27B',  notes: 'Mayor calidad, mas coste. Manual, no default. Riesgo OOM en 16 GB.' },
-  { name: 'gemma3:12b', tier: 'legacy',      label: 'Gemma 3 12B',  notes: 'Legacy/fallback manual.' },
+  { name: 'gemma3:12b', tier: 'legacy',      label: 'Gemma 3 12B',  notes: 'Legacy/fallback manual. Es el modelo activo ahora mismo en NODO.' },
+
+  // Candidatos a experimento: todos caben holgadamente y aportan algo distinto.
+  { name: 'huihui_ai/gemma-4-abliterated:12b', tier: 'experimento', label: 'Gemma 4 12B (sin censura)', notes: 'Mismo tamano y velocidad que el principal, sin filtros. Para material personal donde el modelo estandar esquiva o edulcora las descripciones de personas.' },
+  { name: 'qwen2.5vl:7b', tier: 'experimento', label: 'Qwen2.5-VL 7B', notes: 'Familia distinta y mas rapido (6 GB). Otra arquitectura falla de otra forma; suele leer mejor el texto dentro de la imagen.' },
+  { name: 'huihui_ai/qwen2.5-vl-abliterated:7b', tier: 'experimento', label: 'Qwen2.5-VL 7B (sin censura)', notes: 'La variante sin filtros del anterior. Rapido y directo.' },
+
+  // No caben en 16 GB junto a CLIP e InsightFace: se desbordan a RAM y el
+  // escaneo pasa de segundos a minutos por clip.
+  { name: 'gemma4:27b', tier: 'no_cabe', label: 'Gemma 4 27B', notes: 'No cabe en 16 GB. Ademas no esta descargado.' },
+  { name: 'gemma3:27b', tier: 'no_cabe', label: 'Gemma 3 27B', notes: 'No cabe en 16 GB (17 GB). Se desborda a RAM y el escaneo se arrastra.' },
+  { name: 'qwen2.5vl:32b', tier: 'no_cabe', label: 'Qwen2.5-VL 32B', notes: 'No cabe en 16 GB (21 GB). Solo con GPU mas grande.' },
+  { name: 'gemma-4-abliterated:31b', tier: 'no_cabe', label: 'Gemma 4 31B (sin censura)', notes: 'No cabe en 16 GB (18 GB). Solo con GPU mas grande.' },
 ];
 const PER_IMAGE_TIMEOUT_MS = parseInt(process.env.VLM_TIMEOUT_MS || '180000', 10); // 180s por imagen (margen para fotos grandes + modelos grandes en cold-start)
 const VIDEO_FRAMES_PER_SCAN = parseInt(process.env.VLM_VIDEO_FRAMES || '3', 10); // 3 frames es buen balance calidad/coste
@@ -63,7 +80,10 @@ class VisualScanService {
   constructor() {
     const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
     this.ollama = new Ollama({ host });
-    this.model = process.env.VLM_MODEL || DEFAULT_VLM_MODEL;
+    // Orden de precedencia: lo que el usuario eligio en la UI > .env > default.
+    // La preferencia guardada manda para que el modelo no cambie solo al
+    // reiniciar (ver config/runtime.js).
+    this.model = runtime.get('vlmModel') || process.env.VLM_MODEL || DEFAULT_VLM_MODEL;
   }
 
   /**
@@ -356,6 +376,12 @@ class VisualScanService {
 
   setModel(model) {
     this.model = model;
+    // Persistir para que la eleccion sobreviva al reinicio. Si falla la
+    // escritura el cambio sigue activo en memoria, pero se avisa: quedarse
+    // callado aqui es justo lo que provocaba el cambio silencioso de modelo.
+    runtime.set('vlmModel', model).catch(err => {
+      console.warn(`[vlm] modelo cambiado a ${model} pero NO se pudo persistir: ${err.message}`);
+    });
   }
 
   async listModels() {
@@ -387,7 +413,10 @@ class VisualScanService {
     const all = (list.models || []).map(m => m.name).filter(Boolean);
     // gemma\d captura gemma3, gemma4 y futuras familias (gemma3 era demasiado
     // estricto: dejaba fuera gemma4 instalado).
-    const visionNameRegex = /(qwen.*vl|gemma[3-9]\d*(:|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama|internvl)/i;
+    // gemma-?[3-9]: el guion opcional captura los repacks tipo
+    // `huihui_ai/gemma-4-abliterated:12b`, que con `gemma[3-9]` quedaban fuera
+    // del selector aunque estuvieran instalados y fueran perfectamente validos.
+    const visionNameRegex = /(qwen.*vl|gemma-?[3-9]\d*([:.\-]|$)|llava|bakllava|moondream|minicpm-v|llama3\.2-vision|mllama|internvl)/i;
     return all.filter(name => visionNameRegex.test(name));
   }
 

@@ -47,6 +47,11 @@ backend/scan_paths.json
 backend/embeddings_index.json
 backend/visual_search_data/
 backend/clip_index.json
+backend/video_proxies.json
+# Preferencias que el usuario cambia desde la UI (modelo VLM activo, etc.).
+# Son estado de esta maquina, no configuracion del proyecto.
+backend/config/runtime.json
+backend/proxies/
 backend/temp/
 backend/reports/
 # Datos del registry de personas (fotos personales, identidades)

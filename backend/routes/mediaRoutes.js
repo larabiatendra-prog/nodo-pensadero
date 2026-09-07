@@ -20,6 +20,60 @@ const { exec } = require('child_process');
 
 const favoritesManager = require('../favoritesManager');
 const pathsConfig = require('../config/paths');
+const videoProxyService = require('../services/videoProxyService');
+
+/**
+ * Sirve un fichero con soporte para Range requests (HTTP 206) y guardas de
+ * stream. Extraido de /stream/:id para reutilizarlo tambien al servir proxies.
+ */
+async function streamFileWithRange(req, res, filePath, contentTypeOverride) {
+  let stat;
+  try {
+    stat = await fs.stat(filePath);
+  } catch {
+    return res.status(404).json({ success: false, message: 'Archivo no encontrado' });
+  }
+  const fileSize = stat.size;
+  const range = req.headers.range;
+  const contentType = contentTypeOverride || mime.lookup(filePath) || 'application/octet-stream';
+
+  const attachStreamGuards = (readStream) => {
+    readStream.on('error', (streamErr) => {
+      console.error(`❌ Error leyendo stream de ${path.basename(filePath)}:`, streamErr.message);
+      if (!res.headersSent) res.status(500).json({ success: false, message: 'Error leyendo el archivo' });
+      else res.destroy(streamErr);
+    });
+    res.on('close', () => readStream.destroy());
+  };
+
+  if (range) {
+    const matches = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    if (!matches) { res.set('Content-Range', `bytes */${fileSize}`); return res.status(416).end(); }
+    let start = matches[1] === '' ? NaN : parseInt(matches[1], 10);
+    let end = matches[2] === '' ? fileSize - 1 : parseInt(matches[2], 10);
+    if (Number.isNaN(start) && !Number.isNaN(end)) { start = Math.max(0, fileSize - end); end = fileSize - 1; }
+    if (Number.isNaN(start)) start = 0;
+    if (Number.isNaN(end) || end >= fileSize) end = fileSize - 1;
+    if (start > end || start >= fileSize) { res.set('Content-Range', `bytes */${fileSize}`); return res.status(416).end(); }
+
+    const chunksize = (end - start) + 1;
+    res.status(206);
+    res.set({
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunksize,
+      'Content-Type': contentType,
+    });
+    const readStream = fsSync.createReadStream(filePath, { start, end });
+    attachStreamGuards(readStream);
+    readStream.pipe(res);
+  } else {
+    res.set({ 'Content-Length': fileSize, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
+    const readStream = fsSync.createReadStream(filePath);
+    attachStreamGuards(readStream);
+    readStream.pipe(res);
+  }
+}
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -137,7 +191,7 @@ module.exports = function createMediaRoutes(deps) {
    * Sirve el thumbnail de un archivo resolviendo internamente su ubicacion en
    * disco a partir del fileId (sin aceptar rutas arbitrarias → sin path
    * traversal). Orden de resolucion:
-   *   1) Nuevo destino por-disco: <scanRoot>\.pensadero\thumbnails
+   *   1) Destino por-carpeta: <dir-del-archivo>\.pensadero\thumbnails
    *   2) Compat: directorio legacy backend/thumbnails (mismo nombre)
    *   3) Generar bajo demanda en el destino nuevo
    *   4) Placeholder si todo falla (no rompe la UI)
@@ -153,10 +207,9 @@ module.exports = function createMediaRoutes(deps) {
       const file = getMediaFiles().find(f => f.id === fileId);
       if (!file || !file.fullPath) return sendPlaceholder('?', fileId, '%23999999');
 
-      const scanRoot = await pathsConfig.resolveScanRoot(file.fullPath);
-      const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, scanRoot, fileId, fileName: file.name });
-      // Sin scanRoot → ubicacion legacy (backend/thumbnails) con el mismo nombre.
-      const legacyLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, fileId, fileName: file.name });
+      const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, fileId, fileName: file.name });
+      // legacy:true → ubicacion legacy (backend/thumbnails) con el mismo nombre.
+      const legacyLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, fileId, fileName: file.name, legacy: true });
 
       const serveIfExists = () => {
         for (const cand of [newLoc.thumbnailPath, legacyLoc.thumbnailPath]) {
@@ -173,7 +226,7 @@ module.exports = function createMediaRoutes(deps) {
       if (serveIfExists()) return;
 
       // 3) generar bajo demanda en el destino nuevo.
-      const result = await generateThumbnail(file.fullPath, fileId, file.name, scanRoot);
+      const result = await generateThumbnail(file.fullPath, fileId, file.name);
       // Placeholder inline (audio/error): servir el SVG decodificado.
       if (typeof result === 'string' && result.startsWith('data:')) {
         const svg = decodeURIComponent(result.substring(result.indexOf(',') + 1));
@@ -574,6 +627,44 @@ module.exports = function createMediaRoutes(deps) {
         error: error.message
       });
     }
+  });
+
+  // ============================================
+  // PROXIES DE REPRODUCCION (formatos no nativos)
+  // ============================================
+
+  /**
+   * GET /api/media/:id/playable
+   * Estado de reproduccion de un video. Devuelve { status, url, ... }:
+   *  - native    -> reproducir directo el original (url = /api/stream/:id)
+   *  - ready     -> proxy listo (url = /api/media/:id/proxy)
+   *  - generating-> proxy en cola/generandose (el front reconsulta)
+   *  - error     -> no se pudo (el front ofrece descargar el original)
+   */
+  router.get('/media/:id/playable', async (req, res) => {
+    const file = getMediaFiles().find(f => f.id === req.params.id);
+    if (!file) return res.status(404).json({ success: false, message: 'Archivo no encontrado' });
+    const fullPath = file.fullPath || path.join(CONTENT_DIR, file.path);
+    try {
+      const data = await videoProxyService.getPlayable({ id: file.id, fullPath, name: file.name });
+      res.json({ success: true, data });
+    } catch (err) {
+      console.error('Error en /playable:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  /**
+   * GET /api/media/:id/proxy
+   * Sirve el MP4 proxy web-compatible (con range/seek). 404 si aun no esta listo.
+   */
+  router.get('/media/:id/proxy', async (req, res) => {
+    const file = getMediaFiles().find(f => f.id === req.params.id);
+    if (!file) return res.status(404).json({ success: false, message: 'Archivo no encontrado' });
+    const fullPath = file.fullPath || path.join(CONTENT_DIR, file.path);
+    const proxyPath = await videoProxyService.getReadyProxyPath({ id: file.id, fullPath });
+    if (!proxyPath) return res.status(404).json({ success: false, message: 'Proxy no disponible todavia' });
+    await streamFileWithRange(req, res, proxyPath, 'video/mp4');
   });
 
   // ============================================

@@ -141,26 +141,26 @@ async function resolveScanRoot(fullPath) {
 
 /**
  * Funcion centralizada que resuelve donde guardar/servir un thumbnail.
- * El thumbnail pertenece a la biblioteca, no al backend: vive en
- * <scanRoot>\.pensadero\thumbnails. Si no se puede determinar scanRoot, cae al
- * directorio legacy (backend/thumbnails) y marca legacy:true para que el
- * llamante loguee un warning.
+ * El thumbnail vive JUNTO al archivo, en el .pensadero de su carpeta
+ * contenedora (<dir-del-archivo>\.pensadero\thumbnails), igual que el sidecar
+ * _pensadero.json: cada carpeta lleva sus propios thumbnails. Con legacy:true
+ * (o sin fullPath) cae al directorio legacy (backend/thumbnails) y marca
+ * legacy:true para que el llamante loguee un warning / haga fallback.
  *
  * @param {Object} args
  * @param {string} args.fullPath  Ruta absoluta del archivo de medios.
- * @param {string} [args.scanRoot] Raiz de biblioteca ya conocida (durante el
- *   escaneo es el baseDir). Si se omite, el llamante debe resolverla antes con
- *   resolveScanRoot() (esta funcion es sincrona; no hace I/O).
  * @param {string} args.fileId
  * @param {string} args.fileName
+ * @param {boolean} [args.legacy] Forzar el directorio legacy (fallback cuando
+ *   no se puede escribir junto al archivo, p.ej. disco de solo lectura).
  * @returns {{thumbnailDir:string, thumbnailName:string, thumbnailPath:string, thumbnailUrl:string, legacy:boolean}}
  */
-function resolveThumbnailLocation({ fullPath, scanRoot, fileId, fileName }) {
+function resolveThumbnailLocation({ fullPath, fileId, fileName, legacy: forceLegacy = false }) {
   const thumbnailName = buildThumbnailName(fileName, fileId);
   let thumbnailDir;
   let legacy = false;
-  if (scanRoot) {
-    thumbnailDir = path.join(scanRoot, '.pensadero', 'thumbnails');
+  if (!forceLegacy && fullPath) {
+    thumbnailDir = path.join(path.dirname(fullPath), '.pensadero', 'thumbnails');
   } else {
     thumbnailDir = systemPaths.thumbnails;
     legacy = true;
@@ -171,6 +171,38 @@ function resolveThumbnailLocation({ fullPath, scanRoot, fileId, fileName }) {
     thumbnailPath: path.join(thumbnailDir, thumbnailName),
     // URL estable por fileId: el endpoint resuelve el disco internamente.
     thumbnailUrl: `/api/thumbnails/${fileId}`,
+    legacy,
+  };
+}
+
+/**
+ * Resuelve donde guardar/servir el PROXY de reproduccion de un video.
+ * Mismo criterio que resolveThumbnailLocation: el proxy vive JUNTO al archivo,
+ * en <dir-del-archivo>\.pensadero\proxies\<fileId>.mp4. Con legacy:true (o sin
+ * fullPath) cae al directorio legacy (backend/proxies) y marca legacy:true.
+ *
+ * @param {Object} args
+ * @param {string} args.fullPath  Ruta absoluta del video original.
+ * @param {string} args.fileId
+ * @param {boolean} [args.legacy] Forzar el directorio legacy (fallback).
+ * @returns {{proxyDir:string, proxyName:string, proxyPath:string, proxyUrl:string, legacy:boolean}}
+ */
+function resolveProxyLocation({ fullPath, fileId, legacy: forceLegacy = false }) {
+  const proxyName = `${fileId}.mp4`;
+  let proxyDir;
+  let legacy = false;
+  if (!forceLegacy && fullPath) {
+    proxyDir = path.join(path.dirname(fullPath), '.pensadero', 'proxies');
+  } else {
+    proxyDir = systemPaths.proxies;
+    legacy = true;
+  }
+  return {
+    proxyDir,
+    proxyName,
+    proxyPath: path.join(proxyDir, proxyName),
+    // URL estable por fileId: el endpoint resuelve el disco internamente.
+    proxyUrl: `/api/media/${fileId}/proxy`,
     legacy,
   };
 }
@@ -205,6 +237,7 @@ async function getLibrariesWithStatus() {
  */
 const systemPaths = {
   thumbnails: path.join(__dirname, '..', 'thumbnails'),
+  proxies: path.join(__dirname, '..', 'proxies'),
   cache: path.join(__dirname, '..', 'media_cache.json'),
   scanPaths: path.join(__dirname, '..', 'scan_paths.json'),
 };
@@ -230,6 +263,7 @@ module.exports = {
   buildThumbnailName,
   resolveScanRoot,
   resolveThumbnailLocation,
+  resolveProxyLocation,
   systemPaths,
   aiConfig,
 };

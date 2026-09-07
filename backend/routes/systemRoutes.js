@@ -21,6 +21,12 @@ const crypto = require('crypto');
 const colorAnalyzer = require('../colorAnalyzer');
 const { atomicWriteFile, quarantineCorrupt } = require('../utils/jsonStore');
 const mediaIdentity = require('../utils/mediaIdentity');
+// Piezas que /api/health interroga. Singletons: importarlas aqui no arranca
+// nada (CLIP y caras son de inicio perezoso).
+const { getInstance: getScanner } = require('../visualScanService');
+const { getInstance: getClipService } = require('../services/clipService');
+const { getInstance: getFaceService } = require('../services/faceService');
+const runtime = require('../config/runtime');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -109,6 +115,168 @@ module.exports = function createSystemRoutes(deps) {
    * GET /api/system/info
    * Información del sistema y diagnóstico
    */
+  // ============================================
+  // SALUD DEL CIRCUITO COMPLETO
+  // ============================================
+
+  // ffmpeg no aparece ni desaparece en caliente: se resuelve una vez y se cachea.
+  let _ffmpegCache = null;
+  function checkFfmpeg() {
+    if (_ffmpegCache) return Promise.resolve(_ffmpegCache);
+    return new Promise((resolve) => {
+      const { spawn } = require('child_process');
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        _ffmpegCache = result;
+        resolve(result);
+      };
+      try {
+        const p = spawn('ffmpeg', ['-version']);
+        p.on('error', () => {
+          // Sin ffmpeg en PATH queda el binario del paquete npm: degradado
+          // (sin NVENC) pero funcional. Conviene saber en cual estamos.
+          try {
+            const fallback = require('@ffmpeg-installer/ffmpeg').path;
+            finish({ ok: true, source: 'paquete npm (sin NVENC)', path: fallback });
+          } catch {
+            finish({ ok: false, error: 'ffmpeg no encontrado ni en PATH ni como paquete' });
+          }
+        });
+        p.on('close', () => finish({ ok: true, source: 'PATH' }));
+        setTimeout(() => finish({ ok: false, error: 'ffmpeg no respondio en 5s' }), 5000);
+      } catch (err) {
+        finish({ ok: false, error: err.message });
+      }
+    });
+  }
+
+  /**
+   * GET /api/health — estado de todas las piezas en una sola llamada.
+   *
+   * Existe para responder "esta el circuito entero?" sin abrir cinco pestanas
+   * ni leer logs. Cada pieza que puede degradarse en silencio (Ollama, CLIP,
+   * caras, ffmpeg, rutas) sale aqui con su estado real. Lo consumen la UI y
+   * Pensadero_Doctor.bat.
+   */
+  router.get('/health', async (req, res) => {
+    const checks = {};
+
+    // --- VLM / Ollama: sin esto no hay descripciones ---
+    try {
+      const h = await getScanner().healthCheck();
+      checks.ollama = {
+        ok: !!h.ollamaRunning && !!h.modelAvailable,
+        running: !!h.ollamaRunning,
+        model: h.model,
+        modelAvailable: !!h.modelAvailable,
+      };
+      if (!h.ollamaRunning) checks.ollama.error = 'Ollama no responde. Arrancalo con: ollama serve';
+      else if (!h.modelAvailable) checks.ollama.error = `Modelo ${h.model} no instalado. Ejecuta: ollama pull ${h.model}`;
+    } catch (err) {
+      checks.ollama = { ok: false, error: err.message };
+    }
+
+    // --- CLIP y caras: de inicio perezoso, así que "no arrancado" NO es error.
+    // Lo que sí es error es `unavailable`: lo intentó y no pudo.
+    const lazyPiece = (status) => {
+      if (!status) return { ok: false, state: 'desconocido' };
+      if (status.unavailable) {
+        return { ok: false, state: 'roto', error: status.lastError || 'no disponible' };
+      }
+      return { ok: true, state: status.ready ? 'listo' : 'inactivo (arranca al usarse)' };
+    };
+
+    try {
+      checks.clip = lazyPiece(getClipService().getStatus());
+    } catch (err) {
+      checks.clip = { ok: false, state: 'roto', error: err.message };
+    }
+
+    try {
+      const fs2 = getFaceService().getStatus();
+      checks.faces = lazyPiece(fs2);
+      if (fs2) checks.faces.trainedPersons = fs2.trainedPersons;
+    } catch (err) {
+      checks.faces = { ok: false, state: 'roto', error: err.message };
+    }
+
+    checks.ffmpeg = await checkFfmpeg();
+
+    // --- Bibliotecas: accesibles de verdad, comprobado ahora, no el estado
+    // guardado de la ultima sincronizacion.
+    try {
+      const paths = await loadScanPaths();
+      const rutas = [];
+      for (const p of paths) {
+        let accesible = false;
+        try {
+          await fs.access(p.path);
+          accesible = true;
+        } catch { /* no accesible */ }
+        rutas.push({ path: p.path, displayName: p.displayName || null, isActive: p.isActive !== false, accesible });
+      }
+      const rotas = rutas.filter(r => r.isActive && !r.accesible);
+      checks.bibliotecas = {
+        ok: rotas.length === 0,
+        total: rutas.length,
+        rutas,
+        error: rotas.length > 0 ? `${rotas.length} biblioteca(s) activa(s) no accesible(s)` : undefined,
+      };
+    } catch (err) {
+      checks.bibliotecas = { ok: false, error: err.message };
+    }
+
+    // --- Cobertura de escaneo visual: cuanto queda pendiente de describir.
+    // No es un fallo, es trabajo por hacer, pero conviene verlo aqui.
+    try {
+      const media = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      let scanned = 0;
+      for (const f of media) {
+        if (typeof f.visual_description === 'string' && f.visual_description.trim()) scanned++;
+      }
+      checks.escaneo = {
+        ok: true,
+        total: media.length,
+        descritos: scanned,
+        pendientes: media.length - scanned,
+      };
+    } catch (err) {
+      checks.escaneo = { ok: false, error: err.message };
+    }
+
+    // --- Proceso: memoria y uptime. Si el RSS se acerca al techo del heap,
+    // aqui se ve antes de que el proceso muera sin explicacion.
+    const mem = process.memoryUsage();
+    const heapLimitMb = Math.round(require('v8').getHeapStatistics().heap_size_limit / 1048576);
+    checks.proceso = {
+      ok: true,
+      pid: process.pid,
+      uptimeSegundos: Math.round(process.uptime()),
+      rssMb: Math.round(mem.rss / 1048576),
+      heapUsadoMb: Math.round(mem.heapUsed / 1048576),
+      heapTopeMb: heapLimitMb,
+      node: process.version,
+    };
+
+    const problemas = Object.entries(checks)
+      .filter(([, v]) => v && v.ok === false)
+      .map(([k]) => k);
+
+    res.json({
+      success: true,
+      data: {
+        ok: problemas.length === 0,
+        problemas,
+        modeloActivo: getScanner().model,
+        preferencias: runtime.all(),
+        checks,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  });
+
   router.get('/system/info', async (req, res) => {
     try {
       const mediaFiles = getMediaFiles();
@@ -475,8 +643,8 @@ module.exports = function createSystemRoutes(deps) {
 
           try {
             // generateThumbnail ya devuelve la URL final (/api/thumbnails/:id).
-            // pathConfig.path es la raiz de biblioteca (scanRoot).
-            file.thumbnail = await generateThumbnail(file.fullPath, file.id, file.name, pathConfig.path);
+            // El thumbnail se guarda junto al archivo, en su .pensadero.
+            file.thumbnail = await generateThumbnail(file.fullPath, file.id, file.name);
           } catch (error) {
             console.error(`Error generando miniatura para ${file.name}:`, error);
           }

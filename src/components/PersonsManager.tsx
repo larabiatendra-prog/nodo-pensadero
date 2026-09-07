@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge } from 'lucide-react';
+import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge, UserPlus, Check } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { slugifyPersonId } from '../utils/persons';
 import Avatar from './Avatar';
+import Loader from './Loader';
 
 interface Person {
   person_id: string;
@@ -130,6 +131,11 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newAliases, setNewAliases] = useState('');
 
+  // Rediseño: búsqueda y filtro del grid de personas.
+  const [query, setQuery] = useState('');
+  type PersonFilter = 'todas' | 'confirmadas' | 'entrenar';
+  const [personFilter, setPersonFilter] = useState<PersonFilter>('todas');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Numero de archivos en los que aparece cada persona, calculado client-side
@@ -156,10 +162,112 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       .slice(0, 6);
   }, [persons, filesPerPerson]);
 
+  // Última aparición (timestamp más reciente) y nº de sesiones (carpetas
+  // distintas) por persona, derivado de mediaFiles. La carpeta es la sesión
+  // en Pensadero, así que cuenta carpetas únicas donde aparece la persona.
+  const personStats = useMemo(() => {
+    const last = new Map<string, number>();
+    const folders = new Map<string, Set<string>>();
+    if (!mediaFiles) return { last, sessions: new Map<string, number>() };
+    for (const f of mediaFiles) {
+      if (!f.faces) continue;
+      const ids = new Set(f.faces.map(face => face.person_id).filter(Boolean) as string[]);
+      if (ids.size === 0) continue;
+      const t = (f.extractedDate || f.modifiedAt || f.createdAt);
+      const ts = t ? new Date(t).getTime() : 0;
+      const folder = f.fullPath ? f.fullPath.replace(/[\\/][^\\/]*$/, '') : '';
+      for (const id of ids) {
+        if (ts > (last.get(id) || 0)) last.set(id, ts);
+        if (folder) {
+          if (!folders.has(id)) folders.set(id, new Set());
+          folders.get(id)!.add(folder);
+        }
+      }
+    }
+    const sessions = new Map<string, number>();
+    folders.forEach((set, id) => sessions.set(id, set.size));
+    return { last, sessions };
+  }, [mediaFiles]);
+
+  // "hace X" legible a partir de un timestamp.
+  function relativeTime(ts: number | undefined): string {
+    if (!ts) return 'sin apariciones';
+    const diff = Date.now() - ts;
+    const d = Math.floor(diff / 86400000);
+    if (d <= 0) return 'hoy';
+    if (d === 1) return 'ayer';
+    if (d < 7) return `hace ${d} días`;
+    if (d < 30) { const w = Math.floor(d / 7); return `hace ${w} ${w === 1 ? 'semana' : 'semanas'}`; }
+    if (d < 365) { const m = Math.floor(d / 30); return `hace ${m} ${m === 1 ? 'mes' : 'meses'}`; }
+    const y = Math.floor(d / 365); return `hace ${y} ${y === 1 ? 'año' : 'años'}`;
+  }
+
+  // Una persona se considera "confirmada" cuando tiene avatar (referencia
+  // establecida); el resto está "por entrenar". Señal real y derivable.
+  const isConfirmed = (p: Person) => !!p.avatar_url;
+
+  // Degradado estable por persona para el fallback del avatar (sin foto).
+  const GRADS = [
+    'linear-gradient(140deg,#2b2347,#6b5aa0 60%,#c8b6ff)',
+    'linear-gradient(160deg,#151927,#3a3060 70%,#8ea4ff)',
+    'linear-gradient(150deg,#3a2a2a,#7c5a52 60%,#f2b8a0)',
+    'linear-gradient(150deg,#1d2a25,#46604f 65%,#9cb7a5)',
+    'linear-gradient(160deg,#0f111a,#252a42 70%,#7c6bb2)',
+    'linear-gradient(135deg,#1a2138,#37507e 60%,#8ea4ff)',
+    'linear-gradient(150deg,#2e1f2a,#6b4a5a 60%,#e58b9b)',
+    'linear-gradient(150deg,#2a2418,#6b5a36 60%,#e6c177)',
+  ];
+  const gradFor = (id: string) => {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return GRADS[h % GRADS.length];
+  };
+  // Inicial para el fallback del avatar sobre el degradado (estilo del diseño).
+  const firstInitial = (n: string) => (n.trim()[0] || '?').toUpperCase();
+
+  // Personas filtradas/ordenadas para el grid (búsqueda + chips).
+  const filteredPersons = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return persons
+      .filter(p => {
+        if (personFilter === 'confirmadas' && !p.avatar_url) return false;
+        if (personFilter === 'entrenar' && p.avatar_url) return false;
+        if (q && !(p.display_name.toLowerCase().includes(q) || p.aliases.some(a => a.toLowerCase().includes(q)))) return false;
+        return true;
+      })
+      .sort((a, b) => (filesPerPerson.get(b.person_id) || 0) - (filesPerPerson.get(a.person_id) || 0));
+  }, [persons, query, personFilter, filesPerPerson]);
+
+  const unidentifiedCount = useMemo(
+    () => (clusters || []).reduce((a, c) => a + (c.face_count || 0), 0),
+    [clusters]
+  );
+
+  // Estilos de cristal (glassmorphism) del design system.
+  const glass: React.CSSProperties = {
+    background: 'rgba(28,32,51,0.55)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+    border: '1px solid rgba(245,241,255,0.12)', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(245,241,255,0.10)',
+  };
+  const glassSoft: React.CSSProperties = {
+    background: 'rgba(37,42,66,0.32)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+    border: '1px solid rgba(245,241,255,0.12)',
+  };
+  const glassStrong: React.CSSProperties = {
+    background: 'rgba(21,25,39,0.82)', backdropFilter: 'blur(26px)', WebkitBackdropFilter: 'blur(26px)',
+    border: '1px solid rgba(245,241,255,0.12)', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(245,241,255,0.10)',
+  };
+
   useEffect(() => {
     loadPersons();
     loadFaceStatus();
   }, []);
+
+  // Cargar clusters automáticamente cuando el servicio está listo, para que la
+  // tira "Sin identificar" del rediseño aparezca sin entrar a la gestión.
+  useEffect(() => {
+    if (faceStatus?.ready && clusters === null) loadClusters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceStatus?.ready]);
 
   // Polling automatico mientras el daemon no esta listo. Cada llamada a
   // loadFaceStatus dispara init() en background en el backend, asi que basta
@@ -760,98 +868,122 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   }
 
   return (
-    <div>
+    <div className="relative">
+      {/* Glows ambientales del rediseño (contenidos, no tapan el chrome de la app) */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden -z-10">
+        <div className="absolute rounded-full" style={{ width: 540, height: 540, top: -200, left: -160, filter: 'blur(95px)', background: 'radial-gradient(circle, rgba(200,182,255,0.18), transparent 70%)' }} />
+        <div className="absolute rounded-full" style={{ width: 640, height: 640, bottom: -260, right: -200, filter: 'blur(105px)', background: 'radial-gradient(circle, rgba(142,164,255,0.14), transparent 70%)' }} />
+      </div>
+
       {/* Header */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
+      <header className="flex items-center gap-4 mb-5 flex-wrap">
+        <div className="flex-1 min-w-[200px]">
           {onBack && (
             <button
               onClick={onBack}
-              className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
+              className="flex items-center gap-1 mb-3 text-sm font-medium text-lavanda hover:text-marfil transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Volver</span>
             </button>
           )}
-          <h1 className="text-2xl font-bold text-marfil mb-2">Personas</h1>
-          <p className="text-lavanda-archivo">
-            Gente que aparece en tu archivo. Sube fotos de referencia para que el sistema aprenda a reconocerlas (próximamente con detección automática).
+          <h1 className="text-[1.75rem] font-bold tracking-tight text-marfil leading-none">Personas</h1>
+          <p className="mt-1 text-[0.8125rem] text-niebla">
+            {persons.length} {persons.length === 1 ? 'persona registrada' : 'personas registradas'}
+            {unidentifiedCount > 0 ? ` · ${unidentifiedCount} caras por agrupar` : ''}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          {faceStatus?.ready && (
-            <button
-              onClick={() => {
-                const next = view === 'persons' ? 'clusters' : 'persons';
-                setView(next);
-                if (next === 'clusters' && !clusters) loadClusters();
-              }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
-                view === 'clusters'
-                  ? 'bg-lavanda text-white'
-                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
-              }`}
-              title={view === 'clusters' ? 'Volver a la lista de personas' : 'Descubrir caras frecuentes no identificadas'}
-            >
-              {view === 'clusters' ? <Users className="w-4 h-4" /> : <Search className="w-4 h-4" />}
-              {view === 'clusters' ? 'Ver personas' : 'Descubrir caras'}
-            </button>
-          )}
-          {view === 'persons' && faceStatus?.ready && faceStatus.trainedPersons > 0 && (
-            <button
-              onClick={handleReidentify}
-              disabled={reidJob.status === 'running'}
-              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
-                reidJob.status === 'running'
-                  ? 'bg-lavanda/20 text-lavanda cursor-wait'
-                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
-              }`}
-              title="Recalcular matches en fotos ya escaneadas tras añadir o entrenar personas"
-            >
-              <Sparkles className={`w-4 h-4 ${reidJob.status === 'running' ? 'animate-pulse' : ''}`} />
-              Re-identificar biblioteca
-            </button>
-          )}
-          {view === 'persons' && (
+        <div className="flex items-center gap-2.5 rounded-full px-4 h-[46px] w-80 max-w-full" style={glass}>
+          <Search className="w-[18px] h-[18px] text-lavanda-archivo shrink-0" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Busca una persona…"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-marfil text-sm placeholder:text-lavanda-archivo"
+          />
+        </div>
+      </header>
+
+      {/* Barra de acciones (según vista) */}
+      <div className="flex items-center flex-wrap gap-2 mb-5">
+        {view === 'persons' ? (
+          <>
             <button
               onClick={() => setShowCreate(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-lavanda text-white rounded-full hover:bg-lavanda-claro transition-colors font-medium"
+              className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-lavanda text-noche text-[13px] font-semibold hover:bg-lavanda-claro transition-colors"
             >
               <Plus className="w-4 h-4" />
               Añadir persona
             </button>
-          )}
-          {view === 'clusters' && clusters && clusters.length >= 2 && (
+            {faceStatus?.ready && faceStatus.trainedPersons > 0 && (
+              <button
+                onClick={handleReidentify}
+                disabled={reidJob.status === 'running'}
+                style={glassSoft}
+                className={`inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium transition-colors ${reidJob.status === 'running' ? 'cursor-wait text-lavanda' : 'text-niebla hover:text-marfil'}`}
+                title="Recalcular matches en fotos ya escaneadas tras añadir o entrenar personas"
+              >
+                <Sparkles className={`w-4 h-4 ${reidJob.status === 'running' ? 'animate-pulse' : ''}`} />
+                Re-identificar
+              </button>
+            )}
+            {faceStatus?.ready && (
+              <button
+                onClick={() => { setView('clusters'); if (!clusters) loadClusters(); }}
+                style={glassSoft}
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil transition-colors"
+                title="Gestión avanzada de caras sin identificar (orden por similitud, fusión múltiple)"
+              >
+                <Users className="w-4 h-4" />
+                Gestionar grupos
+              </button>
+            )}
+          </>
+        ) : (
+          <>
             <button
-              onClick={toggleSelectMode}
-              disabled={merging}
-              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
-                selectMode
-                  ? 'bg-melocoton text-noche hover:bg-melocoton/90'
-                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
-              }`}
-              title={selectMode ? 'Salir del modo seleccion' : 'Seleccionar varios clusters para fusionarlos'}
+              onClick={() => setView('persons')}
+              style={glassSoft}
+              className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil transition-colors"
             >
-              <Users className="w-4 h-4" />
-              {selectMode ? 'Cancelar' : 'Fusionar similares'}
+              <ArrowLeft className="w-4 h-4" />
+              Ver personas
             </button>
-          )}
-          {view === 'clusters' && (
+            {clusters && clusters.length >= 2 && (
+              <button
+                onClick={toggleSelectMode}
+                disabled={merging}
+                className={`inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium transition-colors ${selectMode ? 'bg-melocoton text-noche hover:bg-melocoton/90' : 'text-niebla hover:text-marfil'}`}
+                style={selectMode ? undefined : glassSoft}
+                title={selectMode ? 'Salir del modo seleccion' : 'Seleccionar varios clusters para fusionarlos'}
+              >
+                <Users className="w-4 h-4" />
+                {selectMode ? 'Cancelar' : 'Fusionar similares'}
+              </button>
+            )}
             <button
               onClick={handleRefreshClusters}
               disabled={clusterJob.status === 'running' || selectMode}
-              className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors ${
-                clusterJob.status === 'running' || selectMode
-                  ? 'bg-lavanda/20 text-lavanda cursor-not-allowed'
-                  : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
-              }`}
+              style={glassSoft}
+              className={`inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium transition-colors ${clusterJob.status === 'running' || selectMode ? 'cursor-not-allowed text-lavanda/50' : 'text-niebla hover:text-marfil'}`}
               title="Recalcular clusters desde cero (descarta cache)"
             >
               <RefreshCw className={`w-4 h-4 ${clusterJob.status === 'running' ? 'animate-spin' : ''}`} />
               Re-clusterizar
             </button>
-          )}
-        </div>
+          </>
+        )}
+        <span className="flex-1" />
+        {faceStatus && (
+          <span
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-full text-[11px] font-mono"
+            style={glassSoft}
+            title={faceStatus.ready ? 'InsightFace activo' : (faceStatus.unavailable ? (faceStatus.lastError || 'Servicio no disponible') : 'Iniciando servicio…')}
+          >
+            <span className={`w-2 h-2 rounded-full ${faceStatus.ready ? 'bg-estado-exito' : faceStatus.unavailable ? 'bg-estado-error' : 'bg-estado-aviso animate-pulse'}`} />
+            <span className="text-niebla">{faceStatus.ready ? `InsightFace · ${faceStatus.trainedPersons} entrenadas` : faceStatus.unavailable ? 'IA no disponible' : 'IA iniciando…'}</span>
+          </span>
+        )}
       </div>
 
       {error && (
@@ -861,8 +993,8 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         </div>
       )}
 
-      {/* Estado del reconocimiento facial — siempre visible para que el usuario sepa si funciona */}
-      {faceStatus && (
+      {/* Estado del reconocimiento facial — solo cuando NO está listo (el chip de la barra cubre el caso activo) */}
+      {faceStatus && !faceStatus.ready && (
         <div className={`mb-6 p-4 rounded-2xl border flex items-start gap-3 ${
           faceStatus.ready
             ? 'bg-pizarra border-pizarra'
@@ -1415,9 +1547,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         </div>
       )}
 
-      {/* Modal: fusionar otra persona en selectedPerson (M5a) */}
+      {/* Modal: fusionar otra persona en selectedPerson (M5a) — z por encima del detalle */}
       {mergePersonOpen && selectedPerson && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">Fusionar en {selectedPerson.display_name}</h2>
@@ -1468,365 +1600,293 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         </div>
       )}
 
-      {/* Layout principal: lista + detalle (vista de personas) */}
+      {/* ===== Vista principal (rediseño) ===== */}
       {view === 'persons' && (
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Lista de personas */}
-        <div className="lg:col-span-1">
-          {loading ? (
-            <div className="flex items-center justify-center py-12 text-lavanda-archivo">
-              <RefreshCw className="w-6 h-6 animate-spin mr-2" />
-              Cargando...
-            </div>
-          ) : persons.length === 0 ? (
-            <div className="bg-tinta rounded-3xl border border-pizarra p-8 text-center">
-              <User className="w-12 h-12 text-lavanda-archivo mx-auto mb-3" />
-              <p className="text-marfil font-medium mb-1">Sin personas todavía</p>
-              <p className="text-sm text-lavanda-archivo">Pulsa "Añadir persona" para empezar tu registry.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-3">
-              {persons.map(person => {
-                const selected = selectedPerson?.person_id === person.person_id;
-                return (
-                  <button
-                    key={person.person_id}
-                    onClick={() => setSelectedPerson(person)}
-                    title={person.display_name}
-                    className="flex flex-col items-center gap-1.5 p-2 rounded-2xl hover:bg-pizarra/50 transition-colors"
-                  >
-                    <div className={`w-16 h-16 rounded-full overflow-hidden flex items-center justify-center transition-all ${
-                      selected
-                        ? 'ring-2 ring-lavanda ring-offset-2 ring-offset-noche bg-pizarra'
-                        : 'bg-pizarra hover:ring-2 hover:ring-lavanda-archivo hover:ring-offset-2 hover:ring-offset-noche'
-                    }`}>
-                      <Avatar url={avatarSrc(person)} name={person.display_name} bust={avatarBust} />
-                    </div>
-                    <p className={`text-xs font-medium truncate w-full text-center ${
-                      selected ? 'text-lavanda' : 'text-marfil'
-                    }`}>
-                      {person.display_name}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <>
+          {/* Filtros + recuento */}
+          <div className="flex items-center flex-wrap gap-2.5 mb-7">
+            {(([['todas', 'Todas'], ['confirmadas', 'Confirmadas'], ['entrenar', 'Por entrenar']]) as [PersonFilter, string][]).map(([key, label]) => {
+              const active = personFilter === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setPersonFilter(key)}
+                  style={active ? undefined : glassSoft}
+                  className={`inline-flex items-center h-9 px-4 rounded-full text-[13px] font-medium transition-colors ${active ? 'bg-lavanda text-noche' : 'text-niebla hover:text-marfil'}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+            <span className="flex-1" />
+            <span className="font-mono text-[11px] tracking-wide text-humo">{filteredPersons.length} de {persons.length}</span>
+          </div>
 
-        {/* Detalle de persona seleccionada */}
-        <div className="lg:col-span-2">
-          {selectedPerson ? (
-            <div className="bg-tinta rounded-3xl border border-pizarra p-6">
-              <div className="flex items-start justify-between mb-6">
-                <div className="flex items-center gap-4">
-                  <div className="w-16 h-16 rounded-full bg-pizarra overflow-hidden flex items-center justify-center">
-                    <Avatar url={avatarSrc(selectedPerson)} name={selectedPerson.display_name} bust={avatarBust} />
+          {/* Sin identificar (preview de clusters) */}
+          {faceStatus?.ready && clusters && clusters.length > 0 && (
+            <section className="mb-9">
+              <div className="flex items-baseline gap-3 mb-3.5 flex-wrap">
+                <span className="font-mono text-[11px] tracking-wider uppercase text-humo">Sin identificar</span>
+                <span className="text-xs text-lavanda-archivo">{unidentifiedCount} caras en {clusters.length} grupos — nómbralos para entrenar el reconocimiento</span>
+              </div>
+              <div className="flex gap-3.5 overflow-x-auto pb-2.5 px-0.5">
+                {clusters.slice(0, 12).map(c => {
+                  const shown = Math.max(1, Math.min(c.sample_count || 0, 3));
+                  return (
+                    <div key={c.cluster_id} className="flex-none w-[194px] rounded-xl p-4 flex flex-col gap-3.5" style={glassSoft}>
+                      <div className="flex items-center">
+                        {Array.from({ length: shown }).map((_, i) => (
+                          <div
+                            key={i}
+                            className="w-[54px] h-[54px] rounded-full overflow-hidden bg-pizarra border-2 border-grafito"
+                            style={{ marginLeft: i ? -18 : 0, boxShadow: i === 0 ? '0 3px 9px rgba(0,0,0,.45)' : undefined }}
+                          >
+                            <img src={clusterSampleUrl(c.cluster_id, i)} alt="" className="w-full h-full object-cover" loading="lazy" onError={e => { (e.target as HTMLImageElement).style.opacity = '0.3'; }} />
+                          </div>
+                        ))}
+                        {c.face_count > 3 && (
+                          <div className="w-[34px] h-[34px] rounded-full bg-pizarra border-2 border-grafito -ml-3.5 flex items-center justify-center font-mono text-[11px] text-niebla">+{c.face_count - 3}</div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-marfil">{c.face_count} {c.face_count === 1 ? 'cara' : 'caras'}</p>
+                        <p className="text-[11px] text-humo mt-0.5">
+                          {typeof c.file_count === 'number' ? `En ${c.file_count} ${c.file_count === 1 ? 'archivo' : 'archivos'}` : ([c.dominant_gender, c.dominant_age].filter(Boolean).join(' · ') || 'sin demografía')}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => openPromote(c)}
+                        className="inline-flex items-center justify-center gap-1.5 h-[34px] rounded-full bg-lavanda text-noche text-[13px] font-semibold hover:bg-lavanda-claro transition-transform active:scale-95"
+                      >
+                        <UserPlus className="w-[15px] h-[15px]" />
+                        Nombrar
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* Registradas */}
+          <section className="mb-7">
+            <div className="mb-3.5">
+              <span className="font-mono text-[11px] tracking-wider uppercase text-humo">Registradas</span>
+            </div>
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader variant="caras" cap="Cargando personas" sub="Leyendo el registry" />
+              </div>
+            ) : filteredPersons.length > 0 ? (
+              <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(172px, 1fr))' }}>
+                {filteredPersons.map(p => {
+                  const confirmed = isConfirmed(p);
+                  const appearances = filesPerPerson.get(p.person_id) || 0;
+                  const last = personStats.last.get(p.person_id);
+                  return (
+                    <button
+                      key={p.person_id}
+                      onClick={() => setSelectedPerson(p)}
+                      style={glass}
+                      className="group rounded-xl px-4 pt-[22px] pb-[18px] flex flex-col items-center text-center transition-transform hover:-translate-y-0.5"
+                    >
+                      <div className="relative mb-3.5">
+                        <div
+                          className="w-[84px] h-[84px] rounded-full overflow-hidden flex items-center justify-center text-[28px] font-semibold text-white/90 select-none"
+                          style={{ background: gradFor(p.person_id), boxShadow: confirmed ? '0 0 0 2px #C8B6FF, 0 6px 18px rgba(0,0,0,.42)' : '0 0 0 2px #E6C177, 0 6px 18px rgba(0,0,0,.42)' }}
+                        >
+                          {avatarSrc(p)
+                            ? <Avatar url={avatarSrc(p)} name={p.display_name} bust={avatarBust} />
+                            : firstInitial(p.display_name)}
+                        </div>
+                        {confirmed && (
+                          <div className="absolute right-0.5 bottom-0.5 w-6 h-6 rounded-full bg-lavanda border-2 border-grafito flex items-center justify-center">
+                            <Check className="w-3 h-3 text-noche" strokeWidth={3} />
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-[15px] font-semibold text-marfil truncate w-full">{p.display_name}</p>
+                      <p className="mt-1.5 font-mono text-[11px] text-humo">{appearances} {appearances === 1 ? 'aparición' : 'apariciones'}</p>
+                      <p className="mt-0.5 text-[11px] text-lavanda-archivo">{relativeTime(last)}</p>
+                      <span
+                        className="mt-3 inline-flex items-center h-[22px] px-[11px] rounded-full text-[11px] font-semibold"
+                        style={{ background: confirmed ? 'rgba(200,182,255,0.14)' : 'rgba(230,193,119,0.14)', color: confirmed ? '#C8B6FF' : '#E6C177' }}
+                      >
+                        {confirmed ? 'Confirmada' : 'Por entrenar'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="py-[70px] text-center text-humo">
+                <Users className="w-9 h-9 mx-auto text-lavanda-archivo mb-3.5" />
+                <p className="text-sm">{persons.length === 0 ? 'Sin personas todavía. Pulsa "Añadir persona" para empezar.' : 'Ninguna persona coincide con este filtro.'}</p>
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      {/* ===== Modal de detalle de persona ===== */}
+      {selectedPerson && (() => {
+        const p = selectedPerson;
+        const confirmed = isConfirmed(p);
+        const appearances = mediaFiles ? mediaFiles.filter(f => f.faces?.some(face => face.person_id === p.person_id)) : [];
+        const sessions = personStats.sessions.get(p.person_id) || 0;
+        const last = personStats.last.get(p.person_id);
+        const training = trainingIds.has(p.person_id);
+        const grad = gradFor(p.person_id);
+        return (
+          <div
+            onClick={() => setSelectedPerson(null)}
+            className="fixed inset-0 z-[60] flex items-center justify-center p-6"
+            style={{ background: 'rgba(8,9,14,0.82)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+          >
+            <div onClick={e => e.stopPropagation()} className="flex w-[min(920px,96vw)] max-h-[88vh] rounded-2xl overflow-hidden" style={glassStrong}>
+              {/* Columna izquierda: retrato */}
+              <div className="flex-[1_1_42%] min-w-[280px] relative flex-col items-center justify-center p-8 hidden md:flex" style={{ background: grad }}>
+                <div className="w-32 h-32 rounded-full overflow-hidden flex items-center justify-center text-[46px] font-semibold text-white select-none" style={{ background: 'rgba(15,17,26,0.28)', border: '3px solid rgba(255,255,255,.32)' }}>
+                  {avatarSrc(p)
+                    ? <Avatar url={avatarSrc(p)} name={p.display_name} bust={avatarBust} />
+                    : firstInitial(p.display_name)}
+                </div>
+                <p className="mt-[18px] text-xl font-bold text-white" style={{ textShadow: '0 2px 8px rgba(0,0,0,.5)' }}>{p.display_name}</p>
+                <span className="mt-2.5 inline-flex items-center h-6 px-3 rounded-full text-[11px] font-semibold text-white" style={{ background: 'rgba(15,17,26,0.5)' }}>{confirmed ? 'Confirmada' : 'Por entrenar'}</span>
+              </div>
+
+              {/* Columna derecha: detalle */}
+              <div className="flex-[1_1_58%] min-w-0 md:min-w-[300px] p-[22px] flex flex-col gap-[18px] overflow-y-auto">
+                <div className="flex justify-between items-start gap-3">
+                  <div className="min-w-0">
+                    <DisplayNameEditor key={p.person_id} initial={p.display_name} onSave={(name) => handleUpdateDisplayName(p, name)} />
+                    <p className="mt-1.5 font-mono text-[11px] text-humo truncate">{p.person_id} · {sessions} {sessions === 1 ? 'sesión' : 'sesiones'}</p>
                   </div>
-                  <div>
-                    <DisplayNameEditor
-                      key={selectedPerson.person_id}
-                      initial={selectedPerson.display_name}
-                      onSave={(name) => handleUpdateDisplayName(selectedPerson, name)}
-                    />
-                    <p className="text-sm text-lavanda-archivo font-mono">{selectedPerson.person_id}</p>
+                  <button onClick={() => setSelectedPerson(null)} className="flex-none w-8 h-8 rounded-lg bg-pizarra text-niebla hover:text-marfil flex items-center justify-center">
+                    <X className="w-[15px] h-[15px]" />
+                  </button>
+                </div>
+
+                {training && (
+                  <div className="flex items-center gap-2 p-2.5 rounded-xl text-sm" style={{ background: 'rgba(200,182,255,0.1)', border: '1px solid rgba(200,182,255,0.3)' }}>
+                    <Brain className="w-4 h-4 text-lavanda animate-pulse" />
+                    <span className="text-marfil">Entrenando embeddings faciales…</span>
+                  </div>
+                )}
+
+                {/* Stats reales */}
+                <div className="flex gap-2.5">
+                  <div className="flex-1 rounded-lg px-3.5 py-3" style={glassSoft}>
+                    <p className="text-[22px] font-bold text-lavanda leading-none">{appearances.length}</p>
+                    <p className="mt-1 font-mono text-[10px] tracking-wide uppercase text-humo">apariciones</p>
+                  </div>
+                  <div className="flex-1 rounded-lg px-3.5 py-3" style={glassSoft}>
+                    <p className="text-[22px] font-bold text-marfil leading-none">{sessions}</p>
+                    <p className="mt-1 font-mono text-[10px] tracking-wide uppercase text-humo">sesiones</p>
+                  </div>
+                  <div className="flex-1 rounded-lg px-3.5 py-3" style={glassSoft}>
+                    <p className="text-[13px] font-semibold text-marfil leading-tight">{relativeTime(last)}</p>
+                    <p className="mt-1 font-mono text-[10px] tracking-wide uppercase text-humo">última vez</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+
+                {/* Aliases */}
+                <div>
+                  <p className="mb-1.5 font-mono text-[10px] tracking-wider uppercase text-humo">Aliases</p>
+                  <AliasesEditor initialAliases={p.aliases} onSave={(aliases) => handleUpdateAliases(p, aliases)} />
+                </div>
+
+                {/* Apariciones recientes (biblioteca real) */}
+                {appearances.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2.5">
+                      <p className="font-mono text-[10px] tracking-wider uppercase text-humo">Apariciones recientes</p>
+                      {onFilterByPerson && (
+                        <button onClick={() => { onFilterByPerson(p.person_id); setSelectedPerson(null); }} className="text-[11px] font-medium text-lavanda hover:text-lavanda-claro">Ver todas →</button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {appearances.slice(0, 9).map(file => (
+                        <button
+                          key={file.id}
+                          onClick={() => { if (onSelectFile) onSelectFile(file); setSelectedPerson(null); }}
+                          title={file.name}
+                          className="relative aspect-square rounded-lg overflow-hidden bg-pizarra hover:ring-2 hover:ring-lavanda transition-all"
+                        >
+                          <img src={file.thumbnail || file.url} alt={file.name} className="w-full h-full object-cover" loading="lazy" onError={e => { (e.target as HTMLImageElement).style.opacity = '0.3'; }} />
+                          {file.type === 'video' && <span className="absolute bottom-1 right-1 text-[9px] bg-noche/80 text-marfil px-1 rounded">VIDEO</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Caras de entrenamiento (subir / avatar / borrar) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <p className="font-mono text-[10px] tracking-wider uppercase text-humo">Caras de entrenamiento</p>
+                    <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 text-[11px] font-medium text-lavanda hover:text-lavanda-claro">
+                      <ImagePlus className="w-3.5 h-3.5" />
+                      Subir
+                    </button>
+                    <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => handleUploadPhoto(p.person_id, e.target.files)} />
+                  </div>
+                  {photos.length === 0 ? (
+                    <div className="p-4 rounded-lg border-2 border-dashed border-pizarra text-center text-[11px] text-lavanda-archivo">
+                      Sube 5-10 fotos con caras claras y distintos ángulos para entrenar el reconocimiento.
+                    </div>
+                  ) : (
+                    <div className="flex gap-2 flex-wrap">
+                      {photos.map(photo => {
+                        const isAvatar = p.avatar_path?.endsWith(photo.filename);
+                        return (
+                          <div key={photo.filename} className="relative group w-12 h-12 rounded-lg overflow-hidden bg-pizarra" style={{ border: '1px solid rgba(245,241,255,0.12)' }}>
+                            <img src={photoSrc(photo)} alt={photo.filename} className="w-full h-full object-cover" />
+                            {isAvatar && (
+                              <div className="absolute top-0.5 left-0.5 bg-lavanda rounded-full p-0.5">
+                                <Star className="w-2.5 h-2.5 text-noche fill-current" />
+                              </div>
+                            )}
+                            <div className="absolute inset-0 bg-noche/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                              {!isAvatar && (
+                                <button onClick={() => handleSetAvatar(p.person_id, photo.filename)} title="Marcar como avatar" className="p-1 bg-lavanda text-noche rounded-full">
+                                  <Star className="w-3 h-3" />
+                                </button>
+                              )}
+                              <button onClick={() => handleDeletePhoto(p.person_id, photo.filename)} title="Eliminar foto" className="p-1 bg-estado-error/90 text-noche rounded-full">
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Acciones */}
+                <div className="flex gap-2.5 flex-wrap mt-auto pt-1.5">
                   {faceStatus?.ready && photos.length > 0 && (
-                    <button
-                      onClick={() => handleRetrain(selectedPerson.person_id)}
-                      disabled={trainingIds.has(selectedPerson.person_id)}
-                      className={`p-2 rounded-lg transition-colors ${
-                        trainingIds.has(selectedPerson.person_id)
-                          ? 'bg-lavanda/20 text-lavanda cursor-wait'
-                          : 'bg-pizarra text-lavanda hover:bg-lavanda hover:text-white'
-                      }`}
-                      title="Re-entrenar embeddings desde las fotos actuales"
-                    >
-                      <Brain className={`w-4 h-4 ${trainingIds.has(selectedPerson.person_id) ? 'animate-pulse' : ''}`} />
+                    <button onClick={() => handleRetrain(p.person_id)} disabled={training} className="inline-flex items-center gap-1.5 h-[38px] px-4 rounded-full bg-lavanda text-noche text-[13px] font-semibold hover:bg-lavanda-claro disabled:opacity-60">
+                      <Brain className={`w-4 h-4 ${training ? 'animate-pulse' : ''}`} />
+                      Re-entrenar
                     </button>
                   )}
                   {persons.length > 1 && (
-                    <button
-                      onClick={() => { setMergePersonOpen(true); setMergeLoserId(null); setMergeQuery(''); }}
-                      className="p-2 rounded-lg bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors"
-                      title="Fusionar otra persona en esta (combina caras y elimina la otra)"
-                    >
-                      <GitMerge className="w-4 h-4" />
+                    <button onClick={() => { setMergePersonOpen(true); setMergeLoserId(null); setMergeQuery(''); }} style={glassSoft} className="inline-flex items-center gap-1.5 h-[38px] px-[15px] rounded-full text-[13px] font-medium text-niebla hover:text-marfil" title="Fusionar otra persona en esta">
+                      <GitMerge className="w-[15px] h-[15px]" />
+                      Fusionar
                     </button>
                   )}
-                  <button
-                    onClick={() => handleDelete(selectedPerson)}
-                    className="p-2 rounded-lg bg-pizarra text-red-300 hover:bg-red-500/20 transition-colors"
-                    title="Eliminar persona"
-                  >
-                    <Trash2 className="w-4 h-4" />
+                  <button onClick={() => handleDelete(p)} title="Eliminar persona" style={glassSoft} className="inline-flex items-center justify-center w-[38px] h-[38px] rounded-full text-estado-error hover:bg-estado-error/10">
+                    <Trash2 className="w-[15px] h-[15px]" />
                   </button>
                 </div>
               </div>
-
-              {/* Indicador de estado de entrenamiento */}
-              {trainingIds.has(selectedPerson.person_id) && (
-                <div className="mb-4 p-2.5 bg-lavanda/10 border border-lavanda/30 rounded-2xl flex items-center gap-2 text-sm">
-                  <Brain className="w-4 h-4 text-lavanda animate-pulse" />
-                  <span className="text-marfil">Entrenando embeddings faciales...</span>
-                </div>
-              )}
-
-              {/* Aliases editables */}
-              <div className="mb-6">
-                <label className="block text-xs font-medium text-lavanda-archivo mb-1">Aliases (separados por coma)</label>
-                <AliasesEditor
-                  initialAliases={selectedPerson.aliases}
-                  onSave={(aliases) => handleUpdateAliases(selectedPerson, aliases)}
-                />
-              </div>
-
-              {/* Fotos de referencia */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-marfil">Fotos de referencia</h3>
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-lavanda text-white rounded-full hover:bg-lavanda-claro"
-                  >
-                    <ImagePlus className="w-3.5 h-3.5" />
-                    Subir foto
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => handleUploadPhoto(selectedPerson.person_id, e.target.files)}
-                  />
-                </div>
-                {photos.length === 0 ? (
-                  <div className="p-6 border-2 border-dashed border-pizarra rounded-2xl text-center">
-                    <Upload className="w-8 h-8 text-lavanda-archivo mx-auto mb-2" />
-                    <p className="text-sm text-lavanda-archivo">
-                      Sube fotos donde aparezca esta persona. Recomendado: 5-10 fotos con caras claras, distintos ángulos e iluminación.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-                    {photos.map(photo => {
-                      const isAvatar = selectedPerson.avatar_path?.endsWith(photo.filename);
-                      return (
-                        <div key={photo.filename} className="relative group rounded-2xl overflow-hidden bg-pizarra aspect-square">
-                          <img src={photoSrc(photo)} alt={photo.filename} className="w-full h-full object-cover" />
-                          {isAvatar && (
-                            <div className="absolute top-2 left-2 bg-lavanda text-white text-xs px-2 py-0.5 rounded-full flex items-center gap-1">
-                              <Star className="w-3 h-3 fill-current" />
-                              Avatar
-                            </div>
-                          )}
-                          <div className="absolute inset-0 bg-noche/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                            {!isAvatar && (
-                              <button
-                                onClick={() => handleSetAvatar(selectedPerson.person_id, photo.filename)}
-                                className="p-2 bg-lavanda text-white rounded-full hover:bg-lavanda-claro"
-                                title="Marcar como avatar"
-                              >
-                                <Star className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleDeletePhoto(selectedPerson.person_id, photo.filename)}
-                              className="p-2 bg-red-500/80 text-white rounded-full hover:bg-red-500"
-                              title="Eliminar foto"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Apariciones en la biblioteca real */}
-              {(() => {
-                if (!mediaFiles || mediaFiles.length === 0) return null;
-                const appearances = mediaFiles.filter(f =>
-                  f.faces?.some(face => face.person_id === selectedPerson.person_id)
-                );
-                if (appearances.length === 0) {
-                  return (
-                    <div className="mt-6 p-4 bg-pizarra/40 border border-pizarra rounded-2xl text-center">
-                      <p className="text-sm text-lavanda-archivo">
-                        Aun no hay apariciones de {selectedPerson.display_name} en la biblioteca.
-                      </p>
-                      <p className="text-xs text-bruma mt-1">
-                        Tras escanear con IA o re-identificar la biblioteca, las fotos donde aparezca apareceran aqui.
-                      </p>
-                    </div>
-                  );
-                }
-                const previewLimit = 24;
-                const preview = appearances.slice(0, previewLimit);
-                const remaining = appearances.length - preview.length;
-                return (
-                  <div className="mt-6">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold text-marfil">
-                        Apariciones en la biblioteca <span className="text-lavanda-archivo font-normal">· {appearances.length}</span>
-                      </h3>
-                      {onFilterByPerson && (
-                        <button
-                          onClick={() => onFilterByPerson(selectedPerson.person_id)}
-                          className="text-xs text-lavanda hover:text-lavanda-claro font-medium"
-                        >
-                          Ver todas en la galeria →
-                        </button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">
-                      {preview.map(file => (
-                        <button
-                          key={file.id}
-                          onClick={() => onSelectFile && onSelectFile(file)}
-                          className="relative aspect-square bg-pizarra rounded-xl overflow-hidden group/thumb hover:ring-2 hover:ring-lavanda transition-all"
-                          title={file.name}
-                        >
-                          <img
-                            src={file.thumbnail || file.url}
-                            alt={file.name}
-                            className="w-full h-full object-cover"
-                            loading="lazy"
-                            onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.3'; }}
-                          />
-                          {file.type === 'video' && (
-                            <span className="absolute bottom-1 right-1 text-[10px] bg-noche/80 text-marfil px-1.5 py-0.5 rounded">VIDEO</span>
-                          )}
-                        </button>
-                      ))}
-                      {remaining > 0 && onFilterByPerson && (
-                        <button
-                          onClick={() => onFilterByPerson(selectedPerson.person_id)}
-                          className="aspect-square bg-pizarra/60 border-2 border-dashed border-pizarra rounded-xl flex items-center justify-center hover:border-lavanda hover:text-lavanda transition-colors text-lavanda-archivo"
-                        >
-                          <span className="text-sm font-medium">+{remaining}</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
             </div>
-          ) : (
-            (() => {
-              const totalPersons = persons.length;
-              const withAppearances = persons.filter(p => (filesPerPerson.get(p.person_id) || 0) > 0).length;
-              const withoutAvatar = persons.filter(p => !p.avatar_url).length;
-
-              return (
-                <div className="bg-tinta rounded-3xl border border-pizarra p-6">
-                  {/* Header con stats */}
-                  <div className="mb-6">
-                    <h2 className="text-xl font-bold text-marfil mb-2">Resumen</h2>
-                    <div className="flex flex-wrap gap-4 text-sm">
-                      <span className="text-lavanda-archivo">
-                        <span className="text-marfil font-semibold">{totalPersons}</span> {totalPersons === 1 ? 'persona' : 'personas'} en total
-                      </span>
-                      {withAppearances > 0 && (
-                        <span className="text-lavanda-archivo">
-                          <span className="text-marfil font-semibold">{withAppearances}</span> con apariciones
-                        </span>
-                      )}
-                      {withoutAvatar > 0 && (
-                        <span className="text-lavanda-archivo">
-                          <span className="text-marfil font-semibold">{withoutAvatar}</span> sin avatar
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Top personas por apariciones */}
-                  {topPersonsByCount.length > 0 ? (
-                    <div className="mb-6">
-                      <h3 className="text-sm font-semibold text-marfil mb-3">Mas apariciones en tu archivo</h3>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        {topPersonsByCount.map(({ person, count }) => (
-                          <button
-                            key={person.person_id}
-                            onClick={() => setSelectedPerson(person)}
-                            className="group bg-pizarra rounded-2xl p-3 border border-pizarra hover:border-lavanda transition-colors text-left"
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="w-12 h-12 rounded-full bg-grafito overflow-hidden flex-shrink-0 flex items-center justify-center">
-                                <Avatar url={avatarSrc(person)} name={person.display_name} bust={avatarBust} iconClassName="w-5 h-5" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-marfil font-medium text-sm truncate">{person.display_name}</p>
-                                <p className="text-xs text-lavanda-archivo">
-                                  {count} {count === 1 ? 'aparicion' : 'apariciones'}
-                                </p>
-                              </div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mb-6 p-4 bg-pizarra/40 border border-pizarra rounded-2xl">
-                      <p className="text-sm text-marfil font-medium mb-1">Aun no hay apariciones detectadas</p>
-                      <p className="text-xs text-lavanda-archivo">
-                        Tras escanear con IA o re-identificar la biblioteca, las personas con caras emparejadas apareceran aqui.
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Atajos */}
-                  <div className="pt-4 border-t border-pizarra">
-                    <p className="text-xs text-lavanda-archivo mb-3">Atajos</p>
-                    <div className="flex flex-wrap gap-2">
-                      {faceStatus?.ready && (
-                        <button
-                          onClick={() => {
-                            setView('clusters');
-                            if (!clusters) loadClusters();
-                          }}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors"
-                        >
-                          <Search className="w-3.5 h-3.5" />
-                          Descubrir caras desconocidas
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setShowCreate(true)}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm bg-pizarra text-lavanda hover:bg-lavanda hover:text-white transition-colors"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Añadir persona manualmente
-                      </button>
-                    </div>
-                    <p className="text-xs text-bruma mt-4">
-                      Selecciona una persona en la lista de la izquierda para ver sus fotos y apariciones.
-                    </p>
-                  </div>
-                </div>
-              );
-            })()
-          )}
-        </div>
-      </div>
-      )}
-
-      {/* Nota informativa */}
-      <div className="mt-8 p-4 bg-pizarra/50 border border-pizarra rounded-2xl">
-        <h4 className="text-sm font-medium text-marfil mb-1">Cómo funciona el reconocimiento</h4>
-        <p className="text-xs text-lavanda-archivo">
-          Al subir fotos de referencia (5-10 con caras claras y distintos ángulos funciona mejor), Pensadero calcula un
-          <span className="font-mono text-bruma"> embedding facial</span> con InsightFace y lo guarda junto a las fotos.
-          Cuando escanees nuevas carpetas, las caras detectadas se comparan contra el registry y, si la similitud supera el umbral,
-          se asocian al <span className="font-mono text-bruma">person_id</span> correspondiente. Esto alimenta las búsquedas tipo
-          "fotos de Ester en el cumpleaños".
-        </p>
-      </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square, Tag } from 'lucide-react';
+import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square, Tag, AlertTriangle } from 'lucide-react';
 import { api } from '../services/api';
 import type { VlmModel } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -30,7 +30,18 @@ interface AiScanState {
   avgMsPerFile?: number;   // media movil por archivo (backend)
   etaMs?: number;          // tiempo restante estimado (backend)
   totalMs?: number;        // tiempo total del job al terminar (scan_done)
+  // Capacidades caidas en este escaneo ('faces', 'clip', 'motion'). Un escaneo
+  // degradado termina "con exito" pero deja el catalogo incompleto: sin esto,
+  // no habia forma de enterarse hasta buscar una cara meses despues.
+  degraded?: string[];
 }
+
+// Nombres legibles de las capacidades que pueden caerse durante un escaneo.
+const CAPACIDAD_LABEL: Record<string, string> = {
+  faces: 'reconocimiento de caras',
+  clip: 'busqueda visual (CLIP)',
+  motion: 'deteccion de movimiento de camara',
+};
 
 // Formatea una duracion en ms a texto humano corto: "850ms", "2.4s", "3m 12s",
 // "1h 5m". Para medias por archivo (< 1 min) preferimos segundos con decimal.
@@ -90,7 +101,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [batchSummary, setBatchSummary] = useState<{ processed: number; total: number; elapsedMs: number; aborted: boolean } | null>(null);
 
   // WebSocket para progreso en tiempo real
-  const { isConnected, progressData } = useWebSocket(config.wsUrl);
+  // El estado de conexion lo pinta ConnectionBanner desde App, global a toda
+  // la app. Aqui solo interesa el progreso.
+  const { progressData } = useWebSocket(config.wsUrl);
 
   useEffect(() => {
     loadPaths();
@@ -180,6 +193,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             done: 0,
             errors: 0,
             status: 'running',
+            degraded: progressData.degraded,
           });
           return next;
         });
@@ -224,6 +238,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               currentFile: undefined,
               totalMs: progressData.elapsedMs ?? cur.totalMs,
               avgMsPerFile: progressData.avgMsPerFile ?? cur.avgMsPerFile,
+              degraded: progressData.degraded ?? cur.degraded,
             });
           }
           return next;
@@ -624,8 +639,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           experimento: 'Experimento',
           legacy: 'Legacy / fallback',
           otro: 'Otros instalados',
+          no_cabe: 'No caben en esta GPU (16 GB)',
         };
-        const TIER_ORDER: VlmModel['tier'][] = ['produccion', 'experimento', 'legacy', 'otro'];
+        const TIER_ORDER: VlmModel['tier'][] = ['produccion', 'experimento', 'legacy', 'otro', 'no_cabe'];
         const selectedEntry = availableModels.find(m => m.name === selectedModel);
         return (
           <div className="mb-6 flex flex-col gap-2">
@@ -662,6 +678,41 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                 <span className="font-mono text-bruma">ollama pull {selectedEntry.name}</span>
               </p>
             )}
+          </div>
+        );
+      })()}
+
+      {/* Aviso de material pendiente de describir.
+          Pensadero no escanea solo: la decision de encender la GPU es tuya.
+          Pero tampoco deja que se te olvide, que era lo que pasaba antes:
+          el pendiente solo se veia como un porcentaje pequeno por ruta. */}
+      {(() => {
+        if (batchScan?.running) return null;
+        const pendientes = paths
+          .filter(p => p.isActive && typeof p.visualTotal === 'number')
+          .reduce((acc, p) => acc + Math.max(0, (p.visualTotal ?? 0) - (p.visualScanned ?? 0)), 0);
+        if (pendientes === 0) return null;
+        return (
+          <div className="mb-6 flex items-center justify-between gap-4 flex-wrap p-4 rounded-3xl bg-lavanda/10 border border-lavanda/30">
+            <div className="flex items-center gap-3">
+              <Sparkles className="w-5 h-5 text-lavanda shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-marfil">
+                  {pendientes} {pendientes === 1 ? 'archivo pendiente' : 'archivos pendientes'} de describir
+                </p>
+                <p className="text-xs text-lavanda-archivo">
+                  Sin descripcion visual no aparecen en la busqueda por lenguaje natural.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => handleScanAll(false)}
+              disabled={!vlmHealth?.ollamaRunning}
+              className="btn-primary shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={vlmHealth?.ollamaRunning ? 'Describir lo que falta' : 'Ollama no esta disponible'}
+            >
+              Escanear ahora
+            </button>
           </div>
         );
       })()}
@@ -976,6 +1027,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                           className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
                           style={{ width: `${pct}%` }}
                         />
+                      </div>
+                    )}
+                    {/* Escaneo degradado: corre igual, pero el catalogo saldra
+                        incompleto. Decirlo mientras pasa, no meses despues. */}
+                    {scan.degraded && scan.degraded.length > 0 && (
+                      <div className="mt-2 flex items-start gap-2 p-2 rounded-xl bg-melocoton/15 border border-melocoton/40">
+                        <AlertTriangle className="w-3.5 h-3.5 text-melocoton shrink-0 mt-0.5" />
+                        <p className="text-xs text-melocoton">
+                          Escaneo degradado: sin {scan.degraded.map(d => CAPACIDAD_LABEL[d] || d).join(', ')}.
+                          {' '}Estos archivos quedaran incompletos en esos campos aunque el escaneo termine bien.
+                        </p>
                       </div>
                     )}
                     {scan.status === 'running' && scan.total > 0 && (scan.avgMsPerFile || scan.etaMs) && (

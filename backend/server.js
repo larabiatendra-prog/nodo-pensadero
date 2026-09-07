@@ -463,27 +463,42 @@ function extractSmartTags(filename) {
 
 // === TIPO DE ARCHIVO ===
 
+// Respaldo extension -> tipo para contenedores que `mime-types` NO conoce
+// (formatos de camara/legacy). Sin esto, getFileType los descarta y quedan
+// invisibles aunque el escaneo visual si los procese (caso .m2ts: 120 videos
+// con thumbnail y sidecar pero "Archivos: 0"). Solo se consulta cuando
+// mime.lookup falla, asi que incluir extensiones que mime ya resuelve es inocuo.
+const EXT_TYPE_FALLBACK = new Map([
+  ['.m2ts', 'video'], ['.mts', 'video'], ['.ts', 'video'], ['.vob', 'video'],
+  ['.dv', 'video'], ['.ogv', 'video'], ['.mxf', 'video'], ['.mkv', 'video'],
+  ['.flv', 'video'], ['.3gp', 'video'], ['.m4v', 'video'], ['.mpg', 'video'],
+  ['.mpeg', 'video'], ['.wmv', 'video'], ['.mov', 'video'], ['.avi', 'video'],
+]);
+
 function getFileType(filePath) {
   const normalizedPath = path.normalize(filePath).toLowerCase();
   const isExport = EXPORTS_PATHS.some(exportPath => normalizedPath.startsWith(exportPath));
   if (isExport) return 'export';
 
   const mimeType = mime.lookup(filePath);
-  if (!mimeType) return null;
-  if (mimeType.startsWith('image/')) return 'image';
-  if (mimeType.startsWith('video/')) return 'video';
-  if (mimeType.startsWith('audio/')) return 'audio';
-  return null;
+  if (mimeType) {
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    return null;
+  }
+  // mime-types no reconoce la extension: respaldo por extension.
+  return EXT_TYPE_FALLBACK.get(path.extname(filePath).toLowerCase()) || null;
 }
 
 // === THUMBNAIL ===
 
-async function generateThumbnail(filePath, fileId, fileName, scanRoot) {
+async function generateThumbnail(filePath, fileId, fileName) {
   const fileType = getFileType(filePath);
 
-  // El thumbnail pertenece a la biblioteca: vive en <scanRoot>\.pensadero\thumbnails.
-  // Si no se conoce scanRoot, el resolver cae al directorio legacy (backend/thumbnails).
-  let loc = pathsConfig.resolveThumbnailLocation({ fullPath: filePath, scanRoot, fileId, fileName });
+  // El thumbnail vive junto al archivo, en <dir-del-archivo>\.pensadero\thumbnails.
+  // Si el destino no es escribible, el resolver cae al legacy (backend/thumbnails).
+  let loc = pathsConfig.resolveThumbnailLocation({ fullPath: filePath, fileId, fileName });
 
   // Crear el directorio destino de forma lazy (no en el arranque): los discos
   // externos pueden estar desconectados o ser de solo lectura. Si falla, caer al
@@ -495,7 +510,7 @@ async function generateThumbnail(filePath, fileId, fileName, scanRoot) {
     } catch (err) {
       if (!loc.legacy) {
         console.warn(`⚠️ No se pudo crear ${loc.thumbnailDir} (${err.message}). Fallback a thumbnails legacy.`);
-        loc = pathsConfig.resolveThumbnailLocation({ fullPath: filePath, fileId, fileName });
+        loc = pathsConfig.resolveThumbnailLocation({ fullPath: filePath, fileId, fileName, legacy: true });
         try { await fs.mkdir(loc.thumbnailDir, { recursive: true }); return true; } catch { return false; }
       }
       return false;
@@ -690,11 +705,10 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
         // biblioteca. El id md5 se conserva como token de runtime (URLs).
         const mediaKey = libraryId ? mediaIdentity.makeMediaKey(libraryId, relativePath) : '';
 
-        // baseDir es la raiz de biblioteca (scanRoot): el thumbnail se guarda en
-        // <baseDir>\.pensadero\thumbnails.
+        // El thumbnail se guarda junto al archivo, en <su-carpeta>\.pensadero\thumbnails.
         let thumbnail;
         try {
-          thumbnail = await generateThumbnail(fullPath, fileId, entry.name, baseDir);
+          thumbnail = await generateThumbnail(fullPath, fileId, entry.name);
         } catch {
           thumbnail = svgPlaceholder('Error', entry.name, '%23fee2e2');
         }
@@ -708,8 +722,8 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
         // destino por-disco, asi que probamos ambos (igual que el endpoint).
         let colorData = null;
         if (thumbnail && !thumbnail.startsWith('data:')) {
-          const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath, scanRoot: baseDir, fileId, fileName: entry.name });
-          const legacyLoc = pathsConfig.resolveThumbnailLocation({ fullPath, fileId, fileName: entry.name });
+          const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath, fileId, fileName: entry.name });
+          const legacyLoc = pathsConfig.resolveThumbnailLocation({ fullPath, fileId, fileName: entry.name, legacy: true });
           for (const cand of [newLoc.thumbnailPath, legacyLoc.thumbnailPath]) {
             try {
               await fs.access(cand);
@@ -810,7 +824,12 @@ async function performSync() {
       try {
         await fs.access(pathConfig.path);
       } catch {
+        // Marcar el estado real: sin esto se quedaba el 'connected' de la
+        // ultima sincronizacion buena y la UI seguia pintando como conectada
+        // una biblioteca que ya no existe (disco desenchufado, carpeta movida).
         console.warn(`⚠️ Ruta no accesible: ${pathConfig.path}`);
+        pathConfig.status = 'disconnected';
+        pathConfig.lastError = 'No accesible en la ultima sincronizacion';
         continue;
       }
 
@@ -833,6 +852,7 @@ async function performSync() {
       pathConfig.lastScan = new Date().toISOString();
       pathConfig.fileCount = result.files.length;
       pathConfig.status = 'connected';
+      pathConfig.lastError = null;
     }
 
     if (paths.length > 0) {

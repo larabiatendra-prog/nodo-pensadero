@@ -76,10 +76,18 @@ if exist "%ROOT%backend\python\.venv\Scripts\python.exe" (
     echo         Ejecuta Pensadero_Install.bat para instalarlo.
 )
 
-REM Build CONDICIONAL: solo construir si falta dist. Tras cambiar codigo,
-REM reconstruye a mano con: npm run build
-if not exist "%ROOT%dist\index.html" (
-    echo Construyendo build de produccion porque no existe dist...
+REM Build CONDICIONAL: se construye si falta dist O si el codigo fuente es
+REM mas nuevo que el bundle. Antes solo miraba si dist existia, asi que tras
+REM tocar codigo seguias viendo la version vieja sin ninguna senal de que
+REM estabas mirando algo caducado.
+set "NECESITA_BUILD=0"
+if not exist "%ROOT%dist\index.html" set "NECESITA_BUILD=1"
+
+powershell -NoProfile -Command "$d = '%ROOT%dist\index.html'; if (-not (Test-Path $d)) { exit 1 }; $b = (Get-Item $d).LastWriteTime; $fuentes = @('%ROOT%src', '%ROOT%index.html', '%ROOT%tailwind.config.js', '%ROOT%vite.config.ts') | Where-Object { Test-Path $_ }; $nuevo = Get-ChildItem $fuentes -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $b } | Select-Object -First 1; if ($nuevo) { exit 1 } else { exit 0 }"
+if errorlevel 1 set "NECESITA_BUILD=1"
+
+if "%NECESITA_BUILD%"=="1" (
+    echo Hay cambios sin construir. Generando build de produccion...
     cd /d "%ROOT%"
     call npm run build
     if errorlevel 1 (
@@ -90,7 +98,7 @@ if not exist "%ROOT%dist\index.html" (
         exit /b 1
     )
 ) else (
-    echo [OK] Build existente en dist. Para reconstruir tras cambios: npm run build
+    echo [OK] Build al dia.
 )
 
 REM Asegurar que Ollama corre (si esta instalado). Sin Ollama, la IA local no funciona.
@@ -119,8 +127,11 @@ if %ERRORLEVEL% NEQ 0 (
 
 REM Origen unico: el backend Node sirve el bundle (dist/) Y la API en el mismo
 REM puerto 5000. Ya no hace falta arrancar vite preview por separado.
+REM El backend ya no se lanza a pelo: va dentro de un supervisor que lo
+REM relanza si cae y deja log con hora en backend\logs. Antes una caida era
+REM invisible y se llevaba por delante el trabajo en curso.
 echo Arrancando Pensadero en puerto 5000 (frontend + API)...
-start "Pensadero" /min cmd /c "cd /d %ROOT%backend && node server.js"
+start "Pensadero" /min "%ROOT%Pensadero_Server.bat"
 
 timeout /t 4 /nobreak >nul
 

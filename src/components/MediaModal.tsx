@@ -25,6 +25,7 @@ import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
 import { config } from '../config';
 import { slugifyPersonId } from '../utils/persons';
+import { resolvePlayable, PlayableInfo } from '../utils/playable';
 
 interface MediaModalProps {
   file: MediaFile | null;
@@ -83,12 +84,32 @@ export default function MediaModal({
   // bboxes solo cuando estamos cerca del frame donde se detectaron caras
   const [videoNatural, setVideoNatural] = useState<{ w: number; h: number } | null>(null);
   const [videoCurrentTime, setVideoCurrentTime] = useState<number>(0);
+  // Estado de reproducibilidad: null = resolviendo; luego native/ready/generating/error.
+  // El backend devuelve un proxy MP4 para formatos que el navegador no reproduce.
+  const [playable, setPlayable] = useState<PlayableInfo | null>(null);
   // Resetear dimensiones cuando cambia el archivo
   useEffect(() => {
     setImgNatural(null);
     setVideoNatural(null);
     setVideoCurrentTime(0);
   }, [file?.id]);
+
+  // Resolver la URL reproducible de los vídeos (espera al proxy si se genera).
+  useEffect(() => {
+    if (!file || (file.type !== 'video' && file.type !== 'export')) {
+      setPlayable(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    setPlayable(null);
+    resolvePlayable(file.id, {
+      signal: ctrl.signal,
+      onUpdate: (info) => { if (!ctrl.signal.aborted) setPlayable(info); },
+    }).catch(() => {
+      if (!ctrl.signal.aborted) setPlayable({ status: 'error', error: 'no se pudo preparar el vídeo' });
+    });
+    return () => ctrl.abort();
+  }, [file?.id, file?.type]);
   // Tolerancia (segundos) alrededor de detection_frame_time donde se muestran
   // los bboxes en video. Si te pasas, los bboxes desaparecen.
   const VIDEO_BBOX_TOLERANCE_S = 1.5;
@@ -514,30 +535,56 @@ export default function MediaModal({
         return (
           <div className="relative bg-noche rounded-lg overflow-hidden">
             <div className="relative inline-block max-w-full">
-              <video
-                ref={videoRef}
-                key={file.id}
-                controls
-                className="block max-h-96 w-auto max-w-full object-contain"
-                poster={file.thumbnail.startsWith('data:') ? undefined : file.thumbnail}
-                preload="metadata"
-                onLoadedMetadata={(e) => {
-                  const v = e.currentTarget;
-                  if (v.videoWidth && v.videoHeight) {
-                    setVideoNatural({ w: v.videoWidth, h: v.videoHeight });
-                  }
-                }}
-                onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
-                onSeeked={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
-              >
-                <source src={file.url} type="video/mp4" />
-                Tu navegador no soporta la reproducción de video.
-              </video>
+              {(!playable || playable.status === 'generating') ? (
+                <div className="flex flex-col items-center justify-center bg-noche text-niebla px-6 py-16 min-w-[280px] gap-3">
+                  <Loader2 className="w-8 h-8 animate-spin text-lavanda" />
+                  <p className="text-sm">Preparando vídeo para reproducción…</p>
+                  <p className="text-xs text-humo">Optimizando el formato (solo la primera vez)</p>
+                </div>
+              ) : playable.status === 'error' ? (
+                <div className="flex flex-col items-center justify-center bg-noche text-niebla px-6 py-16 min-w-[280px] gap-3">
+                  <p className="text-sm">No se pudo preparar este vídeo para reproducir.</p>
+                  {playable.error && <p className="text-xs text-humo">{playable.error}</p>}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDownload(file); }}
+                    className="mt-2 px-3 py-1.5 bg-grafito hover:bg-pizarra text-marfil text-xs rounded-lg transition-colors"
+                  >
+                    Descargar original
+                  </button>
+                </div>
+              ) : (
+                <video
+                  ref={videoRef}
+                  key={file.id}
+                  controls
+                  className="block max-h-96 w-auto max-w-full object-contain"
+                  poster={file.thumbnail.startsWith('data:') ? undefined : file.thumbnail}
+                  preload="metadata"
+                  onLoadedMetadata={(e) => {
+                    const v = e.currentTarget;
+                    if (v.videoWidth && v.videoHeight) {
+                      setVideoNatural({ w: v.videoWidth, h: v.videoHeight });
+                    }
+                  }}
+                  onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
+                  onSeeked={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
+                >
+                  <source src={playable.url} type="video/mp4" />
+                  Tu navegador no soporta la reproducción de video.
+                </video>
+              )}
+              {/* Aviso discreto: lo que se reproduce es un proxy de menor
+                  resolución que el original (el original se conserva intacto). */}
+              {playable?.status === 'ready' && playable.downscaled && (
+                <div className="absolute bottom-2 left-2 z-10 px-2 py-0.5 bg-noche/80 text-humo text-[10px] rounded backdrop-blur-sm pointer-events-none">
+                  Vista previa {playable.outH}p · original {playable.srcW}×{playable.srcH}
+                </div>
+              )}
               {showOverlay && (
                 <FaceBoxesOverlay
                   boxes={visibleBoxes}
-                  naturalWidth={videoNatural!.w}
-                  naturalHeight={videoNatural!.h}
+                  naturalWidth={playable?.downscaled ? (playable.srcW || videoNatural!.w) : videoNatural!.w}
+                  naturalHeight={playable?.downscaled ? (playable.srcH || videoNatural!.h) : videoNatural!.h}
                   onPersonFilter={onPersonFilter}
                   onSeedUnknown={handleSeedFromUnknownFace}
                   onAssignFace={handleAssignFaceClick}

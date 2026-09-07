@@ -48,6 +48,7 @@ export const API_CONFIG = {
     files: `${API_URL}/api/files`,
     sync: `${API_URL}/api/sync`,
     stream: (id: string) => `${API_URL}/api/stream/${id}`,
+    playable: (id: string) => `${API_URL}/api/media/${id}/playable`,
     download: (id: string) => `${API_URL}/api/download/${id}`,
     thumbnails: `${API_URL}/thumbnails`,
 

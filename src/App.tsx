@@ -24,7 +24,7 @@ import { AddToCollectionModal } from './components/AddToCollectionModal';
 import Statistics from './components/Statistics';
 import AtlasView from './components/AtlasView';
 import PresentationMode from './components/PresentationMode';
-import ProgressBar from './components/ProgressBar';
+import Loader from './components/Loader';
 import PersonBubbles from './components/PersonBubbles';
 import PathManager from './components/PathManager';
 import TagManager from './components/TagManager';
@@ -38,6 +38,7 @@ import { CoverImageSelector } from './components/CoverImageSelector';
 import { EditCollectionModal } from './components/EditCollectionModal';
 import ImageSearchView from './components/ImageSearchView';
 import { QuickPreviewOverlay } from './components/QuickPreviewOverlay';
+import { ConnectionBanner } from './components/ConnectionBanner';
 import { normalizePath } from './utils/formatData';
 
 // ── Routing por URL (Eje B) ────────────────────────────────────────────────
@@ -130,6 +131,9 @@ function App() {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [isDownloadingZip, setIsDownloadingZip] = useState(false);
   const [downloadingCollectionId, setDownloadingCollectionId] = useState<string | null>(null);
+  // Muestra la animacion 'listo' brevemente al terminar una descarga.
+  const [downloadDone, setDownloadDone] = useState(false);
+  const downloadDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Presentation mode state
   const [showPresentationMode, setShowPresentationMode] = useState(false);
@@ -261,6 +265,10 @@ function App() {
   // "sincronizando sin avanzar".
   const [syncPct, setSyncPct] = useState(0);
   const [syncStatus, setSyncStatus] = useState('Preparando...');
+  // Variante del overlay de progreso: 'escaneo' (scan_progress) vs 'sync' (sync_*).
+  // progressDone activa la animacion 'listo' durante la ventana de cierre.
+  const [progressKind, setProgressKind] = useState<'escaneo' | 'sync'>('sync');
+  const [progressDone, setProgressDone] = useState(false);
 
   // Infinite scroll state
   const [loadedItemsCount, setLoadedItemsCount] = useState(96);
@@ -857,17 +865,21 @@ function App() {
       case 'scan_progress':
         if (typeof progressData.percentage === 'number') setSyncPct(progressData.percentage);
         if (progressData.status) setSyncStatus(progressData.status);
+        setProgressKind(progressData.type === 'scan_progress' ? 'escaneo' : 'sync');
+        setProgressDone(false);
         setShowProgress(true);
         armWatchdog();
         break;
       case 'sync_complete':
         setSyncPct(100);
+        setProgressDone(true);
         if (progressData.status) setSyncStatus(progressData.status);
         if (watchdogRef.current) clearTimeout(watchdogRef.current);
         if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
         progressTimerRef.current = setTimeout(() => {
           progressTimerRef.current = null;
           setShowProgress(false);
+          setProgressDone(false);
           clearProgress();
           reloadFilesAfterSync();
         }, 3000);
@@ -879,6 +891,7 @@ function App() {
         progressTimerRef.current = setTimeout(() => {
           progressTimerRef.current = null;
           setShowProgress(false);
+          setProgressDone(false);
           clearProgress();
         }, 5000);
         break;
@@ -893,6 +906,7 @@ function App() {
     if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     if (quietReloadRef.current) clearTimeout(quietReloadRef.current);
+    if (downloadDoneTimerRef.current) clearTimeout(downloadDoneTimerRef.current);
   }, []);
 
   const loadFiles = async (forceSync = false, favsOverride?: any[]) => {
@@ -1530,6 +1544,7 @@ function App() {
 
       // Clear selections after successful download
       setSelectedFiles(new Set());
+      flashDownloadDone();
 
     } catch (error) {
       console.error('Error descargando archivos:', error);
@@ -1537,6 +1552,16 @@ function App() {
     } finally {
       setIsDownloadingZip(false);
     }
+  };
+
+  // Animacion 'listo' breve tras una descarga correcta.
+  const flashDownloadDone = () => {
+    setDownloadDone(true);
+    if (downloadDoneTimerRef.current) clearTimeout(downloadDoneTimerRef.current);
+    downloadDoneTimerRef.current = setTimeout(() => {
+      downloadDoneTimerRef.current = null;
+      setDownloadDone(false);
+    }, 1600);
   };
 
   const handleFolderUpload = (files: any[]) => {
@@ -1813,6 +1838,7 @@ function App() {
       window.URL.revokeObjectURL(url);
 
       console.log(`✅ Colección "${collection.name}" descargada exitosamente`);
+      flashDownloadDone();
 
       // Keep loading toast visible briefly before showing success
       setTimeout(() => {
@@ -3381,9 +3407,8 @@ function App() {
 
               {/* Content */}
               {isLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
-                  <span className="ml-3 text-slate-600">Cargando archivos del servidor...</span>
+                <div className="flex items-center justify-center py-16">
+                  <Loader variant="cargando" />
                 </div>
               ) : allDisplayFiles.length > 0 ? (
                 <>
@@ -3555,6 +3580,10 @@ function App() {
 
   return (
     <div className="min-h-screen bg-noche">
+      {/* Estado del backend. Sin esto, una caida se veia como una pantalla
+          congelada indistinguible de "esta trabajando". */}
+      <ConnectionBanner isConnected={isConnected} />
+
       {/* Overlay de drag & drop: visible cuando el usuario arrastra una
           imagen sobre Pensadero estando en la vista home. pointer-events-none
           para que el drop llegue al window y no se "coma" el evento. */}
@@ -3699,7 +3728,7 @@ function App() {
           y el archivo aun no esta cargado. */}
       {modalLoading && (
         <div className="fixed inset-0 z-[120] bg-noche/80 backdrop-blur-sm flex items-center justify-center">
-          <RefreshCw className="w-8 h-8 text-lavanda animate-spin" />
+          <Loader variant="cargando" showCaption={false} />
         </div>
       )}
 
@@ -3782,17 +3811,25 @@ function App() {
         onClose={() => setShowPresentationMode(false)}
       />
 
-      {/* Barra de progreso para sincronización */}
-      <ProgressBar
-        isVisible={showProgress}
-        percentage={syncPct}
-        status={syncStatus}
-        stats={progressData?.type === 'sync_complete' ? progressData?.stats : undefined}
-        onClose={() => {
-          setShowProgress(false);
-          clearProgress();
-        }}
-      />
+      {/* Overlay de progreso (bloqueante) para escaneo / sincronización */}
+      {showProgress && (
+        <Loader
+          fullscreen
+          variant={progressDone ? 'listo' : progressKind}
+          cap={progressDone ? (progressKind === 'escaneo' ? 'Escaneo completado' : 'Sincronización completada') : undefined}
+          sub={syncStatus}
+          progress={progressDone ? undefined : syncPct}
+        />
+      )}
+
+      {/* Overlay de descarga (bloqueante) para ZIP / colección */}
+      {(isDownloadingZip || downloadingCollectionId || downloadDone) && (
+        <Loader
+          fullscreen
+          variant={downloadDone ? 'listo' : 'descarga'}
+          cap={downloadDone ? 'Descarga lista' : undefined}
+        />
+      )}
 
       {/* Cover Image Selector */}
       <CoverImageSelector

@@ -29,6 +29,7 @@ const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
 const { getInstance: getClipService } = require('./clipService');
 const { getInstance: getCameraMotionService } = require('./cameraMotionService');
+const videoProxyService = require('./videoProxyService');
 const clipIndex = require('../clipIndex');
 const colorAnalyzer = require('../colorAnalyzer');
 const { enrichPalette } = require('../colorNamer');
@@ -56,6 +57,11 @@ function ageBucket(age) {
 }
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
+// Cada cuantos archivos se vuelca el catalogo a disco durante el escaneo. El
+// coste de un corte (crash, apagon, cierre de ventana) es como mucho este
+// numero de archivos redescritos. Antes solo se escribia al terminar el bucle
+// entero y una caida a mitad se llevaba por delante horas de VLM.
+const FLUSH_EVERY = parseInt(process.env.SCAN_FLUSH_EVERY, 10) || 10;
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tif', '.tiff', '.avif']);
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
 const SCANNABLE_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS]);
@@ -331,6 +337,16 @@ async function scanFolder(folderPath, opts = {}) {
     };
   };
 
+  // Capacidades realmente disponibles para ESTE escaneo. Van en el evento
+  // porque si caras o CLIP no levantan, el escaneo corre igual y termina
+  // "con exito" dejando un catalogo mudo: sin caras o sin busqueda visual.
+  // Antes solo se sabia por un console.warn que nadie leia.
+  const capabilities = { faces: facesEnabled, clip: clipEnabled, motion: motionEnabled };
+  const degraded = Object.entries(capabilities).filter(([, ok]) => !ok).map(([k]) => k);
+  if (degraded.length > 0) {
+    console.warn(`[scan] DEGRADADO — sin: ${degraded.join(', ')}. El catalogo saldra incompleto en esos campos.`);
+  }
+
   // Avisar inicio
   broadcastProgress({
     type: 'scan_start',
@@ -338,6 +354,8 @@ async function scanFolder(folderPath, opts = {}) {
     folder: folderPath,
     status: 'Buscando imágenes...',
     percentage: 0,
+    capabilities,
+    degraded,
   });
 
   // 1) Listar imágenes. Si es escaneo de un único archivo, no recorremos el
@@ -372,6 +390,43 @@ async function scanFolder(folderPath, opts = {}) {
         source: existing.source || PENSADERO_CATALOG_FILENAME,
         dirty: false,
       });
+    }
+  }
+
+  // Volcado de los catálogos sucios. Se llama DURANTE el bucle (cada
+  // FLUSH_EVERY archivos y al cambiar de carpeta), no solo al terminar: lo ya
+  // descrito tiene que estar en disco aunque el proceso muera a mitad.
+  const writtenDirs = new Set();
+  async function flushCatalogs() {
+    for (const [dir, c] of catalogsByDir.entries()) {
+      if (!c.dirty) continue;
+      const targetFile = path.join(dir, PENSADERO_CATALOG_FILENAME);
+      // Lock por path: serializa esta escritura con un re-id/promote de fondo
+      // sobre la misma carpeta, para que no se intercalen dos escrituras del
+      // mismo _pensadero.json.
+      await withFileLock(normalizeLockKey(targetFile), async () => {
+        try {
+          // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
+          // verdad y guarda embeddings NO regenerables. Un crash a media
+          // escritura no lo trunca.
+          await atomicWriteFile(targetFile, JSON.stringify(c.catalog, null, 2));
+          catalogReader.invalidateCatalog(dir);
+          c.dirty = false;
+          writtenDirs.add(dir);
+        } catch (err) {
+          console.warn(`[scan] error escribiendo ${targetFile}: ${err.message}`);
+        }
+      });
+    }
+    // El indice CLIP viaja con el catalogo. Si se queda sin guardar, los
+    // embeddings siguen en el sidecar pero la busqueda visual no los ve hasta
+    // regenerar el indice.
+    if (clipEnabled && clipIndex.isDirty()) {
+      try {
+        await clipIndex.save();
+      } catch (err) {
+        console.warn('[scan] error guardando CLIP index:', err.message);
+      }
     }
   }
 
@@ -423,6 +478,9 @@ async function scanFolder(folderPath, opts = {}) {
   // Reiniciar el reloj de la ventana movil aqui: listar/filtrar imagenes puede
   // tardar en arboles grandes y no debe contar como tiempo del primer archivo.
   job.lastTickAt = Date.now();
+  // La carpeta es la unidad atómica de significado: al terminar una, su
+  // catálogo baja a disco antes de empezar la siguiente.
+  let lastDir = null;
   for (const filePath of toScan) {
     if (job.cancelRequested) {
       job.status = 'cancelled';
@@ -430,6 +488,11 @@ async function scanFolder(folderPath, opts = {}) {
     }
     const dir = path.dirname(filePath);
     const basename = path.basename(filePath);
+
+    if (lastDir !== null && dir !== lastDir) {
+      await flushCatalogs();
+    }
+    lastDir = dir;
 
     const ext = path.extname(basename).toLowerCase();
     const isVideo = isVideoExt(ext);
@@ -556,6 +619,11 @@ async function scanFolder(folderPath, opts = {}) {
             await videoResult.cleanup();
           }
         }
+
+        // Pre-calentar el proxy de reproduccion (fire-and-forget, cola con
+        // concurrencia limitada): si el formato no es web-nativo (.m2ts, .mov
+        // 10-bit, etc.), al abrirlo en el front ya estara listo para reproducir.
+        videoProxyService.prewarm({ id: fileIdFor(filePath), fullPath: filePath, name: basename });
       } else {
         [entry, technical, faceDetections] = await Promise.all([
           scanner.scanImage(filePath, { folderContext: folderContextStr }),
@@ -764,6 +832,15 @@ async function scanFolder(folderPath, opts = {}) {
         percentage: Math.round((job.done / job.total) * 100),
         ...timingFields(),
       });
+
+      if (job.done % FLUSH_EVERY === 0) {
+        await flushCatalogs();
+        // Huella de memoria en el log: si el RSS sube sin techo a lo largo de
+        // una tanda larga, aqui se ve. Es la instrumentacion que faltaba para
+        // diagnosticar una caida silenciosa a mitad de escaneo.
+        const mem = process.memoryUsage();
+        console.log(`[scan] ${job.done}/${job.total} — rss ${Math.round(mem.rss / 1048576)} MB, heap ${Math.round(mem.heapUsed / 1048576)}/${Math.round(mem.heapTotal / 1048576)} MB`);
+      }
     } catch (err) {
       console.warn(`[scan] ${basename}: ${err.message}`);
       job.errors++;
@@ -779,37 +856,12 @@ async function scanFolder(folderPath, opts = {}) {
     }
   }
 
-  // 5) Escribir catálogos modificados a disco
-  let written = 0;
-  for (const [dir, c] of catalogsByDir.entries()) {
-    if (!c.dirty) continue;
-    const targetFile = path.join(dir, PENSADERO_CATALOG_FILENAME);
-    // Lock por path: serializa esta escritura con un re-id/promote de fondo
-    // sobre la misma carpeta, para que no se intercalen dos escrituras del mismo
-    // _pensadero.json. (El scan ya tiene su catalogo en memoria; el lock evita el
-    // solapamiento fisico, no re-mezcla cambios externos hechos durante el scan.)
-    await withFileLock(normalizeLockKey(targetFile), async () => {
-      try {
-        // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
-        // verdad y guarda embeddings NO regenerables. Un crash a media escritura
-        // ya no lo trunca. (Antes era el unico writer con fs.writeFile directo.)
-        await atomicWriteFile(targetFile, JSON.stringify(c.catalog, null, 2));
-        catalogReader.invalidateCatalog(dir);
-        written++;
-      } catch (err) {
-        console.warn(`[scan] error escribiendo ${targetFile}: ${err.message}`);
-      }
-    });
-  }
-
-  // 6) Persistir clipIndex si hubo cambios (CLIP embeddings nuevos)
-  if (clipEnabled && clipIndex.isDirty()) {
-    try {
-      await clipIndex.save();
-      console.log(`[scan] CLIP index guardado (${clipIndex.size()} embeddings)`);
-    } catch (err) {
-      console.warn('[scan] error guardando CLIP index:', err.message);
-    }
+  // 5) Volcado final: lo que quede sucio desde el ultimo flush del bucle.
+  //    El grueso ya se escribio incrementalmente mientras se escaneaba.
+  await flushCatalogs();
+  const written = writtenDirs.size;
+  if (clipEnabled) {
+    console.log(`[scan] CLIP index guardado (${clipIndex.size()} embeddings)`);
   }
 
   // 7) Cierre
@@ -822,7 +874,13 @@ async function scanFolder(folderPath, opts = {}) {
     done: job.done,
     errors: job.errors,
     written,
-    status: job.status === 'cancelled' ? 'Escaneo cancelado' : 'Escaneo completado',
+    // Se repiten en el cierre para que el resumen no cante "completado" a secas
+    // cuando en realidad ha ido sin caras o sin embeddings.
+    capabilities,
+    degraded,
+    status: job.status === 'cancelled'
+      ? 'Escaneo cancelado'
+      : (degraded.length > 0 ? `Escaneo completado SIN ${degraded.join(', ')}` : 'Escaneo completado'),
     percentage: 100,
     elapsedMs: job.finishedAt - job.startedAt,
     // Media real del job completo (no la ventana movil): tiempo total / archivos

@@ -12,6 +12,7 @@ import {
   CenterNode, BridgePerson, AnchorPlace, Island,
 } from '../utils/atlasGraph';
 import AtlasWorker from '../workers/atlasWorker?worker';
+import Loader from './Loader';
 
 interface AtlasViewProps {
   files: MediaFile[];
@@ -499,10 +500,7 @@ export default function AtlasView({ files, onOpenDay, onPersonClick, onTagClick 
 
           {computing && (
             <div className="absolute inset-0 flex items-center justify-center bg-noche/60 z-10">
-              <div className="text-center">
-                <Sparkles className="w-8 h-8 text-lavanda animate-pulse mx-auto mb-2" />
-                <p className="text-niebla text-sm">Tejiendo tu atlas…</p>
-              </div>
+              <Loader variant="atlas" cap="Tejiendo tu atlas" sub="Enlazando sesiones y recuerdos" />
             </div>
           )}
 

@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface ProgressData {
   type:
-    | 'sync_start' | 'sync_progress' | 'scan_progress' | 'sync_complete' | 'sync_error'
+    | 'sync_start' | 'sync_progress' | 'sync_complete' | 'sync_error'
+    // Escaneo visual: por carpeta (scan_*) y en lote sobre todas las rutas (batch_*)
+    | 'scan_start' | 'scan_progress' | 'scan_done' | 'scan_error'
+    | 'batch_scan_start' | 'batch_scan_progress' | 'batch_scan_done'
     // Re-identificacion facial retroactiva
     | 'reidentify_start' | 'reidentify_progress' | 'reidentify_done' | 'reidentify_error'
     // Clustering de caras desconocidas
@@ -31,6 +34,13 @@ export interface ProgressData {
   perPerson?: Record<string, number>; // person_id → caras recien etiquetadas
   startedAt?: number;
   finishedAt?: number;
+  errors?: number;
+  // --- Capacidades reales del escaneo (scan_start / scan_done) ---
+  // Si caras o CLIP no levantan, el escaneo corre igual pero deja el catalogo
+  // incompleto. Antes solo se sabia por un console.warn del backend que nadie
+  // leia; ahora viaja en el evento para poder decirlo en pantalla.
+  capabilities?: { faces: boolean; clip: boolean; motion: boolean };
+  degraded?: string[];     // nombres de las capacidades caidas ('faces', 'clip', 'motion')
   // --- Tiempos del escaneo visual (scan_progress / scan_error) ---
   elapsedMs?: number;      // tiempo transcurrido del job
   avgMsPerFile?: number;   // media movil (ultimos N) de ms por archivo

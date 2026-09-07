@@ -18,7 +18,12 @@
 # seguirá funcionando, solo más lento.
 
 insightface==0.7.3
-onnxruntime-gpu>=1.18
+# PIN onnxruntime-gpu a la ultima rama compilada contra CUDA 12. A partir de
+# 1.23/1.27 onnxruntime-gpu pasa a CUDA 13 (depende de cublasLt64_13.dll), que
+# NO casa con las librerias nvidia-*-cu12 de abajo: el provider CUDA falla a
+# cargar y cae a CPU EN SILENCIO. La 1.22.0 (build CUDA 12.8) si soporta
+# Blackwell (RTX 50xx, sm_120) reutilizando las cu12. Ver memoria entorno-nodo-pc.
+onnxruntime-gpu==1.22.0
 numpy>=1.24,<2.0
 opencv-python>=4.8
 pillow>=10.0
@@ -29,6 +34,12 @@ pillow-heif>=0.16
 # SigLIP-2 (Google, 2024) — image+text embeddings multilingue en el mismo
 # espacio de 768 dims. Sustituye a CLIP base + M-CLIP. Soporta español
 # nativamente sin projection layers extra. ~600 MB modelo, ~1 GB VRAM.
+#
+# OJO GPU: la wheel de torch de PyPI en Windows es CPU-only (torch-X.Y+cpu).
+# Para usar la GPU en el indexado visual hay que instalar torch desde el indice
+# CUDA DESPUES de este requirements:
+#   .venv\Scripts\python.exe -m pip install --index-url https://download.pytorch.org/whl/cu128 torch
+# cu128 = CUDA 12.8, necesario para Blackwell (RTX 50xx, sm_120).
 torch>=2.6           # requerido por transformers>=5 (vulnerabilidad CVE-2025-32434)
 transformers>=4.49   # SigLIP-2 anadido en 4.49; transformers 5.x funciona
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
 import { MediaFile } from '../types';
+import { resolvePlayable } from '../utils/playable';
 
 interface PresentationModeProps {
   videos: MediaFile[];
@@ -33,8 +34,28 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   const nextIndex = total > 0 ? (currentVideoIndex + 1) % total : 0;
   const prevIndex = currentVideoIndex === 0 ? total - 1 : currentVideoIndex - 1;
 
-  const activeUrl = videoFiles[currentVideoIndex]?.url ?? '';
-  const inactiveUrl = videoFiles[nextIndex]?.url ?? '';
+  // URLs reproducibles (proxy MP4 para formatos no web-nativos). Se resuelven
+  // para el video actual y el siguiente (precarga). Cache por fileId.
+  const [resolvedUrls, setResolvedUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!isOpen) return;
+    const ctrl = new AbortController();
+    const targets = [videoFiles[currentVideoIndex], videoFiles[nextIndex]].filter(Boolean) as MediaFile[];
+    for (const f of targets) {
+      if (resolvedUrls[f.id]) continue;
+      resolvePlayable(f.id, { signal: ctrl.signal })
+        .then(info => {
+          if (!ctrl.signal.aborted && info.url && (info.status === 'native' || info.status === 'ready')) {
+            setResolvedUrls(prev => (prev[f.id] ? prev : { ...prev, [f.id]: info.url! }));
+          }
+        })
+        .catch(() => {});
+    }
+    return () => ctrl.abort();
+  }, [isOpen, currentVideoIndex, nextIndex]);
+
+  const activeUrl = resolvedUrls[videoFiles[currentVideoIndex]?.id] ?? '';
+  const inactiveUrl = resolvedUrls[videoFiles[nextIndex]?.id] ?? '';
 
   // Avanzar: swap de player + indice. El inactivo ya tiene precargado el siguiente,
   // asi que el corte es instantaneo. Setters funcionales => sin estado obsoleto.

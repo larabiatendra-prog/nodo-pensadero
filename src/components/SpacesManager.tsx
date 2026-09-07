@@ -3,6 +3,7 @@ import { MapPin, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus,
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
+import Loader from './Loader';
 
 /**
  * SpacesManager — gestion de espacios fisicos con place recognition CLIP.
@@ -535,9 +536,8 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
         {/* Lista de espacios */}
         <div className="lg:col-span-1">
           {loading ? (
-            <div className="flex items-center justify-center py-12 text-lavanda-archivo">
-              <RefreshCw className="w-6 h-6 animate-spin mr-2" />
-              Cargando...
+            <div className="flex items-center justify-center py-12">
+              <Loader variant="espacios" cap="Cargando espacios" sub="Leyendo lugares del mapa" />
             </div>
           ) : spaces.length === 0 ? (
             <div className="bg-tinta rounded-3xl border border-pizarra p-8 text-center">

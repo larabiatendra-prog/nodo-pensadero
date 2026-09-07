@@ -1,16 +1,6 @@
-# CLAUDE.md — Pensadero
+# AGENTS.md — Pensadero
 
-Guía para futuras sesiones de Claude Code dentro de este repositorio.
-
-## Contexto (leer primero)
-
-Este proyecto pertenece al ecosistema NODO, cuya capa de contexto es
-`C:\DEV\contexto` (empezar por su `INDICE.md`). Antes de decisiones de diseno,
-arquitectura o filosofia, consultarla: `manifiesto.md` para el porque,
-`patrones-stack.md` / `patrones-datos.md` / `patrones-experiencia.md` para el
-como, y `puntos-debiles.md` para lo que suele torcerse. El estado de este
-proyecto esta en `contexto\herramientas.md`. Si algo de este repo la
-contradice, senalarlo en vez de resolverlo en silencio.
+Guía para futuras sesiones de Codex dentro de este repositorio.
 
 ## Identidad
 
@@ -29,17 +19,10 @@ contradice, senalarlo en vez de resolverlo en silencio.
 
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS.
 - **Backend**: Node.js + Express + WebSocket (`ws`). Servidor en `backend/server.js`, rutas modulares en `backend/routes/`, servicios en `backend/services/`.
-- **IA opcional**: Ollama local. Búsqueda en lenguaje natural con `qwen2.5:7b-instruct` (NODO) o `qwen2.5:14b-instruct`. VLM de escaneo seleccionable desde la UI; cambio siempre manual, sin automatismo. Catálogo curado en `visualScanService.js` por tiers:
-  - `produccion`: `gemma4:12b` (principal). `legacy`: `gemma3:12b` (**el activo en NODO ahora mismo**).
-  - `experimento`: `huihui_ai/gemma-4-abliterated:12b`, `qwen2.5vl:7b`, `huihui_ai/qwen2.5-vl-abliterated:7b`. Los "abliterated" están porque los VLM estándar esquivan o edulcoran descripciones de personas, y este archivo es sobre todo personas.
-  - `no_cabe`: 27B/31B/32B. Se ofrecen avisando, no en igualdad: no entran en los 16 GB de la 5070 Ti junto a CLIP e InsightFace, se desbordan a RAM y el escaneo pasa de segundos a minutos por clip.
-
-  El modelo activo se persiste en `config/runtime.json`, que gana al `VLM_MODEL` del `.env` (ver `backend/.env.nodo`). **Ojo con la deriva**: `.env` dice `gemma3:12b` y `.env.nodo` dice `gemma4:12b`, y el `.bat` regenera `.env` desde la plantilla si falta.
+- **IA opcional**: Ollama local. Búsqueda en lenguaje natural con `qwen2.5:7b-instruct` (NODO) o `qwen2.5:14b-instruct`. VLM de escaneo seleccionable desde la UI (catalogo curado: `gemma4:12b` principal/default, `gemma4:27b` experimento, `gemma3:12b` legacy/fallback manual; cambio siempre manual, sin automatismo). Configurable en `backend/.env` (ver `backend/.env.nodo`).
 - **Sin Electron, sin pkg, sin instaladores.** Stack deliberadamente simple: `npm install` + un `.bat`.
 
 ## Diseño
-
-Nota: esta paleta noche/lavanda es **temporal**; no ampliarla con colores nuevos. La linea grafica del ecosistema esta **sin decidir** (El Paramo se retiro el 30/08/2026). No aplicar ninguna linea todavia; el encargo y las cuatro direcciones candidatas estan en `C:\DEV\contexto\linea-grafica-encargo.md`.
 
 ### Paleta (tokens semánticos en español, definidos en `tailwind.config.js`)
 
@@ -67,7 +50,7 @@ Nota: esta paleta noche/lavanda es **temporal**; no ampliarla con colores nuevos
    - **No reintroducir** `face-api.js` (legacy de la version anterior). Cualquier UI nueva de personas/caras debe integrarse con el daemon InsightFace existente.
    - **Spaces (lugares):** todavia se *leen* desde sidecar; siguen el camino de absorcion (Vision B) cuando se aborde.
 3. **Comments en español.** Los nombres de tokens semánticos (colores, espaciados, roles) también van en español.
-4. **README y CLAUDE.md sin emojis.**
+4. **README y AGENTS.md sin emojis.**
 5. **Pensadero_Start.bat sin acentos en su contenido** (compatibilidad con cmd antigua).
 
 ## Datos persistentes
@@ -78,25 +61,13 @@ Todo en `backend/`, en disco local, formato JSON plano:
 - `collections_persistent.json` — colecciones de usuario con orden manual.
 - `notes_persistent.json` — notas humanas por archivo (`fileId`) y por sesion colapsada (session key). No regenerable.
 - `media_cache.json` — cache de metadatos de archivos escaneados (la fuente de verdad operativa).
-- `scan_paths.json` — rutas de bibliotecas que el usuario ha añadido. El campo `status` refleja la accesibilidad real comprobada en la última sincronización (`connected` / `disconnected`), no el último estado bueno conocido.
-- `config/runtime.json` — preferencias que el usuario cambia desde la UI y deben sobrevivir al reinicio (hoy: `vlmModel`). **Gana al `.env`**, que pasa a ser el valor de fábrica. Sin esto, el selector de modelo volvía al `.env` en cada arranque sin avisar.
-- `<carpeta-del-archivo>/.pensadero/thumbnails/` — miniaturas (regenerables), junto al archivo en el `.pensadero` de su carpeta contenedora, igual que el sidecar `_pensadero.json`. Es el destino principal; se sirven por `GET /api/thumbnails/:fileId`. `backend/thumbnails/` queda como fallback legacy (disco de solo lectura).
-- `<carpeta-del-archivo>/.pensadero/proxies/<fileId>.mp4` — proxies de reproducción web-compatibles (regenerables, NVENC) para vídeos cuyo códec/contenedor el navegador no reproduce. Se sirven por `GET /api/media/:fileId/proxy`; el estado y la URL reproducible los da `GET /api/media/:fileId/playable`. `backend/proxies/` es el fallback legacy.
+- `scan_paths.json` — rutas de bibliotecas que el usuario ha añadido.
+- `<scanRoot>/.pensadero/thumbnails/` — miniaturas por biblioteca (regenerables, junto a cada disco escaneado). Es el destino principal; se sirven por `GET /api/thumbnails/:fileId`. `backend/thumbnails/` queda como fallback legacy.
 - `clip_index.json` — índice de embeddings CLIP/SigLIP-2 para búsqueda visual (regenerable desde los `_pensadero.json` por carpeta). Indexado por `mediaId` (md5 de la ruta, mismo que el `id` de runtime).
 
 Ninguno de estos archivos debe versionarse en git (ver `.gitignore`).
 
 **Identidad portable (`backend/utils/mediaIdentity.js`):** la identidad persistente de un archivo es la `mediaKey = "<libraryId>:<relativePathNorm>"`, no su ruta absoluta. `libraryId` = el `id` estable de `scan_paths.json` (hex aleatorio, no depende de la ruta). El `id = md5(rutaAbsoluta)` se conserva solo como token de runtime para URLs de stream/thumbnail. Las bibliotecas se remapean (cambio de letra de unidad) con `PATCH /api/scan-paths/:id` conservando el `id`. Migrador de estado: `backend/tools/migrate-portable-state.js` (dry-run + `--apply`, con backup). Diagnóstico: `backend/tools/portability-report.js` (lo invoca Doctor). Detalle en `GUIA_INSTALACION_NODO.md` → "Portabilidad real". Pendiente: el frontend de favoritos/notas/colecciones aún referencia por ruta/`id`; el almacén ya soporta `mediaKey`.
-
-## Nada falla en silencio (invariantes)
-
-Tres reglas que existen por incidentes reales y no hay que deshacer sin sustituirlas por algo mejor:
-
-1. **El catálogo se vuelca durante el escaneo, no al final.** `scanFolder` llama a `flushCatalogs()` cada `SCAN_FLUSH_EVERY` archivos (10 por defecto) y al cambiar de carpeta. Antes solo escribía al terminar el bucle y una caída a mitad se llevaba por delante horas de VLM. El coste de un corte es como mucho 10 archivos.
-2. **Un escaneo degradado lo dice.** Si caras, CLIP o motion no levantan, el escaneo sigue (correcto) pero emite `capabilities` y `degraded` en `scan_start`/`scan_done`, y la UI lo pinta. Antes solo había un `console.warn` que no leía nadie: se podían escanear 153 vídeos sin reconocimiento facial y no enterarse hasta meses después.
-3. **La UI dice cuándo el backend no está.** `ConnectionBanner` (en `App.tsx`, global) usa el `isConnected` de `useWebSocket`. Antes ese valor se extraía y no se pintaba en ningún sitio, así que una caída se veía como una pantalla congelada indistinguible de "está trabajando".
-
-**`GET /api/health`** responde por el circuito entero de una sola llamada: Ollama y modelo activo, CLIP, caras, ffmpeg, accesibilidad real de cada biblioteca, pendientes de describir y memoria del proceso. Lo consumen `Pensadero_Doctor.bat` y la UI. Es el sitio al que ir antes de investigar nada.
 
 ## Bibliotecas típicas
 
@@ -127,8 +98,4 @@ node server.js        # Backend en puerto 5000
 
 ## Arranque para usuario final
 
-`Pensadero_Start.bat` orquesta todo: comprueba Node, instala dependencias si faltan, construye el bundle **si falta `dist/` o si `src/` es más nuevo que el bundle**, y lanza `Pensadero_Server.bat`, que sirve frontend y API en `:5000` (origen único).
-
-**`Pensadero_Server.bat` es el supervisor del backend.** No lanza `node server.js` a pelo: lo envuelve en un bucle que lo relanza si cae, con espera creciente (5 s, 15 s, 60 s) y corte a las 10 caídas seguidas. Si el proceso aguanta 2 minutos en pie, el contador se reinicia. Existe porque el 07/09/2026 el backend murió a mitad de un lote sin dejar rastro y no se supo hasta dos horas después. Arranca Node con `--report-on-fatalerror` (un OOM deja informe JSON en `backend/logs/`) y `--max-old-space-size=8192` (el tope por defecto, 4288 MB, se queda corto en tandas largas).
-
-**Logs**: `backend/logs/backend-YYYYMMDD.log`, uno por día, purga automática a los 14 días. Antes no había ninguno: stdout iba a una ventana minimizada y se perdía.
+`Pensadero_Start.bat` orquesta todo: comprueba Node, instala dependencias si faltan, construye el bundle si no existe `dist/`, levanta backend en `:5000` y frontend (`vite preview`) en `:5173`, y abre el navegador. Cuando el backend Node sirva `dist/` directamente en `/`, este `.bat` se simplificará a un solo proceso.

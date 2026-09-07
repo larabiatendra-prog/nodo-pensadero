@@ -222,6 +222,22 @@ node "%ROOT%backend\tools\portability-report.js"
 if errorlevel 1 set "PORTPENDING=1"
 :after_port
 
+REM --- Salud en caliente ---
+REM Lo anterior comprueba que las PIEZAS estan instaladas. Esto comprueba que
+REM el circuito FUNCIONA, y solo se puede saber con Pensadero arrancado. Si no
+REM lo esta, no es un fallo: es que no hay nada que medir.
+echo.
+echo --------------------------------------------------------------
+echo  Salud en caliente ^(requiere Pensadero arrancado^)
+echo --------------------------------------------------------------
+powershell -NoProfile -Command "try { $r = Invoke-RestMethod -Uri http://localhost:5000/api/health -TimeoutSec 5; $d = $r.data; if ($d.ok) { Write-Host '[OK] Circuito completo sano.' } else { Write-Host ('[WARN] Con problemas en: ' + ($d.problemas -join ', ')) }; Write-Host ('     Modelo activo: ' + $d.modeloActivo); Write-Host ('     Pendientes de describir: ' + $d.checks.escaneo.pendientes + ' de ' + $d.checks.escaneo.total); Write-Host ('     Memoria: ' + $d.checks.proceso.rssMb + ' MB de ' + $d.checks.proceso.heapTopeMb + ' MB de tope'); foreach ($k in $d.problemas) { $c = $d.checks.$k; if ($c.error) { Write-Host ('     - ' + $k + ': ' + $c.error) } }; exit 0 } catch { Write-Host '[INFO] Pensadero no esta arrancado. Arrancalo y vuelve a pasar el Doctor'; Write-Host '       para comprobar el circuito en caliente.'; exit 0 }"
+
+echo.
+echo --------------------------------------------------------------
+echo  Log del backend
+echo --------------------------------------------------------------
+powershell -NoProfile -Command "$dir = '%ROOT%backend\logs'; if (-not (Test-Path $dir)) { Write-Host '[INFO] Aun no hay carpeta de logs. Se crea al arrancar Pensadero.'; exit 0 }; $f = Get-ChildItem (Join-Path $dir 'backend-*.log') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if (-not $f) { Write-Host '[INFO] Aun no hay logs. Se crean al arrancar Pensadero.'; exit 0 }; Write-Host ('[OK] Ultimo log: ' + $f.Name + ' (' + [math]::Round($f.Length/1KB) + ' KB)'); $caidas = @(Select-String -Path $f.FullName -Pattern 'termino con codigo' -ErrorAction SilentlyContinue).Count; if ($caidas -gt 0) { Write-Host ('[WARN] ' + $caidas + ' cierre(s) del backend registrados hoy. Revisa el log.') } else { Write-Host '[OK] Sin cierres inesperados registrados.' }"
+
 REM --- Resumen ---
 echo.
 echo ==============================================================

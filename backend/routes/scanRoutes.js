@@ -15,6 +15,8 @@
  *  - GET   /api/scan/jobs          — lista de jobs recientes
  *  - GET   /api/scan/status/:jobId — estado de un job concreto
  *  - POST  /api/scan/cancel/:jobId — cancela un job en curso
+ *  - GET   /api/scan/capacidades   — que trabajos hace un escaneo (global y por ruta)
+ *  - PATCH /api/scan/capacidades   — body: { global: { caras: false, ... } }
  */
 
 const express = require('express');
@@ -25,9 +27,11 @@ const router = express.Router();
 const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getClipService } = require('../services/clipService');
 const scanOrchestrator = require('../services/scanOrchestrator');
+const scanState = require('../services/scanState');
 const folderContext = require('../services/folderContext');
 const folderNames = require('../folderNames');
 const pathsConfig = require('../config/paths');
+const escaneoConfig = require('../services/escaneoConfig');
 
 module.exports = function createScanRoutes(deps) {
   const { broadcastProgress, syncFiles, loadScanPaths, refreshDir, getMediaFiles } = deps || {};
@@ -35,6 +39,30 @@ module.exports = function createScanRoutes(deps) {
   // Normaliza una ruta para comparación: absoluta, minúsculas, sin separador
   // final. En Windows el FS es case-insensitive, así que comparar en minúsculas
   // es lo correcto.
+  /** Trabajos encendidos para escanear `carpeta` (global + su biblioteca). */
+  async function capacidadesPara(carpeta) {
+    let rutas = [];
+    try { rutas = typeof loadScanPaths === 'function' ? await loadScanPaths() : []; } catch { rutas = []; }
+    return escaneoConfig.paraCarpeta(carpeta, rutas);
+  }
+
+  /**
+   * Sin descripciones no hace falta Ollama: un escaneo solo de caras o de
+   * busqueda visual tiene que poder lanzarse con el VLM apagado. Devuelve el
+   * error a enviar, o null si se puede seguir.
+   */
+  async function vlmSiHaceFalta(caps) {
+    if (!caps.descripcion) return null;
+    try {
+      const health = await getScanner().healthCheck();
+      if (!health.ollamaRunning) return { status: 503, error: 'Ollama no disponible. Comprueba que el servicio está corriendo, o apaga las descripciones.' };
+      if (!health.modelAvailable) return { status: 503, error: `Modelo ${health.model} no encontrado. Ejecuta: ollama pull ${health.model}` };
+    } catch (err) {
+      return { status: 500, error: err.message };
+    }
+    return null;
+  }
+
   function _normPath(p) {
     return path.resolve(String(p)).toLowerCase().replace(/[\\/]+$/, '');
   }
@@ -152,7 +180,7 @@ module.exports = function createScanRoutes(deps) {
   // Devuelve inmediatamente con el jobId. El trabajo corre en background y
   // emite progreso por WebSocket (events 'scan_start','scan_progress','scan_done').
   router.post('/scan/start', async (req, res) => {
-    const { path: folderPath, force = false } = req.body || {};
+    const { path: folderPath, force = false, reanudando = false } = req.body || {};
     if (!folderPath || typeof folderPath !== 'string') {
       return res.status(400).json({ success: false, error: 'path requerido' });
     }
@@ -178,35 +206,28 @@ module.exports = function createScanRoutes(deps) {
       return res.status(409).json({ success: false, error: 'Ya hay un escaneo en curso sobre esta carpeta (o una que la contiene).' });
     }
 
-    // Comprobar primero que el VLM está disponible — fallar rápido si no.
-    try {
-      const health = await getScanner().healthCheck();
-      if (!health.ollamaRunning) {
-        return res.status(503).json({
-          success: false,
-          error: 'Ollama no disponible. Comprueba que el servicio está corriendo.',
-        });
-      }
-      if (!health.modelAvailable) {
-        return res.status(503).json({
-          success: false,
-          error: `Modelo ${health.model} no encontrado. Ejecuta: ollama pull ${health.model}`,
-        });
-      }
-    } catch (err) {
-      return res.status(500).json({ success: false, error: err.message });
+    // Que trabajos tocan en esta carpeta, y el VLM solo si se va a describir.
+    const capacidades = await capacidadesPara(folderPath);
+    if (!escaneoConfig.IDS.some(id => capacidades[id])) {
+      return res.status(400).json({ success: false, error: 'Todos los trabajos del escaneo están apagados para esta ruta.' });
     }
+    const sinVlm = await vlmSiHaceFalta(capacidades);
+    if (sinVlm) return res.status(sinVlm.status).json({ success: false, error: sinVlm.error });
 
     // Generar jobId antes de arrancar para devolverlo en la respuesta HTTP.
     const jobId = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     // Disparar en background. NO esperamos a que termine — devolvemos ya.
     // Errores se loguean; el cliente se entera por WebSocket o /scan/status.
-    setImmediate(() => {
+    setImmediate(async () => {
+      // Dejar constancia en disco ANTES de empezar: si el proceso muere a
+      // mitad, al arrancar se sabe que habia un escaneo en curso y se retoma.
+      await scanState.iniciar({ tipo: 'carpeta', carpeta: folderPath, force, reanudando: !!reanudando });
       scanOrchestrator.scanFolder(folderPath, {
         force,
         broadcastProgress: broadcastProgress || (() => {}),
         jobId,
+        capacidades,
       }).then(async (result) => {
         // Tras escanear, refrescar la lista de mediaFiles en memoria para que
         // el frontend vea la metadata sin tener que pulsar "sincronizar".
@@ -215,10 +236,13 @@ module.exports = function createScanRoutes(deps) {
         }
       }).catch(err => {
         console.error('[scan] error fatal:', err);
+      }).finally(() => {
+        // Termino de verdad (bien o mal): ya no hay nada que reanudar.
+        scanState.finalizar().catch(() => {});
       });
     });
 
-    res.json({ success: true, jobId, status: 'started' });
+    res.json({ success: true, jobId, status: 'started', capacidades });
   });
 
   // === SCAN SINGLE FILE ===
@@ -268,9 +292,51 @@ module.exports = function createScanRoutes(deps) {
       if (typeof syncFiles === 'function' && result.written > 0) {
         try { await syncFiles(); } catch (e) { console.warn('[scan-file] post-sync falló:', e.message); }
       }
+      // Escanear y no poder guardar NO es un exito: el trabajo se ha hecho y se
+      // ha tirado. Antes esto devolvia success:true con written:0 y el usuario
+      // se quedaba pensando que el archivo estaba re-escaneado.
+      if (result.written === 0 && result.escriturasFallidas > 0) {
+        const c = result.causa;
+        return res.status(500).json({
+          success: false,
+          error: `El archivo se ha analizado pero NO se ha podido guardar.`
+            + (c ? ` ${c.reason}${c.hint ? ` ${c.hint}` : ''}` : ''),
+          causa: c || undefined,
+          data: result,
+        });
+      }
       res.json({ success: true, data: result });
     } catch (err) {
       console.error('[scan-file] error:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // === CAPACIDADES DEL ESCANEO ===
+  // Catalogo (para pintar), global y lo que cada ruta sobrescribe/resulta.
+  router.get('/scan/capacidades', async (req, res) => {
+    let rutas = [];
+    try { rutas = typeof loadScanPaths === 'function' ? await loadScanPaths() : []; } catch { rutas = []; }
+    res.json({
+      success: true,
+      data: {
+        catalogo: escaneoConfig.CAPACIDADES,
+        global: escaneoConfig.global(),
+        rutas: (Array.isArray(rutas) ? rutas : []).map(r => ({
+          id: r.id,
+          sobrescribe: r.escaneo || {},
+          efectivas: escaneoConfig.deRuta(r),
+        })),
+      },
+    });
+  });
+
+  // body: { global: { caras: false } } — solo lo que cambia.
+  router.patch('/scan/capacidades', async (req, res) => {
+    try {
+      const nuevo = await escaneoConfig.setGlobal((req.body && req.body.global) || {});
+      res.json({ success: true, data: { global: nuevo } });
+    } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -310,24 +376,20 @@ module.exports = function createScanRoutes(deps) {
 
     const force = !!(req.body && req.body.force);
 
-    // Validar VLM antes de empezar
-    try {
-      const health = await getScanner().healthCheck();
-      if (!health.ollamaRunning) {
-        return res.status(503).json({ success: false, error: 'Ollama no disponible' });
-      }
-      if (!health.modelAvailable) {
-        return res.status(503).json({ success: false, error: `Modelo ${health.model} no encontrado. Ejecuta: ollama pull ${health.model}` });
-      }
-    } catch (err) {
-      return res.status(500).json({ success: false, error: err.message });
+    const allPaths = await loadScanPaths();
+    // Solo las rutas activas con algun trabajo encendido: una ruta con todo
+    // apagado se salta, no se recorre para nada.
+    const activePaths = (Array.isArray(allPaths) ? allPaths : [])
+      .filter(p => p && p.isActive !== false)
+      .filter(p => { const c = escaneoConfig.deRuta(p); return escaneoConfig.IDS.some(id => c[id]); });
+    if (activePaths.length === 0) {
+      return res.status(400).json({ success: false, error: 'No hay rutas activas con algo que escanear' });
     }
 
-    const allPaths = await loadScanPaths();
-    const activePaths = (Array.isArray(allPaths) ? allPaths : []).filter(p => p && p.isActive !== false);
-    if (activePaths.length === 0) {
-      return res.status(400).json({ success: false, error: 'No hay rutas activas para escanear' });
-    }
+    // El VLM solo hace falta si alguna ruta va a describir.
+    const algunaDescribe = activePaths.some(p => escaneoConfig.deRuta(p).descripcion);
+    const sinVlm = await vlmSiHaceFalta({ descripcion: algunaDescribe });
+    if (sinVlm) return res.status(sinVlm.status).json({ success: false, error: sinVlm.error });
 
     // Pre-generar jobIds para devolverlos en el response (la UI puede
     // pre-poblar su mapa jobId→pathId antes de que lleguen los eventos WS).
@@ -354,6 +416,14 @@ module.exports = function createScanRoutes(deps) {
     // status; aqui necesitamos ms para restar al cerrar).
     const batchStartMs = Date.now();
     setImmediate(async () => {
+      // Intencion en disco antes de empezar: un batch de miles de archivos
+      // dura horas y es justo el que no puede permitirse morir en silencio.
+      await scanState.iniciar({
+        tipo: 'batch',
+        rutas: activePaths.map(p => p.path),
+        force,
+        reanudando: !!(req.body && req.body.reanudando),
+      });
       // try/finally garantiza que SIEMPRE emitimos batch_scan_done y reseteamos
       // el state. Si un error inesperado revienta el bucle, la UI no se queda
       // con el indicador "Escaneando" colgado.
@@ -382,6 +452,9 @@ module.exports = function createScanRoutes(deps) {
               force,
               broadcastProgress: broadcastProgress || (() => {}),
               jobId: jobIds[i],
+              // Se relee al llegar a cada ruta: si cambias un interruptor a
+              // mitad del lote, la siguiente ruta ya lo respeta.
+              capacidades: await capacidadesPara(p.path),
             });
           } catch (err) {
             console.error(`[scan-all] error en ruta ${p.path}:`, err.message);
@@ -408,6 +481,8 @@ module.exports = function createScanRoutes(deps) {
           } catch (e) { console.warn('[scan-all] broadcast done falló:', e.message); }
         }
         resetBatch();
+        // El bucle acabo (completo, abortado o reventado): nada que reanudar.
+        await scanState.finalizar().catch(() => {});
       }
     });
 
@@ -574,6 +649,57 @@ module.exports = function createScanRoutes(deps) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
+
+  /**
+   * Retoma el escaneo que quedo a medias si el proceso anterior murio.
+   *
+   * Lo llama server.js despues de la sincronizacion inicial. Reentra por los
+   * MISMOS endpoints en vez de duplicar el bucle: asi hereda todos los guards
+   * (Ollama vivo, rutas permitidas, no solapar escaneos) y no hay dos caminos
+   * distintos que puedan divergir.
+   *
+   * No hace falta recordar por que archivo iba: el catalogo se vuelca cada
+   * pocos archivos y un escaneo con force:false salta lo ya descrito.
+   */
+  router.reanudarSiQuedoAMedias = async function reanudarSiQuedoAMedias(puerto) {
+    let pendiente;
+    try {
+      pendiente = scanState.pendienteDeReanudar();
+    } catch (err) {
+      console.warn('[scan-state] no se pudo leer el estado de reanudacion:', err.message);
+      return;
+    }
+    if (!pendiente) return;
+
+    const base = `http://127.0.0.1:${puerto}/api`;
+    const destino = pendiente.tipo === 'batch' ? '/scan/start-all' : '/scan/start';
+    const cuerpo = pendiente.tipo === 'batch'
+      ? { force: pendiente.force, reanudando: true }
+      : { path: pendiente.carpeta, force: pendiente.force, reanudando: true };
+
+    console.log(
+      `🔁 Habia un escaneo a medias (${pendiente.tipo}${pendiente.carpeta ? ': ' + pendiente.carpeta : ''}, ` +
+      `${pendiente.ultimoAvance || 0} archivos hechos). Retomandolo...`
+    );
+
+    try {
+      const r = await fetch(base + destino, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cuerpo),
+      });
+      const json = await r.json().catch(() => ({}));
+      if (r.ok && json.success) {
+        console.log('🔁 Escaneo retomado. Lo ya descrito se salta solo.');
+      } else {
+        // Si no se puede retomar (Ollama caido, ruta desconectada), se deja el
+        // estado activo: en el proximo arranque se vuelve a intentar.
+        console.warn(`🔁 No se pudo retomar el escaneo: ${json.error || r.status}. Se reintentara al proximo arranque.`);
+      }
+    } catch (err) {
+      console.warn('🔁 No se pudo retomar el escaneo:', err.message);
+    }
+  };
 
   return router;
 };

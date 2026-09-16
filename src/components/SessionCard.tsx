@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, ChevronUp, Pencil } from 'lucide-react';
+import { Layers, ChevronUp, Pencil, Play, Lock } from 'lucide-react';
 import { MediaFile } from '../types';
 
 // ─── SessionCard (grupo colapsado) ──────────────────────────────────────────
@@ -17,9 +17,13 @@ interface SessionCardProps {
   onEditNote?: (key: string, label: { line1: string; line2: string }) => void;
   /** Atenuada porque hay otra sesion abierta y esta queda fuera del foco. */
   dimmed?: boolean;
+  /** Reproduce la sesion entera en pantalla completa (modo presentacion). */
+  onPlaySession?: (files: MediaFile[]) => void;
+  /** Pone la sesion entera bajo candado. */
+  onOcultar?: (fileIds: string[]) => void;
 }
 
-function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, onSelectAll, note, onEditNote, dimmed }: SessionCardProps) {
+function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, onSelectAll, note, onEditNote, dimmed, onPlaySession, onOcultar }: SessionCardProps) {
   // Seleccionar 4 thumbnails representativas (0%, 25%, 50%, 100%)
   const count = files.length;
   const indices = [
@@ -29,6 +33,8 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
     count - 1,
   ];
   const thumbFiles = indices.map(i => files[Math.min(i, count - 1)]);
+  // El modo presentacion solo reproduce videos: sin ninguno no ofrecemos play.
+  const tieneVideos = files.some(f => f.type === 'video');
 
   const handleClick = () => {
     if (isSelectionMode && onSelectAll) {
@@ -85,6 +91,18 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
         </button>
       )}
 
+      {/* Candado de la sesion entera, junto al lapiz. */}
+      {onOcultar && !isSelectionMode && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onOcultar(files.map(f => f.id)); }}
+          title={`Ocultar la sesion entera (${count} archivos) bajo candado`}
+          aria-label="Ocultar la sesion bajo candado"
+          className={`absolute top-2 ${onEditNote ? 'left-11' : 'left-2'} z-10 p-1.5 rounded-full backdrop-blur-sm bg-noche/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-noche/70 transition-colors`}
+        >
+          <Lock className="w-3.5 h-3.5" />
+        </button>
+      )}
+
       {/* Gradiente inferior + etiqueta + nota humana */}
       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-3">
         <p className="text-white text-xs font-medium leading-tight truncate">{label.line1}</p>
@@ -97,6 +115,20 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
           </p>
         )}
       </div>
+
+      {/* Play — reproduce la sesion entera en pantalla completa (modo
+          presentacion). Solo en hover y solo si la sesion tiene videos.
+          z-20 para quedar por encima del gradiente y del overlay de "Abrir". */}
+      {onPlaySession && tieneVideos && !isSelectionMode && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onPlaySession(files); }}
+          title="Reproducir la sesion entera en pantalla completa"
+          aria-label="Reproducir la sesion entera en pantalla completa"
+          className="absolute bottom-2 right-2 z-20 w-9 h-9 rounded-full flex items-center justify-center bg-lavanda text-noche shadow-lg opacity-0 group-hover:opacity-100 hover:bg-lavanda-claro hover:scale-110 transition-all duration-200"
+        >
+          <Play className="w-4 h-4 fill-current" />
+        </button>
+      )}
 
       {/* Botón "Abrir" visible en hover */}
       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
@@ -122,7 +154,9 @@ function sessionCardEqual(prev: SessionCardProps, next: SessionCardProps): boole
     prev.label.line2 === next.label.line2 &&
     prev.onExpand === next.onExpand &&
     prev.onSelectAll === next.onSelectAll &&
-    prev.onEditNote === next.onEditNote
+    prev.onEditNote === next.onEditNote &&
+    prev.onPlaySession === next.onPlaySession &&
+    prev.onOcultar === next.onOcultar
   );
 }
 

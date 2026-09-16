@@ -1,5 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import './Loader.css';
+import { formatoDuracion, miles, type VistaProgreso } from '../utils/progresoProceso';
 
 // Animaciones de carga de Pensadero. 8 variantes tematicas, todas CSS puro.
 // Cada variante mapea a una operacion real del archivo audiovisual.
@@ -8,7 +9,6 @@ export type LoaderVariant =
   | 'cargando'   // carga generica de biblioteca
   | 'caras'      // reconocimiento de personas (InsightFace)
   | 'sync'       // sincronizacion de rutas
-  | 'atlas'      // construccion del atlas de recuerdos
   | 'espacios'   // reconocimiento de espacios
   | 'descarga'   // exportacion / descarga de archivos
   | 'listo';     // operacion completada
@@ -25,7 +25,19 @@ interface LoaderProps {
   fullscreen?: boolean;
   /** Mostrar el bloque de texto inferior (micro/titulo/sub/barra). */
   showCaption?: boolean;
+  /**
+   * Accion de parada. Sin esto, un overlay a pantalla completa es una carcel:
+   * si el proceso de atras se cuelga o el evento de cierre se pierde, no hay
+   * forma de volver a la aplicacion sin recargar.
+   */
+  onCancel?: () => void;
+  cancelLabel?: string;
   className?: string;
+  /**
+   * Proceso largo con cifras (indexado, escaneo IA). Si llega, el gráfico se
+   * encoge y manda el panel: cuántos de cuántos, tiempos, archivo y desglose.
+   */
+  vista?: VistaProgreso;
 }
 
 // Texto por defecto por variante (sin contadores; el caller puede sobrescribir).
@@ -34,30 +46,12 @@ const META: Record<LoaderVariant, { micro: string; cap: string; sub: string }> =
   cargando: { micro: 'BIBLIOTECA',         cap: 'Cargando biblioteca',   sub: 'Preparando miniaturas y metadata' },
   caras:    { micro: 'INSIGHTFACE',        cap: 'Reconociendo personas', sub: 'Detectando caras en la sesion' },
   sync:     { micro: 'SINCRONIZACION',     cap: 'Sincronizando rutas',   sub: 'Revisando discos y bibliotecas' },
-  atlas:    { micro: 'ATLAS DE RECUERDOS', cap: 'Construyendo el atlas', sub: 'Enlazando sesiones y recuerdos' },
   espacios: { micro: 'CLIP / SigLIP-2',    cap: 'Reconociendo espacios', sub: 'Ubicando lugares en el mapa' },
   descarga: { micro: 'EXPORTACION',        cap: 'Descargando archivos',  sub: 'Transfiriendo seleccion' },
   listo:    { micro: 'COMPLETADO',         cap: 'Todo listo',            sub: 'Operacion finalizada' },
 };
 
 const TILE_PALETTE = ['#C8B6FF', '#F2B8A0', '#9CB7A5', '#8EA4FF', '#DACDFF', '#E6C177'];
-
-// Nodos del grafo 3D (Atlas), posiciones del prototipo original.
-const ATLAS_NODES = [
-  { x: 150, y: 140, size: 24, color: '#C8B6FF', glow: 'rgba(200,182,255,.75)', z: 46, delay: '0s' },
-  { x: 55,  y: 55,  size: 13, color: '#C8B6FF', glow: 'rgba(200,182,255,.6)',  z: 30, delay: '.2s' },
-  { x: 245, y: 50,  size: 13, color: '#8EA4FF', glow: 'rgba(142,164,255,.6)',  z: 18, delay: '.5s' },
-  { x: 40,  y: 205, size: 13, color: '#9CB7A5', glow: 'rgba(156,183,165,.6)',  z: 34, delay: '.8s' },
-  { x: 262, y: 200, size: 13, color: '#F2B8A0', glow: 'rgba(242,184,160,.6)',  z: 14, delay: '1.1s' },
-  { x: 150, y: 255, size: 12, color: '#DACDFF', glow: 'rgba(218,205,255,.6)',  z: 24, delay: '1.4s' },
-  { x: 150, y: 30,  size: 12, color: '#7C6BB2', glow: 'rgba(124,107,178,.6)',  z: 20, delay: '.95s' },
-];
-
-const ATLAS_LINES: Array<[number, number, number, number, string]> = [
-  [150, 140, 55, 55, '0s'], [150, 140, 245, 50, '.3s'], [150, 140, 40, 205, '.6s'],
-  [150, 140, 262, 200, '.9s'], [150, 140, 150, 255, '1.2s'], [150, 140, 150, 30, '.45s'],
-  [55, 55, 150, 30, '1.5s'], [245, 50, 150, 30, '1.7s'], [40, 205, 150, 255, '1.9s'],
-];
 
 function ScanGrid() {
   const tiles = useMemo(() => {
@@ -178,31 +172,6 @@ function Sync() {
   );
 }
 
-function Atlas() {
-  return (
-    <div className="pl-atlas">
-      <div className="pl-atlas__scene">
-        <svg className="pl-atlas__web" width="300" height="280" viewBox="0 0 300 280">
-          <g stroke="#7C6BB2" strokeWidth="1.4" fill="none" strokeLinecap="round">
-            {ATLAS_LINES.map(([x1, y1, x2, y2, delay], i) => (
-              <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} strokeDasharray="260" style={{ animationDelay: delay }} />
-            ))}
-          </g>
-        </svg>
-        <div className="pl-atlas__halo"><div /></div>
-        {ATLAS_NODES.map((n, i) => (
-          <div className="pl-atlas__node" key={i} style={{ left: n.x, top: n.y, transform: `translateZ(${n.z}px)` }}>
-            <div style={{
-              width: n.size, height: n.size, margin: `${-n.size / 2}px 0 0 ${-n.size / 2}px`,
-              background: n.color, boxShadow: `0 0 14px ${n.glow}`, animationDelay: n.delay,
-            }} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function Espacios() {
   return (
     <div className="pl-espacios">
@@ -264,11 +233,101 @@ const GRAPHICS: Record<LoaderVariant, () => React.ReactElement> = {
   cargando: Cargando,
   caras: Caras,
   sync: Sync,
-  atlas: Atlas,
   espacios: Espacios,
   descarga: Descarga,
   listo: Listo,
 };
+
+/** Reloj de pared que avanza cada segundo mientras el proceso sigue vivo. */
+function useAhora(activo: boolean) {
+  const [ahora, setAhora] = useState(() => Date.now());
+  useEffect(() => {
+    if (!activo) return;
+    const id = setInterval(() => setAhora(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [activo]);
+  return ahora;
+}
+
+function PanelDatos({ vista, terminado }: { vista: VistaProgreso; terminado: boolean }) {
+  const ahora = useAhora(!terminado);
+  const conCuenta = typeof vista.hechos === 'number' && !!vista.total;
+
+  const transcurrido = terminado
+    ? vista.duracionMs
+    : vista.inicio ? Math.max(0, ahora - vista.inicio) : undefined;
+
+  // El restante se mide al llegar cada frame; entre frames descuenta el reloj
+  // para que no se quede quieto durante un archivo que tarda 20 s.
+  let queda: string;
+  let quedaTenue = false;
+  if (terminado) {
+    queda = '—'; quedaTenue = true;
+  } else if (typeof vista.restanteMs === 'number') {
+    const r = vista.restanteMs - (vista.medidoEn ? ahora - vista.medidoEn : 0);
+    queda = r < 1000 ? 'casi nada' : '~' + formatoDuracion(r);
+  } else {
+    queda = conCuenta ? 'calculando' : '—';
+    quedaTenue = true;
+  }
+
+  const pct = vista.porcentaje;
+  return (
+    <>
+      {conCuenta && !terminado && (
+        <div className="pl-cuenta">
+          <span className="pl-cuenta__hechos">{miles(vista.hechos!)}</span>
+          <span className="pl-cuenta__total">de {miles(vista.total!)}</span>
+          {typeof pct === 'number' && <span className="pl-cuenta__pct">{pct} %</span>}
+        </div>
+      )}
+      {!terminado && (
+        <div className={`pl-progress${typeof pct === 'number' ? ' pl-progress--determinate' : ''}`}>
+          <i style={typeof pct === 'number' ? { width: `${Math.max(0.5, Math.min(100, pct))}%` } : undefined} />
+        </div>
+      )}
+      {terminado ? (
+        <div className="pl-tiempos pl-tiempos--uno">
+          <div className="pl-tiempo">
+            <span className="pl-tiempo__k">Ha tardado</span>
+            <span className="pl-tiempo__v">{typeof transcurrido === 'number' ? formatoDuracion(transcurrido) : '—'}</span>
+          </div>
+        </div>
+      ) : (
+      <div className="pl-tiempos">
+        <div className="pl-tiempo">
+          <span className="pl-tiempo__k">Lleva</span>
+          <span className="pl-tiempo__v">{typeof transcurrido === 'number' ? formatoDuracion(transcurrido) : '—'}</span>
+        </div>
+        <div className="pl-tiempo">
+          <span className="pl-tiempo__k">Queda</span>
+          <span className={`pl-tiempo__v${quedaTenue ? ' pl-tiempo__v--tenue' : ''}`}>{queda}</span>
+        </div>
+        <div className="pl-tiempo">
+          <span className="pl-tiempo__k">Ritmo</span>
+          <span className={`pl-tiempo__v${vista.ritmo ? '' : ' pl-tiempo__v--tenue'}`}>{vista.ritmo || '—'}</span>
+        </div>
+      </div>
+      )}
+      {vista.archivo && !terminado && (
+        <div className="pl-archivo" title={vista.archivo}>
+          {vista.accion && <span className="pl-archivo__accion">{vista.accion}</span>}
+          <span className="pl-archivo__nombre">{vista.archivo}</span>
+        </div>
+      )}
+      {vista.cifras.length > 0 && (
+        <div className="pl-cifras">
+          {vista.cifras.map(c => (
+            <span key={c.etiqueta} className={c.tono === 'error' ? 'pl-cifra--error' : undefined}>
+              <b>{miles(c.valor)}</b> {c.etiqueta}
+            </span>
+          ))}
+        </div>
+      )}
+      {vista.aviso && <div className="pl-aviso">{vista.aviso}</div>}
+    </>
+  );
+}
 
 export default function Loader({
   variant = 'cargando',
@@ -278,7 +337,10 @@ export default function Loader({
   progress,
   fullscreen = false,
   showCaption = true,
+  onCancel,
+  cancelLabel,
   className = '',
+  vista,
 }: LoaderProps) {
   const meta = META[variant];
   const Graphic = GRAPHICS[variant];
@@ -294,18 +356,28 @@ export default function Loader({
           <span className="pl-dots"><span>.</span><span>.</span><span>.</span></span>
         )}
       </div>
-      <div className="pl-sub">{sub ?? meta.sub}</div>
-      {!isListo && (
+      {(sub ?? meta.sub) && <div className="pl-sub" title={sub ?? meta.sub}>{sub ?? meta.sub}</div>}
+      {vista && <PanelDatos vista={vista} terminado={isListo} />}
+      {!isListo && !vista && (
         <div className={`pl-progress${hasProgress ? ' pl-progress--determinate' : ''}`}>
           <i style={hasProgress ? { width: `${Math.max(0, Math.min(100, progress!))}%` } : undefined} />
         </div>
+      )}
+      {!isListo && onCancel && (
+        <button
+          onClick={onCancel}
+          className="pl-cancel"
+          title="Detiene el proceso si se puede detener; en cualquier caso cierra este aviso"
+        >
+          {cancelLabel ?? 'Detener'}
+        </button>
       )}
     </div>
   );
 
   const body = (
     <>
-      <div className={`pl-stage${fullscreen ? '' : ' pl-stage--inline'}`}>
+      <div className={`pl-stage${fullscreen ? '' : ' pl-stage--inline'}${vista ? ' pl-stage--compacta' : ''}`}>
         <Graphic />
       </div>
       {caption}
@@ -318,7 +390,7 @@ export default function Loader({
         <div className="pl-glow pl-glow-1" />
         <div className="pl-glow pl-glow-2" />
         <div className="pl-glow pl-glow-3" />
-        <div className="pl-card">{body}</div>
+        <div className={`pl-card${vista ? ' pl-card--datos' : ''}`}>{body}</div>
       </div>
     );
   }

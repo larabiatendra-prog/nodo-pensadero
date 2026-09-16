@@ -235,3 +235,64 @@
   background-color: #C8B6FF !important;
   color: #0F111A !important;
 }
+
+/* ============================================
+   Barra de parecido minimo (Tomas gemelas)
+
+   La bola va DENTRO del carril, tambien en vertical: el carril mide 22px y
+   la bola 16, asi que quedan 3px de carril visibles por arriba y por abajo.
+   Con el carril de 8px que habia, una bola de 18 se salia por los dos lados
+   y parecia posada encima en vez de metida dentro.
+
+   El margin-top del pomo no es un ajuste fino a ojo: en WebKit, con
+   appearance:none, el pomo se alinea arriba del track y hay que centrarlo a
+   mano -> (altoCarril - altoBola) / 2 = (22 - 16) / 2 = 3px.
+   ============================================ */
+.umbral {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 22px;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* El fondo con el degradado lo pinta el propio input (estilo en linea), asi
+   que las pistas nativas van transparentes para no taparlo. */
+.umbral::-webkit-slider-runnable-track {
+  height: 22px;
+  border-radius: 999px;
+  background: transparent;
+}
+.umbral::-moz-range-track {
+  height: 22px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.umbral::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: #F5F1FF;
+  border: 2px solid #C8B6FF;
+  transition: transform .15s ease, border-color .15s ease;
+}
+.umbral::-webkit-slider-thumb:hover { transform: scale(1.08); border-color: #DACDFF; }
+
+.umbral::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #F5F1FF;
+  border: 2px solid #C8B6FF;
+  transition: transform .15s ease, border-color .15s ease;
+}
+.umbral::-moz-range-thumb:hover { transform: scale(1.08); border-color: #DACDFF; }
+
+/* El foco se marca en el carril, no con un halo alrededor del pomo: un halo
+   volveria a sobresalir justo por donde el usuario pidio que no sobresaliera. */
+.umbral:focus-visible { box-shadow: 0 0 0 2px rgba(200, 182, 255, .55); }

@@ -57,6 +57,10 @@ export interface MediaFile {
   displayName?: string;
   folderIndex?: number;  // posicion 1..N dentro de la carpeta con override
   folderTotal?: number;  // total de archivos de la carpeta con override
+  // Rastro de carpetas del archivo tal cual esta en disco ("260811_Ondara", o
+  // "260811_Ondara / clips"), o el nombre propio si lo tiene. Lo rellena el
+  // backend; hace buscable el material de camara por su evento, no por "P1248278".
+  folderName?: string;
   // Identidad portable "<libraryId>:<ruta/relativa/normalizada>" (ver
   // backend/utils/mediaIdentity.js). El backend ya la enviaba; se declara aqui
   // porque la agrupacion en sesiones deriva de ella la clave de carpeta.

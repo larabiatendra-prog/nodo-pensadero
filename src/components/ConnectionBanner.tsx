@@ -17,18 +17,29 @@ interface ConnectionBannerProps {
   isConnected: boolean;
 }
 
+/** Margen antes de dar la conexion por perdida. */
+const MARGEN_MS = 4000;
+
 export function ConnectionBanner({ isConnected }: ConnectionBannerProps) {
-  // Solo se anuncia la recuperacion si antes hubo una caida de verdad. En el
-  // arranque el socket tarda un instante en abrir y eso no es un corte.
+  // Solo cuenta como corte una desconexion que dura mas que el margen. Al
+  // cargar la pagina el socket tarda un instante en abrir: antes eso pintaba
+  // "Sin conexion" y a continuacion "Conexion restablecida. Hubo un corte" en
+  // CADA carga, y un aviso que salta siempre deja de leerse justo el dia que
+  // importa.
   const huboCorte = useRef(false);
+  const [caido, setCaido] = useState(false);
   const [mostrarRecuperado, setMostrarRecuperado] = useState(false);
 
   useEffect(() => {
     if (!isConnected) {
-      huboCorte.current = true;
       setMostrarRecuperado(false);
-      return;
+      const t = setTimeout(() => {
+        huboCorte.current = true;
+        setCaido(true);
+      }, MARGEN_MS);
+      return () => clearTimeout(t);
     }
+    setCaido(false);
     if (huboCorte.current) {
       huboCorte.current = false;
       setMostrarRecuperado(true);
@@ -37,7 +48,7 @@ export function ConnectionBanner({ isConnected }: ConnectionBannerProps) {
     }
   }, [isConnected]);
 
-  if (!isConnected) {
+  if (!isConnected && caido) {
     return (
       <div
         role="status"

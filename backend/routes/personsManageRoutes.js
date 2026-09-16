@@ -33,6 +33,7 @@ const multer = require('multer');
 const peopleRegistry = require('../peopleRegistry');
 const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount, rebuildFaces } = require('../utils/faceCatalog');
+const fallos = require('../utils/failureReason');
 const { getInstance: getFaceService, decodeEmbedding } = require('../services/faceService');
 const faceReidentifier = require('../services/faceReidentifier');
 const faceClusterer = require('../services/faceClusterer');
@@ -87,6 +88,9 @@ module.exports = function createPersonsManageRoutes(deps) {
 
     let catalogsWritten = 0;
     let facesUpdated = 0;
+    let escriturasFallidas = 0;
+    let lecturasFallidas = 0;
+    const marcaFallos = fallos.mark();
     const writtenFolders = [];
 
     for (const [folder, faces] of byFolder) {
@@ -100,7 +104,8 @@ module.exports = function createPersonsManageRoutes(deps) {
           const raw = await fsp.readFile(catalogPath, 'utf-8');
           catalog = JSON.parse(raw);
         } catch (err) {
-          console.warn(`[promote] no se pudo leer ${catalogPath}: ${err.message}`);
+          fallos.record('leer el catalogo para etiquetar el cluster', err, { path: catalogPath });
+          lecturasFallidas++;
           return;
         }
         const photos = catalog.photos || catalog.clips || {};
@@ -132,6 +137,14 @@ module.exports = function createPersonsManageRoutes(deps) {
               det.person_id = personId;
               det.display_name = displayName;
               det.confidence = det.confidence || 0.99;
+              // assigned_manually: el usuario AFIRMA que el cluster es esta
+              // persona, y por eso se fuerza pese a que el coseno no llegue al
+              // umbral. Sin esta marca, el re-id que el propio promote lanza a
+              // continuacion (paso 8, debounced 4s) recalculaba estas caras, no
+              // encontraba match y borraba el person_id: el "adjuntar a persona
+              // existente" se deshacia solo a los pocos segundos. Es la misma
+              // marca que pone assign-face, y reidentifyEntry la respeta.
+              det.assigned_manually = true;
               entryChanged = true;
               facesUpdated++;
             } else {
@@ -160,13 +173,22 @@ module.exports = function createPersonsManageRoutes(deps) {
             catalogsWritten++;
             writtenFolders.push(folder);
           } catch (err) {
-            console.warn(`[promote] no se pudo escribir ${catalogPath}: ${err.message}`);
+            fallos.record('etiquetar las caras del cluster', err, { path: catalogPath });
+            escriturasFallidas++;
           }
         }
       });
     }
 
-    return { catalogsWritten, facesUpdated, folders: writtenFolders };
+    // Se devuelven tambien los fallos: quien llama DEBE poder decir "no pude".
+    const incidencias = fallos.summary({ since: marcaFallos });
+    return {
+      catalogsWritten, facesUpdated, folders: writtenFolders,
+      escriturasFallidas, lecturasFallidas,
+      causa: incidencias.principal
+        ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
+        : null,
+    };
   }
 
   function getPersonDir(personId) {
@@ -226,7 +248,14 @@ module.exports = function createPersonsManageRoutes(deps) {
     }
     const personId = req.params.id;
     const dir = getPersonDir(personId);
-    const existed = peopleRegistry.deletePerson(personId);
+    // deletePerson lanza si no consigue persistir el registry (y deshace el
+    // cambio en memoria). Sin este try, el throw dejaba la peticion colgada.
+    let existed;
+    try {
+      existed = peopleRegistry.deletePerson(personId);
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
     if (!existed) return res.status(404).json({ success: false, error: 'no existe' });
 
     // Borrar fotos + embeddings (best-effort, no bloqueante)
@@ -332,10 +361,14 @@ module.exports = function createPersonsManageRoutes(deps) {
       const allEntries = peopleRegistry.listAll();
       const meEntry = allEntries.find(p => p.person_id === personId);
       if (meEntry && !meEntry.avatar_path) {
-        peopleRegistry.upsertPerson({
-          person_id: personId,
-          avatar_path: path.posix.join('people', personId, filename),
-        });
+        try {
+          peopleRegistry.upsertPerson({
+            person_id: personId,
+            avatar_path: path.posix.join('people', personId, filename),
+          });
+        } catch (err) {
+          return res.status(500).json({ success: false, error: err.message });
+        }
       }
 
       if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
@@ -467,9 +500,19 @@ module.exports = function createPersonsManageRoutes(deps) {
         await atomicWriteFile(catalogPath, JSON.stringify(catalog, null, 2));
       });
     } catch (err) {
-      const code = err.httpStatus || 500;
-      const msg = err.httpStatus ? err.message : `error escribiendo catalogo: ${err.message}`;
-      return res.status(code).json({ success: false, error: msg });
+      // Los errores "de negocio" (404 entry no encontrada, 400 sin embedding)
+      // ya vienen con su mensaje claro. El resto es un fallo de escritura y hay
+      // que traducirlo: "error escribiendo catalogo: ENOSPC: no space left on
+      // device" no le dice a nadie que el disco de la biblioteca esta lleno.
+      if (err.httpStatus) {
+        return res.status(err.httpStatus).json({ success: false, error: err.message });
+      }
+      const causa = fallos.record('asignar la cara a una persona', err, { path: catalogPath });
+      return res.status(500).json({
+        success: false,
+        error: `No se ha podido guardar la asignacion. ${causa.reason}${causa.hint ? ` ${causa.hint}` : ''}`,
+        causa: { reason: causa.reason, hint: causa.hint, code: causa.code },
+      });
     }
 
     // Refrescar YA el mediaFile en memoria de esta carpeta (+ agregado) para que
@@ -605,7 +648,13 @@ module.exports = function createPersonsManageRoutes(deps) {
     try { photosCopied = await copyReferencePhotos(loserDir, survivorDir); } catch {}
 
     // 3) Borrar el perdedor del registry + su carpeta.
-    peopleRegistry.deletePerson(loser_id);
+    try {
+      peopleRegistry.deletePerson(loser_id);
+    } catch (err) {
+      // El centroide ya esta mezclado y las fotos copiadas: la fusion queda a
+      // medias. Decirlo es mejor que devolver un exito que no lo es.
+      return res.status(500).json({ success: false, error: `Fusion incompleta, el perdedor no se ha podido borrar: ${err.message}` });
+    }
     if (loserDir) { try { await fsp.rm(loserDir, { recursive: true, force: true }); } catch {} }
 
     // 4) Sincronizar caches: quitar el perdedor, recargar, invalidar discovery.
@@ -1195,11 +1244,12 @@ module.exports = function createPersonsManageRoutes(deps) {
     //    proximo re-id manual o scan.
     //    En attach forzamos la asignacion (force): el usuario afirma que el
     //    cluster es esa persona, aunque el centroide promediado no quede cerca.
-    let promoteUpdate = { catalogsWritten: 0, facesUpdated: 0 };
+    let promoteUpdate = { catalogsWritten: 0, facesUpdated: 0, escriturasFallidas: 0, lecturasFallidas: 0, causa: null };
     try {
       promoteUpdate = await applyPromoteToCatalogs(cluster.faces || [], person_id, { force: isAttach });
     } catch (err) {
-      console.warn('[cluster-promote] applyPromoteToCatalogs:', err.message);
+      promoteUpdate.causa = fallos.record('etiquetar las caras del cluster', err);
+      promoteUpdate.escriturasFallidas++;
     }
 
     // 6) Quitar SOLO el cluster promovido del cache. Antes invalidabamos todo
@@ -1246,8 +1296,39 @@ module.exports = function createPersonsManageRoutes(deps) {
       }
     });
 
+    // La persona existe en el registry pase lo que pase (eso ya esta escrito en
+    // disco local), pero si NO se ha podido etiquetar ni una cara hay que
+    // decirlo: el 09/09/2026 un promote de un cluster de 80 caras respondio
+    // success con catalogs_written: 0 porque el disco de la biblioteca estaba
+    // lleno, y la persona quedo creada y con cero apariciones sin un solo aviso.
+    const huboFallos = promoteUpdate.escriturasFallidas > 0 || promoteUpdate.lecturasFallidas > 0;
+    const nadaEtiquetado = promoteUpdate.facesUpdated === 0 && (cluster.faces || []).length > 0;
+    const causa = promoteUpdate.causa;
+
+    let aviso = null;
+    if (nadaEtiquetado) {
+      // La persona SI queda creada (su registry vive en disco local), asi que la
+      // salida es arreglar la causa y lanzar "Re-identificar biblioteca": el
+      // re-id vuelve a etiquetar desde los embeddings ya guardados, sin
+      // re-detectar nada. Decirlo aqui ahorra el "y ahora que hago".
+      aviso = `"${person_id}" se ha creado, pero NO se ha podido etiquetar ninguna de sus `
+        + `${cluster.face_count} caras en los archivos.`
+        + (causa ? ` ${causa.reason}` : '')
+        + (causa && causa.hint ? ` ${causa.hint}` : '')
+        + ' Cuando esto se arregle, lanza "Re-identificar biblioteca" para asignarle sus caras.';
+      console.error(`[cluster-promote] ${aviso}`);
+    } else if (huboFallos) {
+      aviso = `Persona creada y ${promoteUpdate.facesUpdated} cara(s) etiquetadas, pero ${promoteUpdate.escriturasFallidas + promoteUpdate.lecturasFallidas} carpeta(s) fallaron`
+        + (causa ? `: ${causa.reason}` : '');
+      console.warn(`[cluster-promote] ${aviso}`);
+    }
+
     res.json({
-      success: true,
+      // Si no se ha guardado NADA de lo que el usuario pidio, esto no es un exito.
+      success: !nadaEtiquetado,
+      error: nadaEtiquetado ? aviso : undefined,
+      aviso: aviso && !nadaEtiquetado ? aviso : undefined,
+      causa: causa || undefined,
       data: {
         person_id,
         display_name: isAttach ? (existingEntry?.display_name || person_id) : (display_name || person_id),
@@ -1256,6 +1337,8 @@ module.exports = function createPersonsManageRoutes(deps) {
         attached: isAttach,
         catalogs_written: promoteUpdate.catalogsWritten,
         faces_updated: promoteUpdate.facesUpdated,
+        escrituras_fallidas: promoteUpdate.escriturasFallidas,
+        lecturas_fallidas: promoteUpdate.lecturasFallidas,
       },
     });
   });
@@ -1282,7 +1365,11 @@ module.exports = function createPersonsManageRoutes(deps) {
     const all = peopleRegistry.listAll();
     const me = all.find(p => p.person_id === req.params.id);
     if (me && me.avatar_path && me.avatar_path.endsWith(safe)) {
-      peopleRegistry.upsertPerson({ person_id: req.params.id, avatar_path: '' });
+      try {
+        peopleRegistry.upsertPerson({ person_id: req.params.id, avatar_path: '' });
+      } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
+      }
     }
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
 
@@ -1327,7 +1414,11 @@ module.exports = function createPersonsManageRoutes(deps) {
     // Fallback: imagen cruda (compat con el comportamiento anterior).
     if (!avatarRel) avatarRel = path.posix.join('people', personId, safe);
 
-    peopleRegistry.upsertPerson({ person_id: personId, avatar_path: avatarRel });
+    try {
+      peopleRegistry.upsertPerson({ person_id: personId, avatar_path: avatarRel });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
     res.json({ success: true, data: { avatar_path: avatarRel, face_cropped: faceCropped } });
   });

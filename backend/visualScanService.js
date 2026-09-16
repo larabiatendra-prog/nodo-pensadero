@@ -113,7 +113,10 @@ class VisualScanService {
           fit: 'inside',
           withoutEnlargement: true,
         })
-        .jpeg({ quality: 88, mozjpeg: true })
+        // Sin mozjpeg: comprime algo mejor pero tarda 4-6 veces mas (50 ms
+        // contra 8 en un frame ya reducido), y esto es un JPEG intermedio que
+        // solo va a ver el VLM por localhost, no un archivo que se guarde.
+        .jpeg({ quality: 88 })
         .toBuffer();
       return resized.toString('base64');
     } catch (err) {
@@ -190,17 +193,17 @@ class VisualScanService {
   }
 
   /**
-   * Describe un vídeo extrayendo N frames con ffmpeg, pasándolos al VLM,
-   * y agregando los resultados en un único entry compatible con el schema
-   * de fotos. Los tags se unionan; la descripción se toma del frame con
-   * más contenido; technical viene de ffprobe (duración, fps, codec).
+   * FASE CPU de un video: ffprobe + extraccion de los N frames a disco.
    *
-   * @param {string} filePath
-   * @param {object} [opts]
-   * @param {string} [opts.folderContext] Contexto opcional inyectado en el
-   *   prompt al describir cada frame.
+   * Va separada de la descripcion para poder ADELANTARLA: mientras la GPU
+   * describe un clip, el orquestador ya esta sacando los frames del siguiente.
+   * Con todo seguido, la GPU se pasaba la mitad del tiempo esperando al disco
+   * (medido el 15/09/2026: 51% de ocupacion, 9,1 s por archivo).
+   *
+   * Devuelve { filePath, probe, frames, cleanup }. Quien pide una preparacion
+   * se compromete a llamar a `cleanup()`, tambien si decide no describirla.
    */
-  async scanVideo(filePath, opts = {}) {
+  async prepararVideo(filePath) {
     // 1. ffprobe para duración + fps + codec + resolución
     const probe = await probeVideo(filePath);
     if (!probe) {
@@ -228,11 +231,16 @@ class VisualScanService {
       try { await fs.rm(tempDir, { recursive: true, force: true }); } catch {}
     };
 
+    // Si el material es mayor que lo que el VLM va a mirar, que reduzca ffmpeg
+    // al vuelo en vez de escribir un JPEG de 4K para que sharp lo encoja luego.
+    const ladoMayor = Math.max(probe.width || 0, probe.height || 0);
+    const maxLado = ladoMayor > VLM_IMAGE_MAX_SIDE ? VLM_IMAGE_MAX_SIDE : 0;
+
     const frames = []; // [{ path, timestamp }]
     try {
       for (let i = 0; i < timestamps.length; i++) {
         const out = path.join(tempDir, `frame_${i}.jpg`);
-        const ok = await extractFrame(filePath, timestamps[i], out);
+        const ok = await extractFrame(filePath, timestamps[i], out, { maxLado });
         if (ok) frames.push({ path: out, timestamp: timestamps[i] });
       }
 
@@ -240,6 +248,36 @@ class VisualScanService {
         throw new Error('No se pudo extraer ningún frame del vídeo');
       }
 
+      // Factor para devolver las bbox del detector al espacio del fotograma
+      // original. Se mide sobre el frame escrito (no se calcula a ojo) porque
+      // el escalado de ffmpeg redondea a pixeles pares.
+      let escalaFrames = 1;
+      if (maxLado > 0) {
+        try {
+          const meta = await sharp(frames[0].path).metadata();
+          if (meta.width && probe.width) escalaFrames = probe.width / meta.width;
+        } catch { /* sin metadata: se queda en 1 y el bbox va sin escalar */ }
+      }
+
+      return { filePath, probe, frames, cleanup, escalaFrames };
+    } catch (err) {
+      await cleanup();
+      throw err;
+    }
+  }
+
+  /**
+   * FASE GPU: describe unos frames que ya extrajo prepararVideo(), en UNA sola
+   * llamada multi-imagen. Devuelve el entry agregado; technical lo aporta
+   * ffprobe, que el VLM no conoce duracion ni codec.
+   *
+   * @param {object} preparado - lo que devuelve prepararVideo()
+   * @param {object} [opts]
+   * @param {string} [opts.folderContext] Contexto inyectado en el prompt.
+   */
+  async describirVideoPreparado(preparado, opts = {}) {
+    const { filePath, probe, frames, cleanup, escalaFrames } = preparado;
+    try {
       // 3. VLM: UNA sola llamada multi-imagen con todos los frames en orden
       //    cronológico. Esto permite al modelo razonar sobre la SECUENCIA
       //    (movimiento de cámara, acciones a lo largo del clip, cambios de
@@ -284,13 +322,26 @@ class VisualScanService {
         };
       }
 
-      return { entry, frames, cleanup };
+      return { entry, frames, cleanup, escalaFrames };
     } catch (err) {
       await cleanup();
       throw err;
     }
   }
 
+  /**
+   * Describe un vídeo de principio a fin: prepara y describe. Es el camino
+   * corto para quien no necesita adelantar nada (re-escaneo de un archivo
+   * suelto); el escaneo por lotes usa las dos fases por separado.
+   *
+   * @param {string} filePath
+   * @param {object} [opts]
+   * @param {string} [opts.folderContext]
+   */
+  async scanVideo(filePath, opts = {}) {
+    const preparado = await this.prepararVideo(filePath);
+    return this.describirVideoPreparado(preparado, opts);
+  }
   /**
    * Una sola llamada al VLM con N frames de un vídeo en orden cronológico.
    * Devuelve un entry normalizado describiendo el clip como un todo temporal.
@@ -859,26 +910,45 @@ async function probeVideo(filePath) {
 
 /**
  * Extrae un frame en `timestampSec` a `outPath` con ffmpeg.
- * Devuelve true si funcionó (archivo escrito y no vacío).
+ * Devuelve true si funciono (archivo escrito y no vacio).
+ *
+ * Dos detalles que no son cosmeticos:
+ *
+ * 1) `-ss 0` NO es lo mismo que no poner `-ss`. En contenedores MPEG-PS (los
+ *    previews .mpeg de Premiere, los VOB) pedir el segundo 0 devuelve "no
+ *    packets" y el archivo se queda sin describir; sin `-ss`, el mismo archivo
+ *    suelta el frame. Por eso no se pasa `-ss` cuando el timestamp es ~0, y si
+ *    la extraccion sale vacia habiendolo usado, se reintenta sin el. Este
+ *    detalle dejaba 358 archivos fuera del archivo en un solo escaneo.
+ *
+ * 2) `maxLado` hace que ffmpeg escale YA al tamaño que el VLM va a mirar. Antes
+ *    se escribia el frame a resolucion nativa (un JPEG de 4K son 503 KB) y sharp
+ *    lo volvia a decodificar entero para reducirlo: 78 ms por frame contra 8. No
+ *    afecta a las caras: InsightFace trabaja a 640x640 venga como venga.
  */
-async function extractFrame(filePath, timestampSec, outPath) {
-  // Seeking pre-input (rápido), single frame de salida.
-  const args = [
-    '-y',
-    '-ss', String(timestampSec),
-    '-i', filePath,
-    '-frames:v', '1',
-    '-q:v', '3',
-    outPath,
-  ];
-  const r = await runCommand('ffmpeg', args, 30_000);
-  if (r.code !== 0) return false;
-  try {
-    const st = fsSync.statSync(outPath);
-    return st.size > 100; // bytes mínimos para considerarlo válido
-  } catch {
-    return false;
-  }
+async function extractFrame(filePath, timestampSec, outPath, opts = {}) {
+  const maxLado = Number(opts.maxLado) || 0;
+  const filtro = maxLado > 0
+    ? ['-vf', `scale=w=${maxLado}:h=${maxLado}:force_original_aspect_ratio=decrease`]
+    : [];
+
+  const intentar = async (conSeek) => {
+    const args = ['-y'];
+    if (conSeek) args.push('-ss', String(timestampSec)); // seek pre-input (rapido)
+    args.push('-i', filePath, '-frames:v', '1', ...filtro, '-q:v', '3', outPath);
+    const r = await runCommand('ffmpeg', args, 30_000);
+    if (r.code !== 0) return false;
+    try {
+      return fsSync.statSync(outPath).size > 100; // bytes minimos para creerselo
+    } catch {
+      return false;
+    }
+  };
+
+  const conSeek = Number(timestampSec) > 0.05;
+  if (await intentar(conSeek)) return true;
+  // Segundo intento sin buscar; solo tiene sentido si el primero llevaba -ss.
+  return conSeek ? intentar(false) : false;
 }
 
 /**

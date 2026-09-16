@@ -11,6 +11,8 @@ desde Node.js de dos formas:
 2) Modo stream (daemon, preferido para batch desde Node):
    python face_detector.py --stream
    stdin: una línea JSON por petición
+     {"op":"warmup"}            → carga el modelo y devuelve los providers
+     {"op":"ping"}              → liveness barato, NO carga el modelo
      {"op":"detect","path":"..."}
      {"op":"train","dir":"..."}
      {"op":"exit"}
@@ -407,7 +409,24 @@ def stream_loop():
                 if not cv2.imwrite(dst, img, [cv2.IMWRITE_JPEG_QUALITY, 92]):
                     raise RuntimeError("no se pudo escribir jpeg")
                 emit({"ok": True, "result": {"dst": dst}})
+            elif op == "warmup":
+                # Fuerza la carga del modelo y DEVUELVE los providers reales.
+                # Existe porque `ping` solo prueba que el proceso Python vive:
+                # con el modelo cargandose de forma perezosa en el primer
+                # `detect`, un InsightFace roto (pesos ausentes, OOM de VRAM,
+                # onnxruntime mal instalado) no se descubria hasta que el
+                # escaneo ya habia pasado por cientos de archivos devolviendo
+                # cero caras en silencio. Node llama a esto en init().
+                app = get_app()
+                providers = []
+                try:
+                    providers = list(app.models["detection"].session.get_providers())
+                except Exception:
+                    pass
+                emit({"ok": True, "result": {"loaded": True, "providers": providers}})
             elif op == "ping":
+                # Liveness barato: NO carga el modelo. Para saber si el
+                # reconocimiento funciona de verdad, usar `warmup`.
                 emit({"ok": True, "result": "pong"})
             else:
                 emit({"ok": False, "error": f"unknown op: {op}"})

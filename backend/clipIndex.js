@@ -27,6 +27,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const fallos = require('./utils/failureReason');
 const { EMBEDDING_DIM } = require('./services/clipService');
 
 const INDEX_FILE = path.join(__dirname, 'clip_index.json');
@@ -100,7 +101,9 @@ async function _performSave() {
     await fs.rename(INDEX_TMP, INDEX_FILE);
     _isDirty = false;
   } catch (err) {
-    console.error('[clipIndex] error guardando:', err.message);
+    // Sin indice no hay busqueda visual, aunque los embeddings sigan en los
+    // sidecar. Merece aviso, no un console.error que nadie lee.
+    fallos.record('guardar el indice de busqueda visual (CLIP)', err, { path: INDEX_FILE });
     try { await fs.unlink(INDEX_TMP).catch(() => {}); } catch {}
   }
 }

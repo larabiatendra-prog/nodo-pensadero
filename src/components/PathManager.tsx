@@ -1,23 +1,46 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { FolderOpen, RefreshCw, Unlink, Plus, Trash2, CheckCircle, AlertCircle, Clock, Sparkles, Zap, Square, Tag, AlertTriangle, ChevronRight, ChevronDown, Folder } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  FolderOpen, RefreshCw, Plus, Sparkles, Square, AlertTriangle, ChevronRight,
+  Folder, MoreHorizontal, Check, RotateCcw, Cpu, Zap, Tag, Unlink, Link2, Trash2, X,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
-import type { VlmModel } from '../services/api';
+import type { VlmModel, CapacidadEscaneo, CapacidadInfo } from '../services/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
 import ScanContextModal from './ScanContextModal';
 import FolderRenameModal from './FolderRenameModal';
 
+/**
+ * Rutas y escaneo — la sala de maquinas del archivo.
+ *
+ * Jerarquia: lo primero son las bibliotecas (que hay, si esta conectado, cuanto
+ * esta descrito y que hacer con cada una). Al lado, lo que hace un escaneo:
+ * interruptores para decidir que trabajos se hacen —y por tanto que recursos
+ * se gastan— para todo el archivo, y dentro de cada ruta, lo que esa ruta
+ * cambia respecto al conjunto.
+ *
+ * Antes era una columna de cajas con seis iconos sin rotulo por ruta (uno de
+ * ellos, "desvincular", pintado como si fuera el boton principal), un panel de
+ * "Informacion" que nadie leia y ningun control sobre que hacia el escaneo.
+ */
+
+type Capacidades = Record<CapacidadEscaneo, boolean>;
+
 interface ScanPath {
   id: string;
   path: string;
+  displayName?: string;
   isActive: boolean;
   lastScan: Date | null;
   fileCount: number;
   status: 'connected' | 'disconnected' | 'scanning' | 'error';
   errorMessage?: string;
+  lastError?: string | null;
   visualTotal?: number;     // archivos media bajo la ruta (live)
   visualScanned?: number;   // de esos, cuantos tienen descripcion visual
+  escaneo?: Partial<Capacidades>;       // lo que esta ruta sobrescribe
+  escaneoEfectivo?: Capacidades;         // global + sobrescrituras
 }
 
 interface AiScanState {
@@ -35,6 +58,12 @@ interface AiScanState {
   // degradado termina "con exito" pero deja el catalogo incompleto: sin esto,
   // no habia forma de enterarse hasta buscar una cara meses despues.
   degraded?: string[];
+  // Volcados que NO se pudieron escribir, con su causa ya traducida por el
+  // backend. Un escaneo que no puede guardar esta quemando GPU para nada: el
+  // 09/09/2026 se perdieron 9.378 volcados por un disco lleno y el resumen
+  // seguia diciendo "Escaneo completado".
+  escriturasFallidas?: number;
+  causaPrincipal?: { reason: string; hint?: string; code?: string } | null;
 }
 
 /** Subcarpeta de una biblioteca, tal como la devuelve /api/scan/inventory. */
@@ -53,9 +82,37 @@ interface SubfolderInfo {
 // Nombres legibles de las capacidades que pueden caerse durante un escaneo.
 const CAPACIDAD_LABEL: Record<string, string> = {
   faces: 'reconocimiento de caras',
-  clip: 'busqueda visual (CLIP)',
-  motion: 'deteccion de movimiento de camara',
+  clip: 'busqueda visual',
+  motion: 'movimiento de camara',
 };
+
+const IDS: CapacidadEscaneo[] = ['descripcion', 'caras', 'busquedaVisual', 'movimiento', 'proxies'];
+
+/** Por si el backend aun no sirve el catalogo: los mismos textos, en corto. */
+const CATALOGO_RESERVA: CapacidadInfo[] = [
+  { id: 'descripcion', nombre: 'Descripciones', detalle: 'Qué pasa en cada foto o vídeo. Hace funcionar la búsqueda por lenguaje natural.', recurso: 'GPU', coste: 'alto' },
+  { id: 'caras', nombre: 'Caras', detalle: 'Detecta caras y reconoce a las personas que ya conoces.', recurso: 'GPU', coste: 'medio' },
+  { id: 'busquedaVisual', nombre: 'Búsqueda visual', detalle: 'Buscar por imagen, parecidos, tomas gemelas y espacios.', recurso: 'GPU', coste: 'bajo' },
+  { id: 'movimiento', nombre: 'Movimiento de cámara', detalle: 'Paneos, zooms y cortes en los vídeos.', recurso: 'CPU', coste: 'medio', soloVideo: true },
+  { id: 'proxies', nombre: 'Vídeos listos para ver', detalle: 'Copias reproducibles de los vídeos que el navegador no abre.', recurso: 'GPU (NVENC) y disco', coste: 'medio', soloVideo: true },
+];
+
+const PRESETS: Array<{ id: string; nombre: string; detalle: string; valores: Capacidades }> = [
+  {
+    id: 'completo', nombre: 'Completo', detalle: 'Todo encendido',
+    valores: { descripcion: true, caras: true, busquedaVisual: true, movimiento: true, proxies: true },
+  },
+  {
+    id: 'ligero', nombre: 'Ligero', detalle: 'Caras y búsqueda visual, sin describir',
+    valores: { descripcion: false, caras: true, busquedaVisual: true, movimiento: false, proxies: false },
+  },
+  {
+    id: 'describir', nombre: 'Solo describir', detalle: 'Descripciones, nada más',
+    valores: { descripcion: true, caras: false, busquedaVisual: false, movimiento: false, proxies: false },
+  },
+];
+
+const miles = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 
 // Formatea una duracion en ms a texto humano corto: "850ms", "2.4s", "3m 12s",
 // "1h 5m". Para medias por archivo (< 1 min) preferimos segundos con decimal.
@@ -72,6 +129,121 @@ function fmtDuration(ms: number | undefined, decimalSeconds = false): string {
   return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
 }
 
+/** "hace 3 min", "hace 2 días"... para la ultima sincronizacion. */
+function haceCuanto(fecha: Date | null): string {
+  if (!fecha || isNaN(fecha.getTime())) return 'sin sincronizar';
+  const s = Math.max(0, (Date.now() - fecha.getTime()) / 1000);
+  if (s < 60) return 'hace un momento';
+  if (s < 3600) return `hace ${Math.round(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
+  const d = Math.round(s / 86400);
+  return d === 1 ? 'ayer' : `hace ${d} días`;
+}
+
+// ── Piezas ────────────────────────────────────────────────────────────────
+
+function Interruptor({ encendido, onCambiar, etiqueta, deshabilitado = false, pequeno = false }: {
+  encendido: boolean;
+  onCambiar: (v: boolean) => void;
+  etiqueta: string;
+  deshabilitado?: boolean;
+  pequeno?: boolean;
+}) {
+  const ancho = pequeno ? 'h-4 w-7' : 'h-5 w-9';
+  const bola = pequeno ? 'h-3 w-3' : 'h-4 w-4';
+  const recorrido = pequeno ? 'translate-x-[14px]' : 'translate-x-[18px]';
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={encendido}
+      aria-label={etiqueta}
+      disabled={deshabilitado}
+      onClick={() => onCambiar(!encendido)}
+      className={`relative inline-flex ${ancho} shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda focus-visible:ring-offset-2 focus-visible:ring-offset-noche disabled:opacity-40 disabled:cursor-not-allowed ${
+        encendido ? 'bg-lavanda' : 'bg-pizarra'
+      }`}
+    >
+      <span
+        className={`inline-block ${bola} rounded-full shadow transition-transform duration-200 ${
+          encendido ? `${recorrido} bg-noche` : 'translate-x-0.5 bg-niebla'
+        }`}
+      />
+    </button>
+  );
+}
+
+function Coste({ recurso, coste }: { recurso: string; coste: string }) {
+  const tono = coste === 'alto' ? 'text-melocoton' : coste === 'medio' ? 'text-niebla' : 'text-salvia';
+  return (
+    <span className="font-mono text-[10px] tracking-wider uppercase text-humo">
+      {recurso} · <span className={tono}>{coste}</span>
+    </span>
+  );
+}
+
+/** Menu de "mas acciones" de una ruta: lo que no se usa a diario. */
+function MenuRuta({ path, onReescanear, onRenombrar, onVincular, onQuitar, puedeReescanear }: {
+  path: ScanPath;
+  onReescanear: () => void;
+  onRenombrar: () => void;
+  onVincular: () => void;
+  onQuitar: () => void;
+  puedeReescanear: boolean;
+}) {
+  const [abierto, setAbierto] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!abierto) return;
+    const fuera = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setAbierto(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setAbierto(false); };
+    document.addEventListener('mousedown', fuera);
+    window.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', fuera); window.removeEventListener('keydown', esc); };
+  }, [abierto]);
+
+  const item = 'w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const hacer = (fn: () => void) => () => { setAbierto(false); fn(); };
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setAbierto(v => !v)}
+        aria-haspopup="menu"
+        aria-expanded={abierto}
+        aria-label="Más acciones"
+        className="p-2 rounded-full text-humo hover:text-marfil hover:bg-grafito transition-colors"
+      >
+        <MoreHorizontal className="w-4 h-4" />
+      </button>
+      {abierto && (
+        <div role="menu" className="absolute right-0 top-full mt-1 z-30 w-60 p-1.5 rounded-xl bg-grafito border border-borde-sutil shadow-xl">
+          <button role="menuitem" className={`${item} text-niebla hover:bg-pizarra hover:text-marfil`} onClick={hacer(onReescanear)} disabled={!puedeReescanear}>
+            <Zap className="w-4 h-4 text-melocoton" />
+            <span>Re-escanear todo<span className="block text-[11px] text-humo">También lo ya escaneado</span></span>
+          </button>
+          <button role="menuitem" className={`${item} text-niebla hover:bg-pizarra hover:text-marfil`} onClick={hacer(onRenombrar)} disabled={!path.isActive}>
+            <Tag className="w-4 h-4" />
+            Renombrar carpetas
+          </button>
+          <button role="menuitem" className={`${item} text-niebla hover:bg-pizarra hover:text-marfil`} onClick={hacer(onVincular)}>
+            {path.isActive ? <Unlink className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
+            <span>{path.isActive ? 'Desvincular' : 'Volver a vincular'}<span className="block text-[11px] text-humo">{path.isActive ? 'Deja de sincronizarse, sin borrar nada' : 'Vuelve a sincronizarse'}</span></span>
+          </button>
+          {path.id !== 'default' && (
+            <>
+              <div className="my-1 h-px bg-borde-sutil" />
+              <button role="menuitem" className={`${item} text-estado-error hover:bg-estado-error/10`} onClick={hacer(onQuitar)}>
+                <Trash2 className="w-4 h-4" />
+                Quitar ruta
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface PathManagerProps {
   onSyncComplete?: () => void;
 }
@@ -82,6 +254,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [newPath, setNewPath] = useState('');
   const [showAddPath, setShowAddPath] = useState(false);
   const [scanningPaths, setScanningPaths] = useState<Set<string>>(new Set());
+
+  // Que hace el escaneo: catalogo de trabajos y los globales.
+  const [catalogo, setCatalogo] = useState<CapacidadInfo[]>(CATALOGO_RESERVA);
+  const [capsGlobal, setCapsGlobal] = useState<Capacidades | null>(null);
 
   // Estado de escaneo visual con IA por ruta. Map: pathId → estado.
   const [aiScansByPath, setAiScansByPath] = useState<Map<string, AiScanState>>(new Map());
@@ -96,7 +272,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [availableModels, setAvailableModels] = useState<VlmModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
 
-  // Modal de contexto previo al escaneo individual (botón ✨/⚡ por ruta).
+  // Modal de contexto previo al escaneo individual.
   const [contextModalPathId, setContextModalPathId] = useState<string | null>(null);
   const [contextModalForce, setContextModalForce] = useState(false);
 
@@ -114,23 +290,21 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   // Resumen transitorio al terminar el batch (tiempo total). Se autolimpia.
   const [batchSummary, setBatchSummary] = useState<{ processed: number; total: number; elapsedMs: number; aborted: boolean } | null>(null);
 
-  // --- Subcarpetas desplegables por ruta ---
-  // Una biblioteca como C:\VIDEO\BRUTOS es en realidad un arbol de sesiones, y
-  // desde aqui solo se podia operar sobre la raiz: escanear todo o nada. El
-  // inventario se pide bajo demanda (al desplegar), no al cargar la pagina,
+  // --- Rutas desplegadas: sus interruptores propios y sus subcarpetas ---
+  // El inventario se pide bajo demanda (al desplegar), no al cargar la pagina,
   // porque recorrer el arbol de una biblioteca grande no es gratis.
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [subfolders, setSubfolders] = useState<Map<string, SubfolderInfo[]>>(new Map());
   const [loadingSubfolders, setLoadingSubfolders] = useState<Set<string>>(new Set());
 
-  const toggleSubfolders = async (pathId: string, rootPath: string) => {
+  const toggleSubfolders = async (pathId: string, rootPath: string, conectada: boolean) => {
     const abierto = expandedPaths.has(pathId);
     setExpandedPaths(prev => {
       const next = new Set(prev);
       if (abierto) next.delete(pathId); else next.add(pathId);
       return next;
     });
-    if (abierto || subfolders.has(pathId)) return;
+    if (abierto || subfolders.has(pathId) || !conectada) return;
 
     setLoadingSubfolders(prev => new Set(prev).add(pathId));
     try {
@@ -167,15 +341,22 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
-  // WebSocket para progreso en tiempo real
-  // El estado de conexion lo pinta ConnectionBanner desde App, global a toda
-  // la app. Aqui solo interesa el progreso.
+  // WebSocket para progreso en tiempo real. El estado de conexion lo pinta
+  // ConnectionBanner desde App; aqui solo interesa el progreso.
   const { progressData } = useWebSocket(config.wsUrl);
 
   useEffect(() => {
     loadPaths();
-    // Cargar health del VLM al entrar — diagnóstico al usuario si Ollama
-    // o el modelo no están listos.
+    api.getCapacidades().then(r => {
+      if (r.success && r.data) {
+        if (Array.isArray(r.data.catalogo) && r.data.catalogo.length > 0) setCatalogo(r.data.catalogo);
+        setCapsGlobal(r.data.global);
+      }
+    }).catch(() => {
+      // Backend sin interruptores: se pinta como siempre, todo encendido.
+      setCapsGlobal({ descripcion: true, caras: true, busquedaVisual: true, movimiento: true, proxies: true });
+    });
+    // Health del VLM al entrar: diagnostico si Ollama o el modelo no estan.
     api.scanHealth().then(r => {
       if (r.success && r.data) setVlmHealth(r.data);
     }).catch(() => setVlmHealth({ ollamaRunning: false, modelAvailable: false, model: 'gemma4:12b' }));
@@ -200,11 +381,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   }, []);
 
   // Espejos en refs para leer estado/props dentro del efecto de WS SIN meterlos
-  // en sus deps. Antes `aiScansByPath` estaba en las deps y el efecto llamaba a
-  // `setAiScansByPath(new Map(...))` en casi todas las ramas: cada Map nuevo es
-  // una referencia distinta → re-disparaba el efecto con el MISMO progressData →
-  // bucle "Maximum update depth exceeded" durante el escaneo. Leyendo desde refs,
-  // el efecto solo depende de progressData (un objeto nuevo por mensaje WS).
+  // en sus deps (un Map nuevo por render re-disparaba el efecto en bucle).
   const aiScansByPathRef = useRef(aiScansByPath);
   useEffect(() => { aiScansByPathRef.current = aiScansByPath; }, [aiScansByPath]);
   const onSyncCompleteRef = useRef(onSyncComplete);
@@ -215,10 +392,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     if (!progressData) return;
 
     if (progressData.type === 'sync_complete') {
-      // Recargar las rutas para actualizar los contadores
       loadPaths();
-
-      // Notificar al componente padre para refrescar los archivos
       if (onSyncCompleteRef.current) {
         setTimeout(() => {
           onSyncCompleteRef.current?.();
@@ -226,23 +400,19 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
     }
 
-    // Eventos del escaneo visual IA (visualScanService).
     // Resolver pathId desde el ref (sin closure stale) o, como fallback, desde
-    // el unico path en estado running — util cuando el WS llega antes de que
-    // jobIdToPathIdRef se actualice en el handler de startScan.
+    // el unico path en estado running.
     const resolvePid = (jobId: string | undefined): string | undefined => {
       if (jobId) {
         const fromRef = jobIdToPathIdRef.current.get(jobId);
         if (fromRef) return fromRef;
       }
-      // Fallback: si solo hay un path actualmente en running, asociar el evento a el
       let candidate: string | undefined;
       let count = 0;
       for (const [pid, st] of aiScansByPathRef.current.entries()) {
         if (st.status === 'running') { candidate = pid; count++; }
       }
       if (count === 1 && candidate && jobId) {
-        // Aprovechar para repoblar el mapping para futuros eventos
         jobIdToPathIdRef.current.set(jobId, candidate);
         return candidate;
       }
@@ -255,7 +425,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         setAiScansByPath(prev => {
           const next = new Map(prev);
           next.set(pid, {
-            jobId: progressData.jobId,
+            jobId: progressData.jobId!,
             total: 0,
             done: 0,
             errors: 0,
@@ -272,14 +442,14 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       if (pid) {
         setAiScansByPath(prev => {
           const next = new Map(prev);
-          const cur = next.get(pid) || { jobId: progressData.jobId, total: 0, done: 0, errors: 0, status: 'running' as const };
+          const cur = next.get(pid) || { jobId: progressData.jobId!, total: 0, done: 0, errors: 0, status: 'running' as const };
           next.set(pid, {
             ...cur,
-            jobId: progressData.jobId,
+            jobId: progressData.jobId!,
             total: progressData.total ?? cur.total,
             done: progressData.done ?? cur.done,
             errors: progressData.errors ?? cur.errors,
-            currentFile: progressData.file,
+            currentFile: progressData.file ?? cur.currentFile,
             avgMsPerFile: progressData.avgMsPerFile ?? cur.avgMsPerFile,
             etaMs: progressData.etaMs ?? cur.etaMs,
             status: 'running',
@@ -301,11 +471,13 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               total: progressData.total ?? cur.total,
               done: progressData.done ?? cur.done,
               errors: progressData.errors ?? cur.errors,
-              status: 'done',
+              status: progressData.estado === 'cancelled' ? 'cancelled' : 'done',
               currentFile: undefined,
               totalMs: progressData.elapsedMs ?? cur.totalMs,
               avgMsPerFile: progressData.avgMsPerFile ?? cur.avgMsPerFile,
               degraded: progressData.degraded ?? cur.degraded,
+              escriturasFallidas: progressData.escriturasFallidas ?? cur.escriturasFallidas,
+              causaPrincipal: progressData.causaPrincipal ?? cur.causaPrincipal,
             });
           }
           return next;
@@ -360,9 +532,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
     }
 
-    // Refrescar la cobertura visual (badge %/ratio) cuando termina algo que la
-    // cambia. En scan_done el post-sync del backend corre DESPUES de emitir el
-    // evento, asi que damos un margen; en batch/sync ya viene fresco.
+    // Refrescar la cobertura cuando termina algo que la cambia. En scan_done el
+    // post-sync del backend corre DESPUES de emitir el evento: se da margen.
     if (progressData.type === 'scan_done') {
       setTimeout(() => { loadPaths(); }, 1200);
     } else if (progressData.type === 'batch_scan_done' || progressData.type === 'sync_complete') {
@@ -379,7 +550,6 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const loadPaths = async () => {
     try {
-      setIsLoading(true);
       const response = await api.getScanPaths();
       if (response.success && response.data) {
         setPaths(response.data.map((path: any) => ({
@@ -389,15 +559,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
     } catch (error) {
       console.error('Error cargando rutas:', error);
-      // Si no existe el endpoint, usar ruta por defecto
-      setPaths([{
-        id: 'default',
-        path: 'D:\\Biblioteca_Prueba',
-        isActive: true,
-        lastScan: new Date(),
-        fileCount: 0,
-        status: 'connected'
-      }]);
+      toast.error('No se pudieron cargar las rutas');
     } finally {
       setIsLoading(false);
     }
@@ -405,61 +567,33 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const handleAddPath = async () => {
     if (!newPath.trim()) return;
-
     try {
-      const response = await api.addScanPath(newPath);
+      const response = await api.addScanPath(newPath.trim());
       if (response.success && response.data) {
-        setPaths([...paths, {
-          ...response.data,
-          lastScan: response.data.lastScan ? new Date(response.data.lastScan) : null
-        }]);
         setNewPath('');
         setShowAddPath(false);
+        toast.success('Ruta añadida. Sincronízala para ver su contenido.');
+        loadPaths();
       }
-    } catch (error) {
-      console.error('Error añadiendo ruta:', error);
-      alert('Error al añadir la ruta. Verifica que existe y tienes permisos.');
+    } catch (error: any) {
+      toast.error(error?.message || 'No se pudo añadir la ruta. Comprueba que existe.');
     }
   };
 
   const handleSyncPath = async (pathId: string) => {
     setScanningPaths(prev => new Set([...prev, pathId]));
-    
     try {
-      // Actualizar estado local inmediatamente
-      setPaths(prev => prev.map(p => 
-        p.id === pathId ? { ...p, status: 'scanning' } : p
-      ));
-
+      setPaths(prev => prev.map(p => p.id === pathId ? { ...p, status: 'scanning' } : p));
       const response = await api.syncPath(pathId);
       if (response.success) {
-        console.log(`✅ Sincronización exitosa: ${response.fileCount} archivos`);
-        
-        // Actualizar con los datos del servidor
-        setPaths(prev => prev.map(p => 
-          p.id === pathId 
-            ? { 
-                ...p, 
-                status: 'connected',
-                lastScan: new Date(),
-                fileCount: response.fileCount || p.fileCount,
-                isActive: true,
-                errorMessage: undefined
-              } 
-            : p
-        ));
-        
-        // Mostrar notificación de éxito
-        alert(`✅ Sincronización completada: ${response.fileCount} archivos encontrados`);
+        toast.success(`Sincronizada: ${miles((response as any).fileCount || 0)} archivos`);
+        loadPaths();
       }
-    } catch (error) {
-      console.error('Error sincronizando ruta:', error);
-      setPaths(prev => prev.map(p => 
-        p.id === pathId 
-          ? { ...p, status: 'error', errorMessage: 'Error al sincronizar. Verifica que la ruta existe.' } 
-          : p
+    } catch (error: any) {
+      setPaths(prev => prev.map(p =>
+        p.id === pathId ? { ...p, status: 'error', errorMessage: 'No se pudo sincronizar. Comprueba que la ruta existe.' } : p
       ));
-      alert('❌ Error al sincronizar la ruta. Verifica que existe y tienes permisos.');
+      toast.error(error?.message || 'No se pudo sincronizar la ruta');
     } finally {
       setScanningPaths(prev => {
         const updated = new Set(prev);
@@ -473,31 +607,23 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     try {
       const response = await api.togglePath(pathId, !currentStatus);
       if (response.success) {
-        setPaths(prev => prev.map(p => 
-          p.id === pathId 
-            ? { 
-                ...p, 
-                isActive: !currentStatus,
-                status: !currentStatus ? 'connected' : 'disconnected'
-              } 
+        setPaths(prev => prev.map(p =>
+          p.id === pathId
+            ? { ...p, isActive: !currentStatus, status: !currentStatus ? 'connected' : 'disconnected' }
             : p
         ));
+        toast.success(currentStatus ? 'Ruta desvinculada. No se ha borrado nada.' : 'Ruta vinculada de nuevo');
       }
-    } catch (error) {
-      console.error('Error cambiando estado de ruta:', error);
+    } catch {
+      toast.error('No se pudo cambiar la ruta');
     }
   };
 
-  /**
-   * Lanza un escaneo visual con IA sobre la carpeta de la ruta. El backend
-   * recorre todas las imágenes, las describe con qwen2.5vl, y guarda los
-   * resultados en `_pensadero.json` por carpeta.
-   */
+  /** Lanza el escaneo de una ruta. Lo que hace lo deciden sus interruptores. */
   const handleAiScan = async (pathId: string, force: boolean = false) => {
     const path = paths.find(p => p.id === pathId);
     if (!path) return;
 
-    // Limpiar estado previo de esta ruta
     setAiScansByPath(prev => {
       const next = new Map(prev);
       next.set(pathId, { jobId: null, total: 0, done: 0, errors: 0, status: 'running' });
@@ -511,9 +637,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
       const jobId = response.jobId;
       if (jobId) {
-        // Registrar el mapeo en el ref (sincronicamente, sin esperar al
-        // proximo render). Asi los eventos WS que ya hayan llegado al
-        // listener tras el ultimo render encuentran el path correcto.
+        // Registrar el mapeo en el ref sincronicamente: los eventos WS que
+        // ya hayan llegado encuentran el path correcto.
         jobIdToPathIdRef.current.set(jobId, pathId);
         setAiScansByPath(prev => {
           const next = new Map(prev);
@@ -526,10 +651,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       setAiScansByPath(prev => {
         const next = new Map(prev);
         next.set(pathId, {
-          jobId: null,
-          total: 0,
-          done: 0,
-          errors: 0,
+          jobId: null, total: 0, done: 0, errors: 0,
           status: 'error',
           errorMessage: err.message || 'Error desconocido',
         });
@@ -538,7 +660,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
-  /** Llama la API y arranca el scan-all real. Se invoca tras pasar por todos los modales de contexto. */
+  /** Llama la API y arranca el scan-all real, tras pasar por los modales de contexto. */
   const executeActualScanAll = async (force: boolean) => {
     if (batchScan?.running) return;
     try {
@@ -551,7 +673,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
       setBatchScan({ running: true, total: r.count || activePaths.length, processed: 0, force });
     } catch (err: any) {
-      alert('Error: ' + (err.message || 'desconocido'));
+      toast.error(err.message || 'No se pudo empezar el escaneo');
     }
   };
 
@@ -567,17 +689,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
-  /**
-   * Escaneo masivo: abre el modal de contexto para cada ruta activa en serie
-   * antes de lanzar el scan-all.
-   */
+  /** Escaneo masivo: un modal de contexto por ruta activa y conectada, y luego el lote. */
   const handleScanAll = (force: boolean) => {
     if (batchScan?.running) return;
-    const activePathsList = paths.filter(p => p.isActive);
+    const activePathsList = paths.filter(p => p.isActive && p.status !== 'disconnected');
     if (activePathsList.length === 0) {
-      alert('No hay rutas activas para escanear');
+      toast.error('No hay rutas conectadas que escanear');
       return;
     }
+    if (force && !confirm('¿Re-escanear TODO el material de todas las rutas, también lo ya escaneado? Puede tardar muchas horas.')) return;
     setScanAllForce(force);
     setScanAllQueue(activePathsList.map(p => ({ id: p.id, path: p.path })));
     setScanAllQueueIdx(0);
@@ -585,7 +705,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const handleCancelAll = async () => {
     if (!batchScan?.running) return;
-    if (!confirm('¿Detener el escaneo masivo? Se cancelará la ruta actual y no se procesarán las restantes.')) return;
+    if (!confirm('¿Detener el escaneo? Se guarda lo hecho y no se procesan las rutas restantes.')) return;
     try {
       await api.cancelScanAll();
     } catch {
@@ -593,640 +713,588 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
-  /**
-   * Cancela el escaneo IA de UNA ruta concreta. El backend hace break del
-   * bucle en cuanto procesa el archivo actual y escribe a disco los
-   * _pensadero.json con todo lo procesado hasta el cancel.
-   */
+  /** Cancela el escaneo de UNA ruta: el backend guarda lo procesado hasta el corte. */
   const handleCancelScan = async (pathId: string) => {
     const scan = aiScansByPath.get(pathId);
     if (!scan || !scan.jobId || scan.status !== 'running') return;
-    if (!confirm('¿Detener el escaneo de esta ruta? Lo procesado hasta ahora se guardara en disco.')) return;
+    if (!confirm('¿Detener el escaneo de esta ruta? Lo procesado hasta ahora se guarda.')) return;
     try {
       await api.cancelScan(scan.jobId);
     } catch (err: any) {
-      alert('Error cancelando: ' + (err.message || 'desconocido'));
+      toast.error('No se pudo detener: ' + (err.message || 'desconocido'));
     }
   };
 
   const handleRemovePath = async (pathId: string) => {
-    if (!confirm('¿Estás seguro de que quieres eliminar esta ruta?')) return;
-
+    const p = paths.find(x => x.id === pathId);
+    if (!confirm(`¿Quitar la ruta ${p?.path || ''}? Los archivos del disco no se tocan.`)) return;
     try {
       const response = await api.removeScanPath(pathId);
       if (response.success) {
-        setPaths(prev => prev.filter(p => p.id !== pathId));
+        setPaths(prev => prev.filter(x => x.id !== pathId));
+        toast.success('Ruta quitada');
       }
-    } catch (error) {
-      console.error('Error eliminando ruta:', error);
+    } catch {
+      toast.error('No se pudo quitar la ruta');
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'connected':
-        return <CheckCircle className="w-5 h-5 text-green-600" />;
-      case 'disconnected':
-        return <AlertCircle className="w-5 h-5 text-gray-400" />;
-      case 'scanning':
-        return <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />;
-      case 'error':
-        return <AlertCircle className="w-5 h-5 text-red-600" />;
-      default:
-        return <Clock className="w-5 h-5 text-gray-400" />;
+  // ── Interruptores ───────────────────────────────────────────────────────
+
+  const efectivasDe = (p: ScanPath): Capacidades => {
+    const base = capsGlobal || { descripcion: true, caras: true, busquedaVisual: true, movimiento: true, proxies: true };
+    return { ...base, ...(p.escaneo || {}) } as Capacidades;
+  };
+
+  const cambiarGlobal = async (parcial: Partial<Capacidades>) => {
+    if (!capsGlobal) return;
+    const antes = capsGlobal;
+    const nuevo = { ...capsGlobal, ...parcial } as Capacidades;
+    setCapsGlobal(nuevo);
+    try {
+      const r = await api.setCapacidadesGlobal(parcial);
+      if (r.data?.global) setCapsGlobal(r.data.global);
+    } catch (e: any) {
+      setCapsGlobal(antes);
+      toast.error(e?.message || 'No se pudo guardar');
     }
   };
 
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'connected':
-        return 'Conectado';
-      case 'disconnected':
-        return 'Desconectado';
-      case 'scanning':
-        return 'Escaneando...';
-      case 'error':
-        return 'Error';
-      default:
-        return 'Desconocido';
+  /**
+   * Cambiar un trabajo en UNA ruta. Si el valor nuevo coincide con el global,
+   * la ruta deja de sobrescribirlo (vuelve a heredar): asi, al cambiar el
+   * global mas adelante, la ruta lo sigue sin sorpresas.
+   */
+  const cambiarEnRuta = async (p: ScanPath, cap: CapacidadEscaneo, valor: boolean | null) => {
+    const global = capsGlobal ? capsGlobal[cap] : true;
+    const enviar = valor === null || valor === global ? null : valor;
+    const antes = p.escaneo;
+    const propio = { ...(p.escaneo || {}) };
+    if (enviar === null) delete propio[cap]; else propio[cap] = enviar;
+    setPaths(prev => prev.map(x => x.id === p.id ? { ...x, escaneo: propio } : x));
+    try {
+      await api.setEscaneoRuta(p.id, { [cap]: enviar });
+    } catch (e: any) {
+      setPaths(prev => prev.map(x => x.id === p.id ? { ...x, escaneo: antes } : x));
+      toast.error(e?.message || 'No se pudo guardar');
     }
   };
+
+  const presetActivo = useMemo(() => {
+    if (!capsGlobal) return null;
+    return PRESETS.find(pr => IDS.every(id => pr.valores[id] === capsGlobal[id]))?.id ?? null;
+  }, [capsGlobal]);
+
+  // ── Derivados ───────────────────────────────────────────────────────────
+
+  const vlmCaido = !!vlmHealth && (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable);
+
+  const totales = useMemo(() => {
+    let archivos = 0, total = 0, descritos = 0;
+    for (const p of paths) {
+      archivos += p.fileCount || 0;
+      if (p.isActive && typeof p.visualTotal === 'number') {
+        total += p.visualTotal;
+        descritos += p.visualScanned ?? 0;
+      }
+    }
+    return { archivos, total, descritos, pendientes: Math.max(0, total - descritos) };
+  }, [paths]);
+
+  /** Por que no se puede escanear una ruta ahora mismo (null = si se puede). */
+  const motivoSinEscaneo = (p: ScanPath): string | null => {
+    if (!p.isActive) return 'Ruta desvinculada';
+    if (p.status === 'disconnected') return 'El disco no está conectado';
+    const ef = efectivasDe(p);
+    if (!IDS.some(id => ef[id])) return 'Todo el escaneo está apagado en esta ruta';
+    if (ef.descripcion && vlmCaido) {
+      return !vlmHealth?.ollamaRunning
+        ? 'Ollama no responde. Arráncalo o apaga las descripciones'
+        : `Falta el modelo: ollama pull ${vlmHealth?.model}`;
+    }
+    if (aiScansByPath.get(p.id)?.status === 'running') return 'Ya se está escaneando';
+    if (batchScan?.running) return 'Hay un escaneo de todas las rutas en marcha';
+    return null;
+  };
+
+  const puedeEscanearTodo = !batchScan?.running
+    && paths.some(p => p.isActive && p.status !== 'disconnected' && !motivoSinEscaneo(p));
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <RefreshCw className="w-8 h-8 text-bruma animate-spin" />
-        <span className="ml-3 text-lavanda-archivo">Cargando rutas...</span>
+        <RefreshCw className="w-6 h-6 text-lavanda animate-spin" />
+        <span className="ml-3 text-niebla">Cargando rutas...</span>
       </div>
     );
   }
 
-  return (
-    <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-marfil mb-2">Administrar Rutas de Escaneo</h1>
-        <p className="text-lavanda-archivo">
-          Gestiona las carpetas que el sistema escanea en busca de archivos multimedia
-        </p>
-      </div>
+  const pctGlobal = totales.total > 0 ? Math.round((totales.descritos / totales.total) * 100) : 0;
+  const catalogoPorId = new Map(catalogo.map(c => [c.id, c]));
 
-      {/* Banner de estado del VLM. Solo se muestra si hay problemas que
-          impiden el escaneo con IA — invisible cuando todo está OK. */}
-      {vlmHealth && (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable) && (
-        <div className="mb-6 p-4 bg-pizarra border border-lavanda-archivo rounded-2xl">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
-            <div className="flex-1 text-sm">
-              <p className="font-medium text-marfil mb-1">Escaneo con IA no disponible</p>
-              {!vlmHealth.ollamaRunning && (
-                <p className="text-lavanda-archivo">
-                  Ollama no responde en localhost:11434. Comprueba que está arrancado
-                  (instálalo desde <span className="font-mono text-bruma">https://ollama.com</span> si todavía no).
-                </p>
-              )}
-              {vlmHealth.ollamaRunning && !vlmHealth.modelAvailable && (
-                <p className="text-lavanda-archivo">
-                  El modelo <span className="font-mono text-bruma">{vlmHealth.model}</span> no está descargado.
-                  Ábrete una terminal y ejecuta: <span className="font-mono text-bruma">ollama pull {vlmHealth.model}</span>
-                </p>
-              )}
-            </div>
-          </div>
+  return (
+    <div className="pb-10">
+      {/* ── Cabecera ───────────────────────────────────────────────────── */}
+      <header className="mb-8 flex items-end justify-between gap-6 flex-wrap">
+        <div>
+          <h1 className="text-[1.7rem] font-bold text-marfil leading-none">Rutas y escaneo</h1>
+          <p className="mt-2 text-sm text-niebla">
+            {paths.length === 1 ? '1 biblioteca' : `${paths.length} bibliotecas`}
+            {' · '}{miles(totales.archivos)} archivos
+            {totales.total > 0 && <> · <span className="text-marfil">{pctGlobal} %</span> descrito</>}
+          </p>
         </div>
+        {!showAddPath && (
+          <button onClick={() => setShowAddPath(true)} className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors">
+            <Plus className="w-4 h-4" />
+            Añadir ruta
+          </button>
+        )}
+      </header>
+
+      {showAddPath && (
+        <form
+          onSubmit={(e) => { e.preventDefault(); handleAddPath(); }}
+          className="mb-8 flex items-center gap-2 flex-wrap"
+        >
+          <FolderOpen className="w-5 h-5 text-lavanda shrink-0" />
+          <input
+            type="text"
+            value={newPath}
+            onChange={(e) => setNewPath(e.target.value)}
+            placeholder="Ruta de la carpeta, p. ej. D:\Fotos"
+            className="flex-1 min-w-[14rem] px-4 py-2 rounded-full bg-tinta border border-pizarra text-marfil placeholder:text-humo focus:outline-none focus:ring-2 focus:ring-lavanda"
+            autoFocus
+          />
+          <button type="submit" disabled={!newPath.trim()} className="px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-40 transition-colors">
+            Añadir
+          </button>
+          <button type="button" onClick={() => { setShowAddPath(false); setNewPath(''); }} className="p-2 rounded-full text-humo hover:text-marfil" aria-label="Cancelar">
+            <X className="w-4 h-4" />
+          </button>
+        </form>
       )}
 
-      {/* Selector de modelo VLM — visible solo cuando Ollama está disponible.
-          El catalogo curado (Producción / Experimento / Legacy) aparece siempre,
-          aunque el modelo no esté instalado: en ese caso la opción se marca
-          "(pendiente de descarga)" y se ofrece el comando ollama pull. El cambio
-          es manual, sin fallback automático. */}
-      {vlmHealth?.ollamaRunning && availableModels.length > 0 && (() => {
-        const TIER_LABEL: Record<VlmModel['tier'], string> = {
-          produccion: 'Producción',
-          experimento: 'Experimento',
-          legacy: 'Legacy / fallback',
-          otro: 'Otros instalados',
-          no_cabe: 'No caben en esta GPU (16 GB)',
-        };
-        const TIER_ORDER: VlmModel['tier'][] = ['produccion', 'experimento', 'legacy', 'otro', 'no_cabe'];
-        const selectedEntry = availableModels.find(m => m.name === selectedModel);
-        return (
-          <div className="mb-6 flex flex-col gap-2">
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-sm text-lavanda-archivo" title="Modelo de IA que mira cada foto y la describe durante el escaneo">
-                Modelo que describe las fotos:
-              </span>
-              <select
-                value={selectedModel}
-                onChange={async (e) => {
-                  const model = e.target.value;
-                  setSelectedModel(model);
-                  await api.setScanModel(model).catch(() => {});
-                }}
-                className="bg-grafito border border-pizarra rounded-lg px-3 py-1.5 text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
-              >
-                {TIER_ORDER.filter(t => availableModels.some(m => m.tier === t)).map(tier => (
-                  <optgroup key={tier} label={TIER_LABEL[tier]}>
-                    {availableModels.filter(m => m.tier === tier).map(m => (
-                      <option key={m.name} value={m.name} disabled={!m.installed}>
-                        {m.label}{m.installed ? '' : ' (pendiente de descarga)'}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </div>
-            {selectedEntry?.notes && (
-              <p className="text-xs text-humo">{selectedEntry.notes}</p>
-            )}
-            {selectedEntry && !selectedEntry.installed && (
-              <p className="text-xs text-lavanda-archivo">
-                No instalado. Ejecuta en una terminal:{' '}
-                <span className="font-mono text-bruma">ollama pull {selectedEntry.name}</span>
-              </p>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* Aviso de material pendiente de describir.
-          Pensadero no escanea solo: la decision de encender la GPU es tuya.
-          Pero tampoco deja que se te olvide, que era lo que pasaba antes:
-          el pendiente solo se veia como un porcentaje pequeno por ruta. */}
-      {(() => {
-        if (batchScan?.running) return null;
-        const pendientes = paths
-          .filter(p => p.isActive && typeof p.visualTotal === 'number')
-          .reduce((acc, p) => acc + Math.max(0, (p.visualTotal ?? 0) - (p.visualScanned ?? 0)), 0);
-        if (pendientes === 0) return null;
-        return (
-          <div className="mb-6 flex items-center justify-between gap-4 flex-wrap p-4 rounded-3xl bg-lavanda/10 border border-lavanda/30">
+      {/* ── Lo que queda por hacer / lo que esta pasando ────────────────── */}
+      <section aria-label="Estado del escaneo" className="mb-10 flex items-stretch gap-4">
+        <div aria-hidden="true" className="w-px shrink-0 bg-gradient-to-b from-lavanda/70 via-lavanda-archivo/40 to-transparent" />
+        <div className="flex-1 flex items-center justify-between gap-4 flex-wrap py-1">
+          {batchScan?.running ? (
+            <>
+              <div className="flex items-center gap-3">
+                <RefreshCw className="w-4 h-4 text-lavanda animate-spin" />
+                <div>
+                  <p className="text-[15px] text-marfil">
+                    {batchScan.force ? 'Re-escaneando' : 'Escaneando'} la ruta {Math.min(batchScan.processed + 1, batchScan.total)} de {batchScan.total}
+                  </p>
+                  <p className="text-[12px] text-humo">Puedes seguir usando la aplicación. Lo hecho se guarda sobre la marcha.</p>
+                </div>
+              </div>
+              <button onClick={handleCancelAll} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-grafito text-niebla hover:text-marfil hover:bg-pizarra transition-colors">
+                <Square className="w-3 h-3" fill="currentColor" />
+                Detener
+              </button>
+            </>
+          ) : batchSummary ? (
             <div className="flex items-center gap-3">
-              <Sparkles className="w-5 h-5 text-lavanda shrink-0" />
+              <Check className="w-4 h-4 text-salvia" />
+              <p className="text-[15px] text-marfil">
+                {batchSummary.aborted ? 'Escaneo detenido' : 'Escaneo terminado'}
+                <span className="text-niebla"> · {batchSummary.processed} de {batchSummary.total} rutas{batchSummary.elapsedMs > 0 ? ` en ${fmtDuration(batchSummary.elapsedMs)}` : ''}</span>
+              </p>
+            </div>
+          ) : totales.pendientes > 0 ? (
+            <>
               <div>
-                <p className="text-sm font-medium text-marfil">
-                  {pendientes} {pendientes === 1 ? 'archivo pendiente' : 'archivos pendientes'} de describir
+                <p className="text-[15px] text-marfil">
+                  <span className="font-semibold">{miles(totales.pendientes)}</span> {totales.pendientes === 1 ? 'archivo sin describir' : 'archivos sin describir'}
                 </p>
-                <p className="text-xs text-lavanda-archivo">
-                  Sin descripcion visual no aparecen en la busqueda por lenguaje natural.
+                <p className="text-[12px] text-humo">
+                  {capsGlobal && !capsGlobal.descripcion
+                    ? 'Las descripciones están apagadas: el escaneo hará solo lo que tengas encendido.'
+                    : 'Sin descripción no aparecen en la búsqueda por lenguaje natural.'}
                 </p>
               </div>
-            </div>
-            <button
-              onClick={() => handleScanAll(false)}
-              disabled={!vlmHealth?.ollamaRunning}
-              className="btn-primary shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-              title={vlmHealth?.ollamaRunning ? 'Describir lo que falta' : 'Ollama no esta disponible'}
-            >
-              Escanear ahora
-            </button>
-          </div>
-        );
-      })()}
-
-      {/* Acciones globales: añadir ruta + escaneos masivos */}
-      <div className="mb-6">
-        {!showAddPath ? (
-          <div className="flex items-center flex-wrap gap-2">
-            <button
-              onClick={() => setShowAddPath(true)}
-              className="flex items-center gap-2 btn-primary"
-            >
-              <Plus className="w-4 h-4" />
-              Añadir Nueva Ruta
-            </button>
-
-            {/* Escanear todas (solo nuevas) */}
-            <button
-              onClick={() => handleScanAll(false)}
-              disabled={
-                !!batchScan?.running ||
-                paths.filter(p => p.isActive).length === 0 ||
-                (vlmHealth ? (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable) : false)
-              }
-              className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-pizarra text-lavanda hover:bg-lavanda hover:bg-opacity-20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Escanear con IA todas las rutas activas (solo archivos nuevos)"
-            >
-              <Sparkles className="w-4 h-4" />
-              Escanear todas
-            </button>
-
-            {/* Re-escanear forzado todas */}
-            <button
-              onClick={() => handleScanAll(true)}
-              disabled={
-                !!batchScan?.running ||
-                paths.filter(p => p.isActive).length === 0 ||
-                (vlmHealth ? (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable) : false)
-              }
-              className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-pizarra text-melocoton hover:bg-melocoton hover:bg-opacity-20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Re-escanear FORZADO todas las rutas activas (incluye archivos ya catalogados)"
-            >
-              <Zap className="w-4 h-4" />
-              Re-escanear todas
-            </button>
-
-            {/* Indicador + cancelar cuando hay batch activo */}
-            {batchScan?.running && (
-              <div className="flex items-center gap-2 ml-2 px-3 py-2 rounded-full bg-tinta border border-pizarra">
-                <RefreshCw className="w-4 h-4 text-bruma animate-spin" />
-                <span className="text-sm text-lavanda-archivo">
-                  Escaneando ruta <span className="text-marfil font-medium">{Math.min(batchScan.processed + 1, batchScan.total)}</span>/<span className="text-marfil font-medium">{batchScan.total}</span>
-                  {batchScan.force && <span className="ml-1 text-melocoton text-xs">(forzado)</span>}
-                </span>
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={handleCancelAll}
-                  className="ml-1 text-xs px-2 py-0.5 rounded-full bg-pizarra text-lavanda-archivo hover:bg-lavanda hover:bg-opacity-20"
-                  title="Cancelar escaneo masivo"
+                  onClick={() => handleScanAll(true)}
+                  disabled={!puedeEscanearTodo}
+                  className="whitespace-nowrap px-3 py-1.5 rounded-full text-xs text-humo hover:text-marfil hover:bg-grafito disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title="Vuelve a escanear todo, también lo ya escaneado"
                 >
-                  Detener
+                  Re-escanear todo
+                </button>
+                <button
+                  onClick={() => handleScanAll(false)}
+                  disabled={!puedeEscanearTodo}
+                  className="whitespace-nowrap inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed transition-colors"
+                  title={puedeEscanearTodo ? 'Escanear lo pendiente en todas las rutas conectadas' : 'Ahora mismo no hay ninguna ruta que se pueda escanear'}
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Escanear lo pendiente
                 </button>
               </div>
-            )}
-            {!batchScan?.running && batchSummary && (
-              <div className="flex items-center gap-2 ml-2 px-3 py-2 rounded-full bg-tinta border border-pizarra">
-                <CheckCircle className="w-4 h-4 text-salvia" />
-                <span className="text-sm text-lavanda-archivo">
-                  {batchSummary.aborted ? 'Escaneo masivo detenido' : 'Escaneo masivo completado'}
-                  {' · '}
-                  <span className="text-marfil font-medium">{batchSummary.processed}/{batchSummary.total} rutas</span>
-                  {batchSummary.elapsedMs > 0 && <> en <span className="text-marfil font-medium">{fmtDuration(batchSummary.elapsedMs)}</span></>}
-                </span>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                <Check className="w-4 h-4 text-salvia" />
+                <p className="text-[15px] text-marfil">Todo lo conectado está descrito</p>
               </div>
-            )}
+              <button
+                onClick={() => handleScanAll(false)}
+                disabled={!puedeEscanearTodo}
+                className="px-3 py-1.5 rounded-full text-xs text-humo hover:text-marfil hover:bg-grafito disabled:opacity-40 transition-colors"
+                title="Completa los trabajos encendidos que les falten a los archivos (caras, búsqueda visual...)"
+              >
+                Completar lo que falte
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-14">
+        {/* ── Bibliotecas ────────────────────────────────────────────────── */}
+        <section aria-label="Bibliotecas" className="min-w-0">
+          <div className="flex items-baseline justify-between gap-4 mb-3">
+            <h2 className="text-[15px] font-semibold text-marfil">Bibliotecas</h2>
+            <span className="text-[11px] text-humo">Se sincronizan solas al arrancar</span>
           </div>
-        ) : (
-          <div className="bg-tinta rounded-3xl border border-pizarra p-4">
-            <div className="flex items-center gap-3">
-              <FolderOpen className="w-5 h-5 text-lavanda-archivo" />
-              <input
-                type="text"
-                value={newPath}
-                onChange={(e) => setNewPath(e.target.value)}
-                placeholder="Ej: D:\Mis Documentos\Fotos"
-                className="flex-1 px-3 py-2 border border-pizarra rounded-full focus:outline-none focus:ring-2 focus:ring-lavanda"
-                autoFocus
-              />
-              <button
-                onClick={handleAddPath}
-                className="btn-primary"
-              >
-                Añadir
-              </button>
-              <button
-                onClick={() => {
-                  setShowAddPath(false);
-                  setNewPath('');
-                }}
-                className="btn-secondary"
-              >
-                Cancelar
-              </button>
+
+          {paths.length === 0 ? (
+            <div className="py-12 text-center border-y border-borde-sutil">
+              <FolderOpen className="w-10 h-10 text-lavanda-archivo mx-auto mb-3" />
+              <p className="text-niebla">Todavía no hay rutas</p>
+              <p className="text-sm text-humo mt-1">Añade la carpeta de un disco para empezar</p>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Lista de rutas */}
-      <div className="space-y-4">
-        {paths.length === 0 ? (
-          <div className="bg-tinta rounded-3xl border border-pizarra p-8 text-center">
-            <FolderOpen className="w-12 h-12 text-lavanda-archivo mx-auto mb-3" />
-            <p className="text-lavanda-archivo">No hay rutas configuradas</p>
-            <p className="text-sm text-lavanda-archivo mt-1">Añade una ruta para comenzar a escanear archivos</p>
-          </div>
-        ) : (
-          paths.map((path) => (
-            <div
-              key={path.id}
-              className={`bg-tinta rounded-3xl border ${
-                path.isActive ? 'border-pizarra' : 'border-pizarra opacity-75'
-              } p-6 transition-all`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-3">
-                    <button
-                      onClick={() => toggleSubfolders(path.id, path.path)}
-                      className="p-1 -ml-1 rounded-lg text-lavanda-archivo hover:text-marfil hover:bg-pizarra transition-colors"
-                      title={expandedPaths.has(path.id) ? 'Ocultar subcarpetas' : 'Ver y operar sobre las subcarpetas'}
-                      aria-expanded={expandedPaths.has(path.id)}
-                    >
-                      {expandedPaths.has(path.id)
-                        ? <ChevronDown className="w-4 h-4" />
-                        : <ChevronRight className="w-4 h-4" />}
-                    </button>
-                    {getStatusIcon(path.status)}
-                    <h3 className="font-semibold text-lg text-marfil">{path.path}</h3>
-                    <span className={`px-2 py-1 text-xs rounded-full ${
-                      path.isActive 
-                        ? 'bg-lavanda-claro text-marfil' 
-                        : 'bg-pizarra text-lavanda-archivo'
-                    }`}>
-                      {getStatusText(path.status)}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-6 text-sm text-lavanda-archivo">
-                    <div className="flex items-center gap-1">
-                      <span>Archivos:</span>
-                      <span className="font-medium">{path.fileCount}</span>
-                    </div>
-                    {typeof path.visualTotal === 'number' && path.visualTotal > 0 && (() => {
-                      const pct = Math.round(((path.visualScanned ?? 0) / path.visualTotal) * 100);
-                      const color = pct === 100 ? 'text-salvia' : pct > 0 ? 'text-lavanda' : 'text-humo';
-                      return (
-                        <div className="flex items-center gap-1" title={`${path.visualScanned ?? 0} de ${path.visualTotal} archivos con descripcion visual`}>
-                          <Sparkles className={`w-3.5 h-3.5 ${color}`} />
-                          <span className={`font-medium ${color}`}>{pct}% escaneado visualmente</span>
-                          <span className="text-humo">· {path.visualScanned ?? 0}/{path.visualTotal}</span>
-                        </div>
-                      );
-                    })()}
-                    {path.lastScan && (
-                      <div className="flex items-center gap-1">
-                        <span>Última sincronización:</span>
-                        <span className="font-medium">
-                          {path.lastScan.toLocaleDateString()} {path.lastScan.toLocaleTimeString()}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {path.errorMessage && (
-                    <div className="mt-2 text-sm text-marfil bg-lavanda-claro px-3 py-2 rounded-2xl">
-                      {path.errorMessage}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2 ml-4">
-                  <button
-                    onClick={() => handleSyncPath(path.id)}
-                    disabled={scanningPaths.has(path.id) || !path.isActive}
-                    className={`p-2 rounded-lg transition-colors ${
-                      scanningPaths.has(path.id) || !path.isActive
-                        ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
-                        : 'bg-grafito text-bruma hover:bg-lavanda-claro'
-                    }`}
-                    title="Sincronizar"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${scanningPaths.has(path.id) ? 'animate-spin' : ''}`} />
-                  </button>
-
-                  {/* Escanear con IA — abre el modal de contexto previo al scan */}
-                  <button
-                    onClick={() => { setContextModalForce(false); setContextModalPathId(path.id); }}
-                    disabled={
-                      !path.isActive ||
-                      aiScansByPath.get(path.id)?.status === 'running' ||
-                      !vlmHealth?.ollamaRunning ||
-                      !vlmHealth?.modelAvailable
-                    }
-                    className={`p-2 rounded-lg transition-colors ${
-                      aiScansByPath.get(path.id)?.status === 'running'
-                        ? 'bg-lavanda text-white cursor-wait'
-                        : !path.isActive || !vlmHealth?.ollamaRunning || !vlmHealth?.modelAvailable
-                          ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
-                          : 'bg-grafito text-lavanda hover:bg-lavanda hover:text-white'
-                    }`}
-                    title={
-                      !vlmHealth?.ollamaRunning ? 'Ollama no disponible' :
-                      !vlmHealth?.modelAvailable ? `Falta modelo: ollama pull ${vlmHealth.model}` :
-                      `Escanear con IA (describir cada imagen con ${selectedModel || vlmHealth?.model || 'VLM'})`
-                    }
-                  >
-                    <Sparkles className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />
-                  </button>
-
-                  {/* Re-escanear FORZADO — re-procesa todas las imágenes aunque
-                      ya estén catalogadas. Útil al cambiar el prompt del VLM. */}
-                  <button
-                    onClick={() => { setContextModalForce(true); setContextModalPathId(path.id); }}
-                    disabled={
-                      !path.isActive ||
-                      aiScansByPath.get(path.id)?.status === 'running' ||
-                      !vlmHealth?.ollamaRunning ||
-                      !vlmHealth?.modelAvailable
-                    }
-                    className={`p-2 rounded-lg transition-colors ${
-                      aiScansByPath.get(path.id)?.status === 'running'
-                        ? 'bg-lavanda text-white cursor-wait'
-                        : !path.isActive || !vlmHealth?.ollamaRunning || !vlmHealth?.modelAvailable
-                          ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
-                          : 'bg-grafito text-bruma hover:bg-bruma hover:text-noche'
-                    }`}
-                    title={
-                      !vlmHealth?.ollamaRunning ? 'Ollama no disponible' :
-                      !vlmHealth?.modelAvailable ? `Falta modelo: ollama pull ${vlmHealth.model}` :
-                      'Re-escanear FORZADO (incluye las ya catalogadas, fuerza re-procesado con el prompt actual)'
-                    }
-                  >
-                    <Zap className={`w-4 h-4 ${aiScansByPath.get(path.id)?.status === 'running' ? 'animate-pulse' : ''}`} />
-                  </button>
-
-                  {/* Renombrar carpetas — nombre de presentacion por carpeta
-                      (el archivo fisico no se toca). */}
-                  <button
-                    onClick={() => setRenameModalPathId(path.id)}
-                    disabled={!path.isActive}
-                    className={`p-2 rounded-lg transition-colors ${
-                      !path.isActive
-                        ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
-                        : 'bg-grafito text-bruma hover:bg-lavanda hover:text-white'
-                    }`}
-                    title="Renombrar carpetas (nombre de presentacion, no toca el archivo)"
-                  >
-                    <Tag className="w-4 h-4" />
-                  </button>
-
-                  <button
-                    onClick={() => handleTogglePath(path.id, path.isActive)}
-                    className={`p-2 rounded-lg transition-colors ${
-                      path.isActive
-                        ? 'bg-lavanda-claro text-marfil hover:bg-opacity-90'
-                        : 'bg-grafito text-bruma hover:bg-lavanda-claro'
-                    }`}
-                    title={path.isActive ? 'Desvincular' : 'Vincular'}
-                  >
-                    {path.isActive ? <Unlink className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
-                  </button>
-
-                  {path.id !== 'default' && (
-                    <button
-                      onClick={() => handleRemovePath(path.id)}
-                      className="p-2 rounded-lg bg-pizarra text-marfil hover:bg-lavanda-claro transition-colors"
-                      title="Eliminar"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Barra de progreso de escaneo IA */}
-              {(() => {
+          ) : (
+            <ul className="border-y border-borde-sutil divide-y divide-borde-sutil">
+              {paths.map((path) => {
                 const scan = aiScansByPath.get(path.id);
-                if (!scan || scan.status === 'idle') return null;
-                const pct = scan.total > 0 ? Math.round((scan.done / scan.total) * 100) : 0;
+                const abierta = expandedPaths.has(path.id);
+                const conectada = path.isActive && path.status !== 'disconnected';
+                const total = path.visualTotal ?? 0;
+                const descritos = path.visualScanned ?? 0;
+                const pct = total > 0 ? Math.round((descritos / total) * 100) : 0;
+                const motivo = motivoSinEscaneo(path);
+                const ef = efectivasDe(path);
+                const propias = IDS.filter(id => path.escaneo && typeof path.escaneo[id] === 'boolean');
+                const nombre = path.displayName && path.displayName !== path.path ? path.displayName : path.path;
+                const punto = !path.isActive ? 'bg-humo/50'
+                  : path.status === 'error' ? 'bg-estado-error'
+                  : path.status === 'disconnected' ? 'bg-melocoton'
+                  : 'bg-salvia';
+
                 return (
-                  <div className="mt-4 p-3 bg-pizarra rounded-2xl">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className={`w-4 h-4 text-lavanda ${scan.status === 'running' ? 'animate-pulse' : ''}`} />
-                        <span className="text-sm font-medium text-marfil">
-                          {scan.status === 'running' && 'Escaneando con IA...'}
-                          {scan.status === 'done' && (scan.totalMs ? `✓ Escaneo completado en ${fmtDuration(scan.totalMs)}` : '✓ Escaneo completado')}
-                          {scan.status === 'error' && '✗ Error al iniciar escaneo'}
-                          {scan.status === 'cancelled' && 'Escaneo cancelado'}
-                        </span>
+                  <li key={path.id} className={`py-5 ${path.isActive ? '' : 'opacity-60 hover:opacity-100 transition-opacity'}`}>
+                    <div className="flex items-start gap-3">
+                      <button
+                        onClick={() => toggleSubfolders(path.id, path.path, conectada)}
+                        className="mt-0.5 p-1 rounded-md text-humo hover:text-marfil hover:bg-grafito transition-colors"
+                        title={abierta ? 'Plegar' : 'Qué se escanea aquí y subcarpetas'}
+                        aria-expanded={abierta}
+                      >
+                        <ChevronRight className={`w-4 h-4 transition-transform duration-200 ${abierta ? 'rotate-90' : ''}`} />
+                      </button>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${punto} ${path.status === 'scanning' ? 'animate-pulse' : ''}`} aria-hidden="true" />
+                          <h3 className="text-[15px] font-semibold text-marfil truncate" title={path.path}>{nombre}</h3>
+                          {!path.isActive && <span className="px-2 py-0.5 rounded-full text-[10px] bg-grafito text-humo">desvinculada</span>}
+                          {path.isActive && path.status === 'disconnected' && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] bg-melocoton/15 text-melocoton">disco no conectado</span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-humo truncate">
+                          <span className="font-mono">{path.path}</span>
+                          {' · '}{path.status === 'scanning' ? 'sincronizando…' : `sincronizada ${haceCuanto(path.lastScan)}`}
+                        </p>
+
+                        {conectada && total > 0 ? (
+                          <div className="mt-3 flex items-center gap-3 flex-wrap">
+                            <div className="h-1 w-40 max-w-full rounded-full bg-pizarra overflow-hidden">
+                              <div className={`h-full rounded-full ${pct === 100 ? 'bg-salvia' : 'bg-lavanda'}`} style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="text-[12px] text-niebla tabular-nums">
+                              {pct} % descrito
+                              {pct < 100 && <span className="text-humo"> · faltan {miles(total - descritos)}</span>}
+                            </span>
+                          </div>
+                        ) : path.isActive && path.status === 'disconnected' ? (
+                          <p className="mt-2 text-[12px] text-humo">Conecta el disco y sincroniza: lo ya descrito vuelve solo, sin re-escanear.</p>
+                        ) : null}
+
+                        {propias.length > 0 && (
+                          <div className="mt-2.5 flex flex-wrap gap-1.5">
+                            {propias.map(id => (
+                              <span key={id} className={`px-2 py-0.5 rounded-full text-[11px] ${ef[id] ? 'bg-lavanda/10 text-lavanda' : 'bg-grafito text-niebla'}`}>
+                                {ef[id] ? 'con' : 'sin'} {(catalogoPorId.get(id)?.nombre || id).toLowerCase()}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {path.errorMessage && (
+                          <p className="mt-2 text-[12px] text-estado-error">{path.errorMessage}</p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-lavanda-archivo">
-                          {scan.total > 0 ? `${scan.done}/${scan.total}` : 'preparando...'}
-                          {scan.errors > 0 && ` · ${scan.errors} errores`}
-                        </span>
-                        {scan.status === 'running' && scan.jobId && (
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <div className="hidden sm:block text-right mr-3">
+                          <div className="text-[15px] font-semibold text-marfil tabular-nums leading-tight">{miles(path.fileCount || 0)}</div>
+                          <div className="text-[11px] text-humo">archivos</div>
+                        </div>
+                        {scan?.status === 'running' ? (
                           <button
                             onClick={() => handleCancelScan(path.id)}
-                            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-melocoton/20 text-melocoton hover:bg-melocoton hover:text-noche transition-colors"
-                            title="Detener este escaneo (guarda lo procesado hasta ahora en disco)"
+                            disabled={!scan.jobId}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-grafito text-niebla hover:text-marfil hover:bg-pizarra transition-colors"
                           >
                             <Square className="w-3 h-3" fill="currentColor" />
                             Detener
                           </button>
+                        ) : (
+                          <button
+                            onClick={() => { setContextModalForce(false); setContextModalPathId(path.id); }}
+                            disabled={!!motivo}
+                            title={motivo || 'Escanear lo pendiente de esta ruta con los trabajos encendidos'}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda/15 text-lavanda hover:bg-lavanda hover:text-noche disabled:bg-transparent disabled:text-humo disabled:cursor-not-allowed transition-colors"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            Escanear
+                          </button>
                         )}
-                      </div>
-                    </div>
-                    {scan.total > 0 && (
-                      <div className="w-full bg-grafito rounded-full h-2 overflow-hidden">
-                        <div
-                          className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
-                          style={{ width: `${pct}%` }}
+                        <button
+                          onClick={() => handleSyncPath(path.id)}
+                          disabled={scanningPaths.has(path.id) || !path.isActive}
+                          className="p-2 rounded-full text-humo hover:text-marfil hover:bg-grafito disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          title="Sincronizar: buscar archivos nuevos, movidos o borrados"
+                          aria-label="Sincronizar"
+                        >
+                          <RefreshCw className={`w-4 h-4 ${scanningPaths.has(path.id) ? 'animate-spin' : ''}`} />
+                        </button>
+                        <MenuRuta
+                          path={path}
+                          puedeReescanear={!motivo}
+                          onReescanear={() => { setContextModalForce(true); setContextModalPathId(path.id); }}
+                          onRenombrar={() => setRenameModalPathId(path.id)}
+                          onVincular={() => handleTogglePath(path.id, path.isActive)}
+                          onQuitar={() => handleRemovePath(path.id)}
                         />
                       </div>
+                    </div>
+
+                    {/* Escaneo en curso o recien terminado de esta ruta */}
+                    {scan && scan.status !== 'idle' && (
+                      <ProgresoRuta scan={scan} onCerrar={() => setAiScansByPath(prev => { const n = new Map(prev); n.delete(path.id); return n; })} />
                     )}
-                    {/* Escaneo degradado: corre igual, pero el catalogo saldra
-                        incompleto. Decirlo mientras pasa, no meses despues. */}
-                    {scan.degraded && scan.degraded.length > 0 && (
-                      <div className="mt-2 flex items-start gap-2 p-2 rounded-xl bg-melocoton/15 border border-melocoton/40">
-                        <AlertTriangle className="w-3.5 h-3.5 text-melocoton shrink-0 mt-0.5" />
-                        <p className="text-xs text-melocoton">
-                          Escaneo degradado: sin {scan.degraded.map(d => CAPACIDAD_LABEL[d] || d).join(', ')}.
-                          {' '}Estos archivos quedaran incompletos en esos campos aunque el escaneo termine bien.
-                        </p>
+
+                    {/* Desplegado: que se escanea aqui y subcarpetas */}
+                    {abierta && (
+                      <div className="mt-5 ml-9 flex flex-col gap-7">
+                        <div>
+                          <h4 className="font-mono text-[10px] tracking-wider uppercase text-humo mb-3">Qué se escanea aquí</h4>
+                          <ul className="grid gap-x-8 gap-y-2.5 sm:grid-cols-2">
+                            {catalogo.map(c => {
+                              const propia = !!path.escaneo && typeof path.escaneo[c.id] === 'boolean';
+                              return (
+                                <li key={c.id} className="flex items-center gap-3">
+                                  <Interruptor
+                                    pequeno
+                                    encendido={ef[c.id]}
+                                    onCambiar={(v) => cambiarEnRuta(path, c.id, v)}
+                                    etiqueta={`${c.nombre} en ${nombre}`}
+                                  />
+                                  <span className={`text-[13px] ${ef[c.id] ? 'text-marfil' : 'text-humo'}`}>{c.nombre}</span>
+                                  {propia ? (
+                                    <button
+                                      onClick={() => cambiarEnRuta(path, c.id, null)}
+                                      className="ml-auto inline-flex items-center gap-1 text-[11px] text-lavanda hover:text-lavanda-claro"
+                                      title="Volver a lo que diga el ajuste general"
+                                    >
+                                      <RotateCcw className="w-3 h-3" />
+                                      solo aquí
+                                    </button>
+                                  ) : (
+                                    <span className="ml-auto text-[11px] text-humo">como todas</span>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+
+                        <div className="min-w-0">
+                          <h4 className="font-mono text-[10px] tracking-wider uppercase text-humo mb-3">Subcarpetas</h4>
+                          {!conectada ? (
+                            <p className="text-[12px] text-humo">No se pueden leer con el disco desconectado.</p>
+                          ) : loadingSubfolders.has(path.id) ? (
+                            <p className="flex items-center gap-2 text-[12px] text-humo">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              Leyendo…
+                            </p>
+                          ) : (subfolders.get(path.id) || []).length === 0 ? (
+                            <p className="text-[12px] text-humo">Sin subcarpetas con archivos propios.</p>
+                          ) : (
+                            <ul className="max-h-96 overflow-y-auto -mx-2 pr-1">
+                              {(subfolders.get(path.id) || []).map((sf) => {
+                                const pendientes = Math.max(0, sf.visualTotal - sf.visualScanned);
+                                const pctSf = sf.visualTotal > 0 ? Math.round((sf.visualScanned / sf.visualTotal) * 100) : 0;
+                                return (
+                                  <li key={sf.dir} className="group flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-grafito/60 transition-colors">
+                                    <Folder className="w-3.5 h-3.5 text-lavanda-archivo shrink-0" />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-[13px] text-niebla truncate" title={sf.dir}>{sf.folderName || sf.relPath}</p>
+                                      <p className="text-[11px] text-humo">
+                                        {sf.videoCount > 0 && `${sf.videoCount} vídeo${sf.videoCount === 1 ? '' : 's'}`}
+                                        {sf.videoCount > 0 && sf.imageCount > 0 && ' · '}
+                                        {sf.imageCount > 0 && `${sf.imageCount} foto${sf.imageCount === 1 ? '' : 's'}`}
+                                        {sf.hasContext && ' · con contexto'}
+                                      </p>
+                                    </div>
+                                    <span className={`text-[11px] tabular-nums ${pctSf === 100 ? 'text-salvia' : 'text-humo'}`}>{pctSf} %</span>
+                                    <button
+                                      onClick={() => handleScanSubfolder(sf.dir, false)}
+                                      disabled={!!motivo || pendientes === 0}
+                                      className="px-2 py-0.5 rounded-full text-[11px] text-lavanda hover:bg-lavanda hover:text-noche disabled:text-humo disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
+                                      title={motivo || (pendientes > 1 ? `Escanear los ${pendientes} pendientes` : pendientes === 1 ? 'Escanear el que falta' : 'No queda nada pendiente aquí')}
+                                    >
+                                      Escanear
+                                    </button>
+                                    <button
+                                      onClick={() => handleScanSubfolder(sf.dir, true)}
+                                      disabled={!!motivo}
+                                      className="p-1 rounded-full text-humo hover:text-melocoton opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:hidden transition-all"
+                                      title="Re-escanear toda la subcarpeta"
+                                      aria-label="Re-escanear toda la subcarpeta"
+                                    >
+                                      <Zap className="w-3.5 h-3.5" />
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
                       </div>
                     )}
-                    {scan.status === 'running' && scan.total > 0 && (scan.avgMsPerFile || scan.etaMs) && (
-                      <p className="text-xs text-lavanda-archivo mt-2">
-                        {scan.avgMsPerFile ? <>~{fmtDuration(scan.avgMsPerFile, true)}/archivo</> : null}
-                        {scan.avgMsPerFile && scan.etaMs ? ' · ' : null}
-                        {scan.etaMs ? <>quedan ~{fmtDuration(scan.etaMs)}</> : null}
-                      </p>
-                    )}
-                    {scan.status === 'done' && scan.done > 0 && scan.avgMsPerFile ? (
-                      <p className="text-xs text-lavanda-archivo mt-2">
-                        {scan.done} archivos · ~{fmtDuration(scan.avgMsPerFile, true)}/archivo de media
-                      </p>
-                    ) : null}
-                    {scan.currentFile && scan.status === 'running' && (
-                      <p className="text-xs text-lavanda-archivo mt-2 truncate">
-                        Procesando: {scan.currentFile}
-                      </p>
-                    )}
-                    {scan.errorMessage && (
-                      <p className="text-xs text-red-400 mt-2">{scan.errorMessage}</p>
-                    )}
-                  </div>
+                  </li>
                 );
-              })()}
+              })}
+            </ul>
+          )}
+        </section>
 
-              {/* Subcarpetas: cada una es una sesion y se puede escanear por
-                  separado, sin arrastrar el resto de la biblioteca. */}
-              {expandedPaths.has(path.id) && (
-                <div className="mt-4 border-t border-pizarra pt-3">
-                  {loadingSubfolders.has(path.id) ? (
-                    <div className="flex items-center gap-2 text-sm text-lavanda-archivo py-2">
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      Leyendo el contenido de la ruta...
+        {/* ── Que hace el escaneo ──────────────────────────────────────── */}
+        <aside aria-label="Qué hace el escaneo" className="mt-12 lg:mt-0 lg:sticky lg:top-2 lg:self-start">
+          <div className="flex items-baseline justify-between gap-4 mb-1">
+            <h2 className="text-[15px] font-semibold text-marfil">Qué hace el escaneo</h2>
+            <Cpu className="w-4 h-4 text-humo" aria-hidden="true" />
+          </div>
+          <p className="text-[12px] text-humo mb-5">
+            Para todas las rutas. Cada una puede cambiarlo al desplegarla. Lo que apagues se puede completar otro día: no se repite lo ya hecho.
+          </p>
+
+          <div className="flex flex-wrap gap-1.5 mb-6" role="group" aria-label="Ajustes rápidos">
+            {PRESETS.map(pr => (
+              <button
+                key={pr.id}
+                onClick={() => cambiarGlobal(pr.valores)}
+                disabled={!capsGlobal}
+                aria-pressed={presetActivo === pr.id}
+                title={pr.detalle}
+                className={`px-3 py-1 rounded-full text-[12px] transition-colors ${
+                  presetActivo === pr.id ? 'bg-lavanda text-noche font-medium' : 'bg-grafito text-niebla hover:text-marfil hover:bg-pizarra'
+                }`}
+              >
+                {pr.nombre}
+              </button>
+            ))}
+            {capsGlobal && !presetActivo && (
+              <span className="px-3 py-1 rounded-full text-[12px] text-lavanda border border-lavanda/30">A medida</span>
+            )}
+          </div>
+
+          <ul className="flex flex-col divide-y divide-borde-sutil border-y border-borde-sutil">
+            {catalogo.map(c => {
+              const on = capsGlobal ? capsGlobal[c.id] : true;
+              return (
+                <li key={c.id} className="py-4">
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-[14px] font-medium ${on ? 'text-marfil' : 'text-niebla'}`}>{c.nombre}</p>
+                      <p className="mt-0.5 text-[12px] leading-snug text-humo">{c.detalle}</p>
+                      <div className="mt-1.5"><Coste recurso={c.recurso} coste={c.coste} /></div>
                     </div>
-                  ) : (subfolders.get(path.id) || []).length === 0 ? (
-                    <p className="text-sm text-lavanda-archivo py-2">
-                      Esta ruta no tiene subcarpetas con archivos propios.
-                    </p>
-                  ) : (
-                    <div className="space-y-1">
-                      {(subfolders.get(path.id) || []).map((sf) => {
-                        const pendientes = Math.max(0, sf.visualTotal - sf.visualScanned);
-                        const pct = sf.visualTotal > 0
-                          ? Math.round((sf.visualScanned / sf.visualTotal) * 100)
-                          : 0;
-                        const color = pct === 100 ? 'text-salvia' : pct > 0 ? 'text-lavanda' : 'text-humo';
-                        return (
-                          <div
-                            key={sf.dir}
-                            className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl hover:bg-pizarra/60 transition-colors group"
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <Folder className="w-4 h-4 text-lavanda-archivo shrink-0" />
-                              <div className="min-w-0">
-                                <p className="text-sm text-marfil truncate" title={sf.dir}>
-                                  {sf.folderName || sf.relPath}
-                                </p>
-                                <p className="text-xs text-humo">
-                                  {sf.videoCount > 0 && `${sf.videoCount} video${sf.videoCount === 1 ? '' : 's'}`}
-                                  {sf.videoCount > 0 && sf.imageCount > 0 && ' · '}
-                                  {sf.imageCount > 0 && `${sf.imageCount} foto${sf.imageCount === 1 ? '' : 's'}`}
-                                  {sf.hasContext && ' · con contexto'}
-                                </p>
-                              </div>
-                            </div>
+                    <Interruptor
+                      encendido={on}
+                      onCambiar={(v) => cambiarGlobal({ [c.id]: v } as Partial<Capacidades>)}
+                      etiqueta={c.nombre}
+                      deshabilitado={!capsGlobal}
+                    />
+                  </div>
 
-                            <div className="flex items-center gap-3 shrink-0">
-                              <span className={`text-xs font-medium ${color}`} title={`${sf.visualScanned} de ${sf.visualTotal} descritos`}>
-                                {pct}%
-                              </span>
-                              <button
-                                onClick={() => handleScanSubfolder(sf.dir, false)}
-                                disabled={!vlmHealth?.ollamaRunning || pendientes === 0}
-                                className="px-2 py-1 rounded-lg text-xs font-medium bg-lavanda/20 text-lavanda hover:bg-lavanda hover:text-noche transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-lavanda/20 disabled:hover:text-lavanda"
-                                title={pendientes > 0 ? `Describir los ${pendientes} pendientes` : 'No queda nada pendiente aqui'}
+                  {/* El modelo solo importa si se describe. */}
+                  {c.id === 'descripcion' && on && (
+                    <div className="mt-3">
+                      {vlmCaido && (
+                        <p className="mb-2 flex items-start gap-1.5 text-[11px] text-melocoton leading-snug">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                          {!vlmHealth?.ollamaRunning
+                            ? 'Ollama no responde: sin él no se puede describir.'
+                            : <>Falta el modelo. En una terminal: <span className="font-mono">ollama pull {vlmHealth?.model}</span></>}
+                        </p>
+                      )}
+                      {availableModels.length > 0 && (() => {
+                        const TIER_LABEL: Record<VlmModel['tier'], string> = {
+                          produccion: 'Producción',
+                          experimento: 'Experimento',
+                          legacy: 'Legacy / fallback',
+                          otro: 'Otros instalados',
+                          no_cabe: 'No caben en esta GPU (16 GB)',
+                        };
+                        const TIER_ORDER: VlmModel['tier'][] = ['produccion', 'experimento', 'legacy', 'otro', 'no_cabe'];
+                        const elegido = availableModels.find(m => m.name === selectedModel);
+                        return (
+                          <>
+                            <label className="flex items-center gap-2 text-[11px] text-humo">
+                              Modelo
+                              <select
+                                value={selectedModel}
+                                onChange={async (e) => {
+                                  const model = e.target.value;
+                                  setSelectedModel(model);
+                                  await api.setScanModel(model).catch(() => toast.error('No se pudo cambiar el modelo'));
+                                }}
+                                className="flex-1 min-w-0 bg-tinta border border-pizarra rounded-lg px-2 py-1 text-[12px] text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
                               >
-                                Escanear
-                              </button>
-                              <button
-                                onClick={() => handleScanSubfolder(sf.dir, true)}
-                                disabled={!vlmHealth?.ollamaRunning}
-                                className="px-2 py-1 rounded-lg text-xs font-medium bg-pizarra text-lavanda-archivo hover:bg-melocoton hover:text-noche transition-colors disabled:opacity-40 disabled:cursor-not-allowed opacity-0 group-hover:opacity-100"
-                                title="Volver a describir TODOS los archivos de esta subcarpeta"
-                              >
-                                Re-escanear
-                              </button>
-                            </div>
-                          </div>
+                                {TIER_ORDER.filter(t => availableModels.some(m => m.tier === t)).map(tier => (
+                                  <optgroup key={tier} label={TIER_LABEL[tier]}>
+                                    {availableModels.filter(m => m.tier === tier).map(m => (
+                                      <option key={m.name} value={m.name} disabled={!m.installed}>
+                                        {m.label}{m.installed ? '' : ' (sin descargar)'}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                ))}
+                              </select>
+                            </label>
+                            {elegido?.notes && <p className="mt-1.5 text-[11px] text-humo leading-snug">{elegido.notes}</p>}
+                          </>
                         );
-                      })}
+                      })()}
                     </div>
                   )}
-                </div>
-              )}
-            </div>
-          ))
-        )}
+                </li>
+              );
+            })}
+          </ul>
+        </aside>
       </div>
 
-      {/* Información adicional */}
-      <div className="mt-8 card-primary">
-        <h4 className="font-semibold text-marfil mb-2">Información</h4>
-        <ul className="text-sm text-lavanda-archivo space-y-1">
-          <li>• Las rutas activas se escanean automáticamente al iniciar la aplicación</li>
-          <li>• Puedes desvincular temporalmente una ruta sin eliminarla</li>
-          <li>• La sincronización manual actualiza los archivos de la ruta seleccionada</li>
-          <li>• Solo se escanean archivos de imagen y video soportados</li>
-        </ul>
-      </div>
-
-      {/* Modal de contexto — escaneo individual (✨ o ⚡ por ruta) */}
+      {/* Modal de contexto — escaneo de una ruta */}
       {contextModalPathId && (() => {
         const target = paths.find(p => p.id === contextModalPathId);
         if (!target) return null;
@@ -1235,6 +1303,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             isOpen={true}
             rootPath={target.path}
             onClose={() => setContextModalPathId(null)}
+            confirmLabel={contextModalForce ? 'Re-escanear todo' : 'Lanzar escaneo'}
             onConfirm={() => {
               handleAiScan(contextModalPathId, contextModalForce);
               setContextModalPathId(null);
@@ -1257,7 +1326,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         );
       })()}
 
-      {/* Modal de contexto — flujo scan-all (una ruta por vez) */}
+      {/* Modal de contexto — flujo de todas las rutas (una por vez) */}
       {scanAllQueue && scanAllQueueIdx < scanAllQueue.length && (
         <ScanContextModal
           isOpen={true}
@@ -1274,6 +1343,66 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           stepInfo={{ current: scanAllQueueIdx + 1, total: scanAllQueue.length }}
         />
       )}
+    </div>
+  );
+}
+
+/** Progreso de un escaneo dentro de la fila de su ruta. */
+function ProgresoRuta({ scan, onCerrar }: { scan: AiScanState; onCerrar: () => void }) {
+  const pct = scan.total > 0 ? Math.round((scan.done / scan.total) * 100) : 0;
+  const titulo = scan.status === 'running'
+    ? (scan.total > 0 ? `Escaneando · ${miles(scan.done)} de ${miles(scan.total)}` : 'Preparando el escaneo…')
+    : scan.status === 'done' ? `Escaneo terminado${scan.totalMs ? ` en ${fmtDuration(scan.totalMs)}` : ''}`
+    : scan.status === 'cancelled' ? 'Escaneo detenido'
+    : 'No se pudo empezar';
+
+  return (
+    <div className="mt-4 ml-9">
+      <div className="flex items-center gap-3 flex-wrap">
+        {scan.status === 'running'
+          ? <Sparkles className="w-3.5 h-3.5 text-lavanda animate-pulse" />
+          : scan.status === 'done' ? <Check className="w-3.5 h-3.5 text-salvia" />
+          : <AlertTriangle className="w-3.5 h-3.5 text-melocoton" />}
+        <span className="text-[13px] text-marfil">{titulo}</span>
+        {scan.status === 'running' && scan.etaMs ? <span className="text-[12px] text-humo">quedan ~{fmtDuration(scan.etaMs)}</span> : null}
+        {scan.status === 'running' && scan.avgMsPerFile ? <span className="text-[12px] text-humo">· {fmtDuration(scan.avgMsPerFile, true)} por archivo</span> : null}
+        {scan.status === 'done' && scan.done > 0 && <span className="text-[12px] text-humo">{miles(scan.done)} archivos</span>}
+        {scan.errors > 0 && <span className="text-[12px] text-estado-error">{scan.errors} con error</span>}
+        {scan.status !== 'running' && (
+          <button onClick={onCerrar} className="ml-auto p-1 rounded-full text-humo hover:text-marfil" aria-label="Cerrar aviso">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      {scan.status === 'running' && scan.total > 0 && (
+        <div className="mt-2 h-1 rounded-full bg-pizarra overflow-hidden max-w-md">
+          <div className="h-full rounded-full bg-lavanda transition-all duration-300" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      {scan.currentFile && scan.status === 'running' && (
+        <p className="mt-1.5 font-mono text-[11px] text-humo truncate">{scan.currentFile}</p>
+      )}
+      {/* Degradado: corre igual, pero esos campos saldran vacios. Decirlo
+          mientras pasa, no meses despues. */}
+      {scan.degraded && scan.degraded.length > 0 && (
+        <p className="mt-2 flex items-start gap-1.5 text-[12px] text-melocoton">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          Va sin {scan.degraded.map(d => CAPACIDAD_LABEL[d] || d).join(', ')}: se pidió pero no ha arrancado. Se completará en otro escaneo cuando funcione.
+        </p>
+      )}
+      {/* No se ha podido GUARDAR: peor que degradado, el trabajo se tira. */}
+      {!!scan.escriturasFallidas && scan.escriturasFallidas > 0 && (
+        <div className="mt-2 flex items-start gap-1.5 text-[12px] text-estado-error">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium">No se ha podido guardar: {scan.escriturasFallidas} volcado(s) fallaron. Ese trabajo se pierde.</p>
+            {scan.causaPrincipal && (
+              <p className="mt-0.5 opacity-90">{scan.causaPrincipal.reason}{scan.causaPrincipal.hint ? ` ${scan.causaPrincipal.hint}` : ''}</p>
+            )}
+          </div>
+        </div>
+      )}
+      {scan.errorMessage && <p className="mt-1.5 text-[12px] text-estado-error">{scan.errorMessage}</p>}
     </div>
   );
 }

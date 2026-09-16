@@ -23,6 +23,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
+const fallos = require('./utils/failureReason');
 
 class NotesManager {
   constructor() {
@@ -81,7 +82,12 @@ class NotesManager {
       files: Object.fromEntries(this.files),
       sessions: Object.fromEntries(this.sessions),
     };
-    await atomicWriteFile(this.notesFile, JSON.stringify(out, null, 2));
+    try {
+      await atomicWriteFile(this.notesFile, JSON.stringify(out, null, 2));
+    } catch (err) {
+      fallos.record('guardar las notas', err, { path: this.notesFile });
+      throw err;   // la ruta lo convierte en 500: las notas no son regenerables
+    }
   }
 
   _mapFor(scope) {
@@ -94,22 +100,30 @@ class NotesManager {
    * Establece (o borra, si `note` viene vacio) la nota de un ambito.
    * Devuelve { deleted } / { note }.
    */
-  async setNote(scope, key, note) {
+  async setNote(scope, key, note, legacyKey = null) {
     await this.ensureLoaded();
     const map = this._mapFor(scope);
     if (!map) throw new Error(`scope invalido: ${scope}`);
     const k = String(key || '').trim();
     if (!k) throw new Error('key requerida');
 
+    // Clave anterior del MISMO archivo (el id md5, antes de la identidad
+    // portable). Se retira al escribir para que no queden dos notas del mismo
+    // archivo: si no, borrar la nota nueva haria reaparecer la vieja.
+    const legacy = String(legacyKey || '').trim();
+    const retiraLegacy = legacy && legacy !== k && map.has(legacy);
+
     const text = typeof note === 'string' ? note.trim() : '';
     if (!text) {
       const existed = map.delete(k);
+      if (retiraLegacy) map.delete(legacy);
       await this._save();
-      return { deleted: existed };
+      return { deleted: existed || retiraLegacy };
     }
     map.set(k, { note: text, updatedAt: new Date().toISOString() });
+    if (retiraLegacy) map.delete(legacy);
     await this._save();
-    return { note: text };
+    return { note: text, legacyRetirada: retiraLegacy || undefined };
   }
 
   /** Devuelve { files: { id: note }, sessions: { key: note } } como strings planos. */

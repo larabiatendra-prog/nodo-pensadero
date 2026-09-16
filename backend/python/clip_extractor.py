@@ -134,9 +134,28 @@ def _load_model():
     _device = _resolve_device()
     sys.stderr.write(f"[clip] device={_device.type}\n")
     sys.stderr.write(f"[clip] cargando {MODEL_NAME}...\n")
+
+    # Primero SIEMPRE desde la cache local. Sin local_files_only, transformers
+    # consulta HuggingFace en cada arranque aunque tenga el modelo entero en
+    # disco: el 07/09/2026 un corte de DNS de unos segundos tumbo CLIP y un
+    # lote de 4717 archivos se escaneo sin embeddings, sin forma barata de
+    # rellenarlos despues. Pensadero es una aplicacion local: no debe depender
+    # de la red para usar un modelo que ya tiene.
+    try:
+        _processor = AutoProcessor.from_pretrained(MODEL_NAME, local_files_only=True)
+        _model = AutoModel.from_pretrained(
+            MODEL_NAME, use_safetensors=True, local_files_only=True
+        ).to(_device).eval()
+        sys.stderr.write("[clip] modelo listo (cache local)\n")
+        return
+    except OSError as e:
+        # Solo llega aqui si el modelo NO esta cacheado todavia (primera
+        # instalacion). Entonces si hace falta red, y se dice por que.
+        sys.stderr.write(f"[clip] no esta en cache local ({e.__class__.__name__}); descargando...\n")
+
     _processor = AutoProcessor.from_pretrained(MODEL_NAME)
     _model = AutoModel.from_pretrained(MODEL_NAME, use_safetensors=True).to(_device).eval()
-    sys.stderr.write(f"[clip] modelo listo\n")
+    sys.stderr.write("[clip] modelo listo (descargado)\n")
 
 
 def _encode_to_b64(emb_tensor):

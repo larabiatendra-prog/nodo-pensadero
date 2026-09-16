@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const { EMBEDDING_DIM } = require('./services/clipService');
 const { atomicWriteFileSync } = require('./utils/jsonStore');
+const fallos = require('./utils/failureReason');
 
 // Threshold por defecto. 0.70 es conservador para CLIP base: la experiencia
 // real con corpus de eventos corporativos (auditorios, salas, networking)
@@ -270,7 +271,7 @@ function saveToDisk() {
     atomicWriteFileSync(registryPath, JSON.stringify(data, null, 2));
     return true;
   } catch (err) {
-    console.error('❌ Error escribiendo spaces registry:', err.message);
+    fallos.record('guardar el registro de espacios', err, { path: registryPath });
     return false;
   }
 }

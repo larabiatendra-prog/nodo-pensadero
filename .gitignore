@@ -43,11 +43,17 @@ backend/media_cache_backup_*.json
 backend/favorites_persistent.json
 backend/collections_persistent.json
 backend/notes_persistent.json
+backend/descartes_persistent.json
+backend/cartas_persistent.json
+# Material bajo candado: lleva los nombres de lo que el usuario oculta.
+backend/ocultos_persistent.json
 backend/scan_paths.json
 backend/embeddings_index.json
 backend/visual_search_data/
 backend/clip_index.json
 backend/video_proxies.json
+# Escaneo en curso, para poder retomarlo si el proceso muere a mitad.
+backend/scan_state.json
 # Preferencias que el usuario cambia desde la UI (modelo VLM activo, etc.).
 # Son estado de esta maquina, no configuracion del proyecto.
 backend/config/runtime.json

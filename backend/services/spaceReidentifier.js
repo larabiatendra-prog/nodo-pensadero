@@ -22,6 +22,7 @@ const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const { EMBEDDING_DIM } = require('./clipService');
 const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
+const fallos = require('../utils/failureReason');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 
@@ -117,6 +118,8 @@ async function reidentifyAll(opts = {}) {
     changed: 0,
     skippedNoEmbedding: 0,
     catalogsWritten: 0,
+    escriturasFallidas: 0,
+    marcaFallos: fallos.mark(),
     cancelRequested: false,
     startedAt: Date.now(),
   };
@@ -229,14 +232,24 @@ async function reidentifyAll(opts = {}) {
           catalogReader.invalidateCatalog(path.dirname(catalogPath));
           job.catalogsWritten++;
         } catch (err) {
-          console.warn(`[reidentify-space] error escribiendo ${catalogPath}: ${err.message}`);
+          fallos.record('guardar la re-identificacion de espacios', err, { path: catalogPath });
+          job.escriturasFallidas++;
         }
       }
     });
   }
 
-  job.status = job.cancelRequested ? 'cancelled' : 'done';
+  const incidencias = fallos.summary({ since: job.marcaFallos });
+  const noGuardado = job.escriturasFallidas > 0;
+  job.status = job.cancelRequested ? 'cancelled' : (noGuardado ? 'done_con_fallos' : 'done');
   job.finishedAt = Date.now();
+  let estadoTexto;
+  if (job.status === 'cancelled') estadoTexto = 'Re-identificacion cancelada';
+  else if (noGuardado) {
+    const c = incidencias.principal;
+    estadoTexto = `Re-identificacion de espacios SIN GUARDAR ${job.escriturasFallidas} carpeta(s)` + (c ? `: ${c.reason}` : '');
+    console.error(`[reidentify-space] ${estadoTexto}`);
+  } else estadoTexto = 'Re-identificacion completada';
   broadcastProgress({
     type: 'reidentify_space_done',
     jobId,
@@ -245,7 +258,12 @@ async function reidentifyAll(opts = {}) {
     changed: job.changed,
     skippedNoEmbedding: job.skippedNoEmbedding,
     catalogsWritten: job.catalogsWritten,
-    status: job.status === 'cancelled' ? 'Re-identificacion cancelada' : 'Re-identificacion completada',
+    escriturasFallidas: job.escriturasFallidas,
+    incidencias: incidencias.items,
+    causaPrincipal: incidencias.principal
+      ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
+      : null,
+    status: estadoTexto,
     percentage: 100,
   });
 

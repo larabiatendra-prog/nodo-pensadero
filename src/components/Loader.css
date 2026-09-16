@@ -17,9 +17,6 @@
 @keyframes pl-dotsBlink     { 0%,80%,100%{opacity:.25}40%{opacity:1} }
 @keyframes pl-facePop       { 0%,100%{opacity:0;transform:scale(.55)}16%,68%{opacity:1;transform:scale(1)} }
 @keyframes pl-reticleScan   { 0%{transform:translateY(-84px)}50%{transform:translateY(84px)}100%{transform:translateY(-84px)} }
-@keyframes pl-dashDraw      { 0%{stroke-dashoffset:260}45%,100%{stroke-dashoffset:0} }
-@keyframes pl-nodePulse     { 0%,100%{transform:scale(1);opacity:.78}50%{transform:scale(1.28);opacity:1} }
-@keyframes pl-atlasOrbit    { 0%{transform:rotateX(16deg) rotateY(-30deg)}50%{transform:rotateX(-12deg) rotateY(30deg)}100%{transform:rotateX(16deg) rotateY(-30deg)} }
 @keyframes pl-blip          { 0%,100%{opacity:0;transform:scale(.4)}22%,58%{opacity:1;transform:scale(1)} }
 @keyframes pl-pinPulse      { 0%,100%{transform:translate(-50%,-50%) scale(.85);opacity:.65}50%{transform:translate(-50%,-50%) scale(1.15);opacity:1} }
 @keyframes pl-dlFill        { 0%{height:0%}100%{height:100%} }
@@ -76,6 +73,14 @@
 .pl-progress { margin-top: 6px; width: 260px; height: 4px; border-radius: 999px; background: rgba(37,42,66,.55); overflow: hidden; }
 .pl-progress > i { display:block; width: 38%; height: 100%; border-radius: 999px; background: linear-gradient(90deg,rgba(200,182,255,.2),#C8B6FF,rgba(200,182,255,.2)); animation: pl-progSlide 1.7s ease-in-out infinite; }
 .pl-progress--determinate > i { width: auto; animation: none; transition: width .3s ease; }
+
+/* Boton de parada del overlay. Discreto: no compite con la animacion, pero
+   siempre esta ahi. Un overlay bloqueante sin salida es una trampa. */
+.pl-cancel { margin-top: 18px; padding: 6px 16px; border-radius: 999px; border: 1px solid rgba(200,182,255,.25);
+  background: rgba(37,42,66,.55); color: #B8B3C9; font-size: 12px; letter-spacing: .02em; cursor: pointer;
+  transition: color .2s ease, border-color .2s ease, background .2s ease; }
+.pl-cancel:hover { color: #F5F1FF; border-color: rgba(200,182,255,.6); background: rgba(37,42,66,.85); }
+.pl-cancel:focus-visible { outline: 2px solid #C8B6FF; outline-offset: 2px; }
 
 /* helpers de centrado absoluto reutilizados */
 .pl-abs-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); }
@@ -138,18 +143,6 @@
 .pl-sync__core span { width: 12px; height: 12px; border-radius: 50%; background: #C8B6FF; animation: pl-pulseGlow 1.8s ease-in-out infinite; }
 
 /* ============================================
-   Variante: ATLAS — grafo 3D
-   ============================================ */
-.pl-atlas { perspective: 760px; width: 300px; height: 280px; }
-.pl-atlas__scene { position: relative; width: 300px; height: 280px; transform-style: preserve-3d; animation: pl-atlasOrbit 11s ease-in-out infinite; }
-.pl-atlas__web { position: absolute; inset: 0; }
-.pl-atlas__web line { animation: pl-dashDraw 3.6s ease-in-out infinite; }
-.pl-atlas__halo { position: absolute; left: 150px; top: 140px; transform: translateZ(38px); }
-.pl-atlas__halo > div { width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%; background: radial-gradient(circle,rgba(200,182,255,.32),transparent 70%); animation: pl-pulseGlow 2.6s ease-in-out infinite; }
-.pl-atlas__node { position: absolute; }
-.pl-atlas__node > div { border-radius: 50%; animation: pl-nodePulse 2.6s ease-in-out infinite; }
-
-/* ============================================
    Variante: ESPACIOS — radar
    ============================================ */
 .pl-espacios { position: relative; width: 204px; height: 204px; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at 50% 50%,#161B2C,#0F111A); box-shadow: inset 0 0 0 1px rgba(245,241,255,.05),inset 0 0 40px rgba(0,0,0,.4); }
@@ -189,3 +182,48 @@
 .pl-listo__svg { position: absolute; inset: 0; }
 .pl-listo__ring { animation: pl-drawRing .7s ease-out forwards; }
 .pl-listo__check { animation: pl-drawCheck .45s ease-out .55s both; }
+
+/* ============================================
+   Panel de cifras de un proceso largo (indexado / escaneo IA)
+   Jerarquia: fase > cuantos de cuantos > tiempos > archivo actual > desglose.
+   ============================================ */
+.pl-stage--compacta { height: 196px; }
+.pl-stage--compacta > * { transform: scale(.6); }
+.pl-card--datos { padding-top: 26px; width: 600px; }
+.pl-card--datos .pl-caption { margin-top: 6px; gap: 0; }
+.pl-card--datos .pl-title { margin-top: 10px; }
+.pl-card--datos .pl-sub { margin-top: 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pl-cuenta { margin-top: 22px; display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
+.pl-cuenta__hechos { font: 600 34px 'Geist', sans-serif; color: #F5F1FF; letter-spacing: -.02em; }
+.pl-cuenta__total { font: 400 15px 'Geist', sans-serif; color: #7D8197; }
+.pl-cuenta__pct { margin-left: 6px; font: 500 13px 'IBM Plex Mono', monospace; color: #C8B6FF; }
+
+.pl-card--datos .pl-progress { width: 100%; height: 5px; margin-top: 12px; }
+
+.pl-tiempos { margin-top: 18px; width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); }
+.pl-tiempo { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 6px; min-width: 0; }
+.pl-tiempo + .pl-tiempo { border-left: 1px solid rgba(245,241,255,.08); }
+.pl-tiempo__k { font: 500 10px 'IBM Plex Mono', monospace; letter-spacing: .14em; text-transform: uppercase; color: #6A6E84; }
+.pl-tiempo__v { font: 500 15px 'Geist', sans-serif; color: #E4DFF5; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.pl-tiempo__v--tenue { color: #7D8197; font-weight: 400; }
+
+.pl-archivo { margin-top: 18px; width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-radius: 10px; background: rgba(15,17,26,.55); border: 1px solid rgba(245,241,255,.06); min-width: 0; }
+.pl-archivo__accion { flex: none; font: 500 10px 'IBM Plex Mono', monospace; letter-spacing: .08em; text-transform: uppercase;
+  color: #C8B6FF; background: rgba(200,182,255,.1); border-radius: 999px; padding: 2px 8px; }
+.pl-archivo__nombre { font: 400 12px 'IBM Plex Mono', monospace; color: #B8B3C9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.pl-cifras { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; font: 400 12px 'Geist', sans-serif; color: #7D8197; }
+.pl-cifras b { color: #D8D3E8; font-weight: 500; font-variant-numeric: tabular-nums; }
+.pl-cifras .pl-cifra--error b { color: #F2A0A0; }
+.pl-aviso { margin-top: 12px; font: 400 12px 'Geist', sans-serif; color: #F2B8A0; text-align: center; }
+
+@media (max-width: 520px) {
+  .pl-card--datos { padding: 20px 18px 24px; }
+  .pl-stage--compacta { height: 150px; }
+  .pl-stage--compacta > * { transform: scale(.45); }
+  .pl-cuenta__hechos { font-size: 28px; }
+  .pl-tiempo__v { font-size: 13px; }
+}
+.pl-tiempos--uno { grid-template-columns: 1fr; }

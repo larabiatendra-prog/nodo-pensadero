@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge, UserPlus, Check } from 'lucide-react';
+import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge, UserPlus, Check, Camera, Loader2 } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -27,6 +27,8 @@ interface PersonsManagerProps {
   mediaFiles?: import('../types').MediaFile[];
   onSelectFile?: (file: import('../types').MediaFile) => void;
   onFilterByPerson?: (personId: string) => void;
+  /** Abre la linea de vida de la persona (/persona/:id/vida). */
+  onVerLineaDeVida?: (personId: string) => void;
 }
 
 /**
@@ -40,7 +42,7 @@ interface PersonsManagerProps {
  * NO hace reconocimiento facial automático — eso entra en una segunda
  * iteración con InsightFace u otro modelo de embeddings faciales.
  */
-export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFilterByPerson }: PersonsManagerProps) {
+export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFilterByPerson, onVerLineaDeVida }: PersonsManagerProps) {
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
@@ -78,6 +80,9 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   // Token de cache-bust de avatares: se incrementa al cambiar un avatar para
   // forzar recarga (el avatar.jpg se sobrescribe en el mismo path).
   const [avatarBust, setAvatarBust] = useState(0);
+  // Elegir foto de perfil: la persona cuyas caras se estan mirando.
+  const [avatarPicker, setAvatarPicker] = useState<Person | null>(null);
+  const [guardandoAvatar, setGuardandoAvatar] = useState<string | null>(null);
   // Fusionar persona<->persona (M5a): absorber otra persona en selectedPerson.
   const [mergePersonOpen, setMergePersonOpen] = useState(false);
   const [mergeLoserId, setMergeLoserId] = useState<string | null>(null);
@@ -133,8 +138,17 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
   // Rediseño: búsqueda y filtro del grid de personas.
   const [query, setQuery] = useState('');
-  type PersonFilter = 'todas' | 'confirmadas' | 'entrenar';
-  const [personFilter, setPersonFilter] = useState<PersonFilter>('todas');
+  // Los filtros parten el registry por lo unico que lo parte de verdad: si la
+  // persona sale o no sale en el archivo. Los de antes (Todas / Confirmadas /
+  // Por entrenar) miraban 'tiene avatar', y como las 133 tenian avatar, dos de
+  // los tres chips daban exactamente la misma lista y el tercero salia vacio.
+  type PersonFilter = 'material' | 'vacias' | 'todas';
+  const [personFilter, setPersonFilter] = useState<PersonFilter>('material');
+  type PersonOrden = 'apariciones' | 'reciente' | 'nombre';
+  const [orden, setOrden] = useState<PersonOrden>('apariciones');
+  /** Fichas vacias marcadas para borrar en lote. */
+  const [seleccionVacias, setSeleccionVacias] = useState<Set<string>>(new Set());
+  const [borrandoLote, setBorrandoLote] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -152,15 +166,6 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     }
     return counts;
   }, [mediaFiles]);
-
-  // Top personas por numero de apariciones (para el panel de resumen)
-  const topPersonsByCount = useMemo(() => {
-    return [...persons]
-      .map(p => ({ person: p, count: filesPerPerson.get(p.person_id) || 0 }))
-      .sort((a, b) => b.count - a.count)
-      .filter(x => x.count > 0)
-      .slice(0, 6);
-  }, [persons, filesPerPerson]);
 
   // Última aparición (timestamp más reciente) y nº de sesiones (carpetas
   // distintas) por persona, derivado de mediaFiles. La carpeta es la sesión
@@ -204,7 +209,6 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
   // Una persona se considera "confirmada" cuando tiene avatar (referencia
   // establecida); el resto está "por entrenar". Señal real y derivable.
-  const isConfirmed = (p: Person) => !!p.avatar_url;
 
   // Degradado estable por persona para el fallback del avatar (sin foto).
   const GRADS = [
@@ -228,20 +232,76 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   // Personas filtradas/ordenadas para el grid (búsqueda + chips).
   const filteredPersons = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return persons
-      .filter(p => {
-        if (personFilter === 'confirmadas' && !p.avatar_url) return false;
-        if (personFilter === 'entrenar' && p.avatar_url) return false;
-        if (q && !(p.display_name.toLowerCase().includes(q) || p.aliases.some(a => a.toLowerCase().includes(q)))) return false;
-        return true;
-      })
-      .sort((a, b) => (filesPerPerson.get(b.person_id) || 0) - (filesPerPerson.get(a.person_id) || 0));
-  }, [persons, query, personFilter, filesPerPerson]);
+    const base = persons.filter(p => {
+      const tieneMaterial = (filesPerPerson.get(p.person_id) || 0) > 0;
+      if (personFilter === 'material' && !tieneMaterial) return false;
+      if (personFilter === 'vacias' && tieneMaterial) return false;
+      if (q && !(p.display_name.toLowerCase().includes(q) || p.aliases.some(a => a.toLowerCase().includes(q)))) return false;
+      return true;
+    });
+    const porApariciones = (a: Person, b: Person) =>
+      (filesPerPerson.get(b.person_id) || 0) - (filesPerPerson.get(a.person_id) || 0);
+    const criterio: Record<PersonOrden, (a: Person, b: Person) => number> = {
+      apariciones: porApariciones,
+      reciente: (a, b) => (personStats.last.get(b.person_id) || 0) - (personStats.last.get(a.person_id) || 0) || porApariciones(a, b),
+      nombre: (a, b) => a.display_name.localeCompare(b.display_name, 'es'),
+    };
+    return base.sort(criterio[orden]);
+  }, [persons, query, personFilter, orden, filesPerPerson, personStats]);
 
   const unidentifiedCount = useMemo(
     () => (clusters || []).reduce((a, c) => a + (c.face_count || 0), 0),
     [clusters]
   );
+
+  /**
+   * Censo del registry. Es lo que un mando de control tiene que decir de un
+   * vistazo, y no coincide con "personas registradas": de 133 fichas, 62
+   * salen en algun archivo y 71 no salen en ninguno — restos de sesiones de
+   * descubrimiento ("Alumna random", "Alguien") que engordaban el recuento y
+   * no se distinguian porque todas las fichas se pintaban igual.
+   */
+  const censo = useMemo(() => {
+    let caras = 0;
+    for (const f of (mediaFiles || [])) caras += (f.faces || []).length;
+    const conMaterial: Person[] = [];
+    const vacias: Person[] = [];
+    for (const pp of persons) {
+      if ((filesPerPerson.get(pp.person_id) || 0) > 0) conMaterial.push(pp);
+      else vacias.push(pp);
+    }
+    // Tope de apariciones: da la escala de la barrita de cada ficha.
+    const tope = conMaterial.reduce((m, pp) => Math.max(m, filesPerPerson.get(pp.person_id) || 0), 0);
+    return { caras, conMaterial, vacias, tope };
+  }, [persons, filesPerPerson, mediaFiles]);
+
+  /**
+   * Borra en lote las fichas marcadas. Solo se ofrece sobre fichas VACIAS:
+   * borrar a alguien con material arrastra sus etiquetas de cara por todos
+   * los catalogos, y eso no es limpieza sino una decision de archivo — esa
+   * sigue estando una a una, dentro de su ficha.
+   */
+  async function borrarFichasVacias() {
+    const ids = [...seleccionVacias];
+    if (ids.length === 0) return;
+    const ok = window.confirm(
+      `Se van a borrar ${ids.length} ${ids.length === 1 ? 'ficha' : 'fichas'} sin una sola aparición en el archivo.\n\n`
+      + 'No se toca ningún archivo ni ninguna etiqueta: estas personas no salen en ninguno.'
+    );
+    if (!ok) return;
+    setBorrandoLote(true);
+    const fallidas: string[] = [];
+    try {
+      for (const id of ids) {
+        try { await api.deletePerson(id); } catch { fallidas.push(id); }
+      }
+      setSeleccionVacias(new Set());
+      await loadPersons();
+      if (fallidas.length) setError(`No se pudieron borrar ${fallidas.length} fichas: ${fallidas.join(', ')}`);
+    } finally {
+      setBorrandoLote(false);
+    }
+  }
 
   // Estilos de cristal (glassmorphism) del design system.
   const glass: React.CSSProperties = {
@@ -814,6 +874,86 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     }
   }
 
+  /**
+   * Caras de una persona en el archivo, ordenadas por lo bien que saldrian de
+   * retrato: cara grande y con buena confianza del detector. La bbox viene en
+   * pixeles del fotograma original y la miniatura es ese mismo fotograma a otra
+   * escala, asi que el recorte se puede hacer en el navegador (ver RecorteCara)
+   * sin pedirle al servidor 48 recortes — cada uno de un video es un ffmpeg.
+   */
+  const carasDe = (personId: string) => {
+    const out: Array<{
+      file: import('../types').MediaFile;
+      bbox: number[];
+      faceIndex: number;
+      ancho: number;
+      alto: number;
+      score: number;
+    }> = [];
+    for (const f of mediaFiles || []) {
+      const dims = dimensionesDe(f);
+      if (!dims) continue;
+      const cajas = (f as unknown as { face_boxes?: Array<{ bbox?: number[]; person_id?: string | null; det_score?: number | null; face_index?: number }> }).face_boxes || [];
+      cajas.forEach((b, i) => {
+        if (b.person_id !== personId || !Array.isArray(b.bbox) || b.bbox.length !== 4) return;
+        const [x1, y1, x2, y2] = b.bbox;
+        const area = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+        if (area <= 0) return;
+        out.push({
+          file: f,
+          bbox: b.bbox,
+          faceIndex: typeof b.face_index === 'number' ? b.face_index : i,
+          ancho: dims.ancho,
+          alto: dims.alto,
+          // Area por confianza: una cara enorme y borrosa no es mejor retrato
+          // que una mediana y nitida.
+          score: area * (typeof b.det_score === 'number' ? b.det_score : 0.5),
+        });
+      });
+    }
+    out.sort((x, y) => y.score - x.score);
+    // Una cara por archivo: doce fotogramas seguidos del mismo plano son la
+    // misma foto doce veces, y llenaban la rejilla sin dar a elegir nada.
+    const vistos = new Set<string>();
+    const unicas = [];
+    for (const c of out) {
+      if (vistos.has(c.file.id)) continue;
+      vistos.add(c.file.id);
+      unicas.push(c);
+      if (unicas.length >= 48) break;
+    }
+    return unicas;
+  };
+
+  /** Retrato desde una cara del archivo: el servidor recorta del original. */
+  async function handleAvatarDesdeCara(
+    personId: string, file: import('../types').MediaFile, faceIndex: number, clave: string,
+  ) {
+    const carpeta = (file.fullPath || '').replace(/[\\/][^\\/]*$/, '');
+    if (!carpeta) { setError('ese archivo no tiene ruta en disco'); return; }
+    setGuardandoAvatar(clave);
+    try {
+      await api.setPersonAvatarFromDetection(personId, {
+        folder: carpeta,
+        basename: file.name,
+        face_index: faceIndex,
+      });
+      const list = await loadPersons();
+      if (Array.isArray(list)) {
+        const updated = list.find((x: any) => x.person_id === personId);
+        if (updated) {
+          if (selectedPerson?.person_id === personId) setSelectedPerson(updated);
+          setAvatarPicker(prev => (prev && prev.person_id === personId ? updated : prev));
+        }
+      }
+      setAvatarBust(b => b + 1);
+    } catch (err: any) {
+      setError(err.message || 'No se pudo recortar esa cara');
+    } finally {
+      setGuardandoAvatar(null);
+    }
+  }
+
   async function handleSetAvatar(personId: string, filename: string) {
     try {
       await api.setPersonAvatar(personId, filename);
@@ -889,8 +1029,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           )}
           <h1 className="text-[1.75rem] font-bold tracking-tight text-marfil leading-none">Personas</h1>
           <p className="mt-1 text-[0.8125rem] text-niebla">
-            {persons.length} {persons.length === 1 ? 'persona registrada' : 'personas registradas'}
-            {unidentifiedCount > 0 ? ` · ${unidentifiedCount} caras por agrupar` : ''}
+            El registro de quién sale en tu archivo y cómo lo reconoce la máquina.
           </p>
         </div>
         <div className="flex items-center gap-2.5 rounded-full px-4 h-[46px] w-80 max-w-full" style={glass}>
@@ -903,6 +1042,41 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           />
         </div>
       </header>
+
+      {/* Panel de estado: lo que HAY, no lo que se ha registrado. Antes esto
+          era un chip suelto ("133 entrenadas") que contaba fichas, no personas
+          con material — y de esas 133, 71 no salen en ningún archivo. */}
+      <div className="mb-5 rounded-2xl px-5 py-4 flex flex-wrap items-center gap-x-9 gap-y-4" style={glass}>
+        <Cifra valor={censo.caras} etiqueta="caras detectadas" />
+        <Cifra valor={censo.conMaterial.length} etiqueta="personas con material" acento />
+        <Cifra
+          valor={censo.vacias.length}
+          etiqueta="fichas vacías"
+          aviso
+          onClick={censo.vacias.length > 0 ? () => { setPersonFilter('vacias'); setQuery(''); } : undefined}
+        />
+        <Cifra
+          valor={unidentifiedCount}
+          etiqueta="caras sin nombre"
+          aviso
+          onClick={unidentifiedCount > 0 ? () => { setView('clusters'); if (!clusters) loadClusters(); } : undefined}
+        />
+        <span className="flex-1 min-w-[8px]" />
+        {faceStatus && (
+          <div
+            className="flex items-center gap-2.5 rounded-full px-3.5 h-9"
+            style={glassSoft}
+            title={faceStatus.ready ? 'InsightFace activo (CUDA si está disponible)' : (faceStatus.unavailable ? (faceStatus.lastError || 'Servicio no disponible') : 'Iniciando servicio…')}
+          >
+            <span className={`w-2 h-2 rounded-full ${faceStatus.ready ? 'bg-estado-exito' : faceStatus.unavailable ? 'bg-estado-error' : 'bg-estado-aviso animate-pulse'}`} />
+            <span className="font-mono text-[11px] text-niebla">
+              {faceStatus.ready
+                ? `InsightFace · ${faceStatus.trainedPersons} entrenadas · umbral ${typeof faceStatus.threshold === 'number' ? faceStatus.threshold.toFixed(2) : '—'}`
+                : faceStatus.unavailable ? 'IA no disponible' : 'IA iniciando…'}
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* Barra de acciones (según vista) */}
       <div className="flex items-center flex-wrap gap-2 mb-5">
@@ -974,16 +1148,6 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           </>
         )}
         <span className="flex-1" />
-        {faceStatus && (
-          <span
-            className="inline-flex items-center gap-2 h-9 px-3 rounded-full text-[11px] font-mono"
-            style={glassSoft}
-            title={faceStatus.ready ? 'InsightFace activo' : (faceStatus.unavailable ? (faceStatus.lastError || 'Servicio no disponible') : 'Iniciando servicio…')}
-          >
-            <span className={`w-2 h-2 rounded-full ${faceStatus.ready ? 'bg-estado-exito' : faceStatus.unavailable ? 'bg-estado-error' : 'bg-estado-aviso animate-pulse'}`} />
-            <span className="text-niebla">{faceStatus.ready ? `InsightFace · ${faceStatus.trainedPersons} entrenadas` : faceStatus.unavailable ? 'IA no disponible' : 'IA iniciando…'}</span>
-          </span>
-        )}
       </div>
 
       {error && (
@@ -1603,22 +1767,39 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       {/* ===== Vista principal (rediseño) ===== */}
       {view === 'persons' && (
         <>
-          {/* Filtros + recuento */}
-          <div className="flex items-center flex-wrap gap-2.5 mb-7">
-            {(([['todas', 'Todas'], ['confirmadas', 'Confirmadas'], ['entrenar', 'Por entrenar']]) as [PersonFilter, string][]).map(([key, label]) => {
+          {/* Filtros + orden + recuento */}
+          <div className="flex items-center flex-wrap gap-2.5 mb-6">
+            {(([
+              ['material', 'Con material', censo.conMaterial.length],
+              ['vacias', 'Fichas vacías', censo.vacias.length],
+              ['todas', 'Todas', persons.length],
+            ]) as [PersonFilter, string, number][]).map(([key, label, n]) => {
               const active = personFilter === key;
               return (
                 <button
                   key={key}
                   onClick={() => setPersonFilter(key)}
                   style={active ? undefined : glassSoft}
-                  className={`inline-flex items-center h-9 px-4 rounded-full text-[13px] font-medium transition-colors ${active ? 'bg-lavanda text-noche' : 'text-niebla hover:text-marfil'}`}
+                  className={`inline-flex items-center gap-2 h-9 px-4 rounded-full text-[13px] font-medium transition-colors ${active ? 'bg-lavanda text-noche' : 'text-niebla hover:text-marfil'}`}
                 >
                   {label}
+                  <span className={`font-mono text-[11px] ${active ? 'text-noche/60' : 'text-humo'}`}>{n}</span>
                 </button>
               );
             })}
             <span className="flex-1" />
+            {/* Orden: una lista de 133 caras sin orden explicito es un muro. */}
+            <div className="flex items-center gap-1 rounded-full px-1 h-9" style={glassSoft}>
+              {(([['apariciones', 'más vistas'], ['reciente', 'recientes'], ['nombre', 'A-Z']]) as [PersonOrden, string][]).map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setOrden(key)}
+                  className={`h-7 px-3 rounded-full text-[12px] transition-colors ${orden === key ? 'bg-lavanda/20 text-lavanda' : 'text-humo hover:text-niebla'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <span className="font-mono text-[11px] tracking-wide text-humo">{filteredPersons.length} de {persons.length}</span>
           </div>
 
@@ -1671,8 +1852,47 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           {/* Registradas */}
           <section className="mb-7">
             <div className="mb-3.5">
-              <span className="font-mono text-[11px] tracking-wider uppercase text-humo">Registradas</span>
+              <span className="font-mono text-[11px] tracking-wider uppercase text-humo">
+                {personFilter === 'material' ? 'Con material en el archivo' : personFilter === 'vacias' ? 'Fichas sin una sola aparición' : 'Todas las fichas'}
+              </span>
             </div>
+
+            {/* Mantenimiento: el unico trabajo pendiente de verdad de esta pagina. */}
+            {personFilter === 'vacias' && censo.vacias.length > 0 && (
+              <div className="mb-4 rounded-2xl px-4 py-3 flex items-center flex-wrap gap-3" style={glassSoft}>
+                <AlertTriangle className="w-4 h-4 text-melocoton shrink-0" />
+                <p className="text-[13px] text-niebla flex-1 min-w-[260px] leading-relaxed">
+                  Ninguna de estas personas sale en un solo archivo del catálogo. Suelen ser
+                  restos de agrupaciones que se nombraron a medias. Borrarlas no toca ningún
+                  archivo ni ninguna etiqueta.
+                </p>
+                <button
+                  onClick={() => setSeleccionVacias(new Set(censo.vacias.map(v => v.person_id)))}
+                  className="h-8 px-3 rounded-full text-[12px] font-medium text-niebla hover:text-marfil"
+                  style={glassSoft}
+                >
+                  Marcar todas
+                </button>
+                {seleccionVacias.size > 0 && (
+                  <>
+                    <button
+                      onClick={() => setSeleccionVacias(new Set())}
+                      className="h-8 px-3 rounded-full text-[12px] font-medium text-humo hover:text-niebla"
+                    >
+                      Ninguna
+                    </button>
+                    <button
+                      onClick={borrarFichasVacias}
+                      disabled={borrandoLote}
+                      className="inline-flex items-center gap-1.5 h-8 px-4 rounded-full text-[12px] font-semibold bg-estado-error/90 text-noche hover:bg-estado-error disabled:opacity-60"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {borrandoLote ? 'Borrando…' : `Borrar ${seleccionVacias.size}`}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             {loading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader variant="caras" cap="Cargando personas" sub="Leyendo el registry" />
@@ -1680,41 +1900,62 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             ) : filteredPersons.length > 0 ? (
               <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(172px, 1fr))' }}>
                 {filteredPersons.map(p => {
-                  const confirmed = isConfirmed(p);
                   const appearances = filesPerPerson.get(p.person_id) || 0;
                   const last = personStats.last.get(p.person_id);
+                  const vacia = appearances === 0;
+                  const marcada = seleccionVacias.has(p.person_id);
                   return (
-                    <button
-                      key={p.person_id}
-                      onClick={() => setSelectedPerson(p)}
-                      style={glass}
-                      className="group rounded-xl px-4 pt-[22px] pb-[18px] flex flex-col items-center text-center transition-transform hover:-translate-y-0.5"
-                    >
-                      <div className="relative mb-3.5">
+                    <div key={p.person_id} className="relative">
+                      <button
+                        onClick={() => setSelectedPerson(p)}
+                        style={vacia ? glassSoft : glass}
+                        className={`w-full rounded-xl px-4 pt-[22px] pb-[18px] flex flex-col items-center text-center transition-transform hover:-translate-y-0.5 ${marcada ? 'ring-2 ring-melocoton' : ''}`}
+                      >
                         <div
-                          className="w-[84px] h-[84px] rounded-full overflow-hidden flex items-center justify-center text-[28px] font-semibold text-white/90 select-none"
-                          style={{ background: gradFor(p.person_id), boxShadow: confirmed ? '0 0 0 2px #C8B6FF, 0 6px 18px rgba(0,0,0,.42)' : '0 0 0 2px #E6C177, 0 6px 18px rgba(0,0,0,.42)' }}
+                          className={`w-[84px] h-[84px] mb-3.5 rounded-full overflow-hidden flex items-center justify-center text-[28px] font-semibold text-white/90 select-none ${vacia ? 'opacity-40 grayscale' : ''}`}
+                          style={{ background: gradFor(p.person_id), boxShadow: '0 6px 18px rgba(0,0,0,.42)' }}
                         >
                           {avatarSrc(p)
                             ? <Avatar url={avatarSrc(p)} name={p.display_name} bust={avatarBust} />
                             : firstInitial(p.display_name)}
                         </div>
-                        {confirmed && (
-                          <div className="absolute right-0.5 bottom-0.5 w-6 h-6 rounded-full bg-lavanda border-2 border-grafito flex items-center justify-center">
-                            <Check className="w-3 h-3 text-noche" strokeWidth={3} />
-                          </div>
+                        <p className="text-[15px] font-semibold text-marfil truncate w-full">{p.display_name}</p>
+                        {vacia ? (
+                          <p className="mt-1.5 text-[11px] text-melocoton">no aparece en ningún archivo</p>
+                        ) : (
+                          <>
+                            <p className="mt-1.5 font-mono text-[11px] text-humo">
+                              {appearances} {appearances === 1 ? 'aparición' : 'apariciones'}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-lavanda-archivo">{relativeTime(last)}</p>
+                            {/* La barra da la jerarquia sin leer: 545 y 14 no pueden
+                                pesar lo mismo en una pagina que sirve para priorizar. */}
+                            <div className="mt-3 w-full h-[3px] rounded-full bg-pizarra overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-lavanda/70"
+                                style={{ width: `${Math.max(4, (appearances / Math.max(1, censo.tope)) * 100)}%` }}
+                              />
+                            </div>
+                          </>
                         )}
-                      </div>
-                      <p className="text-[15px] font-semibold text-marfil truncate w-full">{p.display_name}</p>
-                      <p className="mt-1.5 font-mono text-[11px] text-humo">{appearances} {appearances === 1 ? 'aparición' : 'apariciones'}</p>
-                      <p className="mt-0.5 text-[11px] text-lavanda-archivo">{relativeTime(last)}</p>
-                      <span
-                        className="mt-3 inline-flex items-center h-[22px] px-[11px] rounded-full text-[11px] font-semibold"
-                        style={{ background: confirmed ? 'rgba(200,182,255,0.14)' : 'rgba(230,193,119,0.14)', color: confirmed ? '#C8B6FF' : '#E6C177' }}
-                      >
-                        {confirmed ? 'Confirmada' : 'Por entrenar'}
-                      </span>
-                    </button>
+                      </button>
+                      {vacia && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSeleccionVacias(prev => {
+                              const n = new Set(prev);
+                              if (n.has(p.person_id)) n.delete(p.person_id); else n.add(p.person_id);
+                              return n;
+                            });
+                          }}
+                          title={marcada ? 'Quitar de la selección' : 'Marcar para borrar'}
+                          className={`absolute top-2.5 right-2.5 w-6 h-6 rounded-md flex items-center justify-center transition-colors ${marcada ? 'bg-melocoton text-noche' : 'bg-noche/70 text-humo hover:text-marfil'}`}
+                        >
+                          <Check className="w-3.5 h-3.5" strokeWidth={3} />
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1728,10 +1969,127 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         </>
       )}
 
+      {/* ===== Elegir foto de perfil ===== */}
+      {avatarPicker && (() => {
+        const caras = carasDe(avatarPicker.person_id);
+        return (
+          <div
+            onClick={() => setAvatarPicker(null)}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-6"
+            style={{ background: 'rgba(8,9,14,0.86)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              className="w-[min(900px,96vw)] max-h-[88vh] rounded-2xl overflow-hidden flex flex-col"
+              style={glassStrong}
+            >
+              <div className="flex items-center gap-3 p-5 border-b border-borde-sutil">
+                <div
+                  className="w-12 h-12 shrink-0 rounded-xl overflow-hidden flex items-center justify-center text-lg font-semibold text-white/90"
+                  style={{ background: gradFor(avatarPicker.person_id) }}
+                >
+                  {avatarSrc(avatarPicker)
+                    ? <Avatar url={avatarSrc(avatarPicker)} name={avatarPicker.display_name} bust={avatarBust} />
+                    : firstInitial(avatarPicker.display_name)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-semibold text-marfil truncate">Foto de perfil de {avatarPicker.display_name}</h3>
+                  <p className="text-[12px] text-humo">
+                    {caras.length > 0
+                      ? 'Pulsa una cara y se recorta del archivo original.'
+                      : 'No hay caras suyas en el catálogo. Sube una foto de referencia.'}
+                  </p>
+                </div>
+                <button onClick={() => fileInputRef.current?.click()} style={glassSoft} className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil">
+                  <ImagePlus className="w-4 h-4" />
+                  Subir foto
+                </button>
+                <button onClick={() => setAvatarPicker(null)} className="flex-none w-8 h-8 rounded-lg bg-pizarra text-niebla hover:text-marfil flex items-center justify-center">
+                  <X className="w-[15px] h-[15px]" />
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto">
+                {photos.length > 0 && (
+                  <div className="mb-5">
+                    <p className="mb-2.5 font-mono text-[10px] tracking-wider uppercase text-humo">Fotos de referencia</p>
+                    <div className="flex gap-2.5 flex-wrap">
+                      {photos.map(photo => {
+                        const esAvatar = avatarPicker.avatar_path?.endsWith(photo.filename);
+                        return (
+                          <button
+                            key={photo.filename}
+                            onClick={() => handleSetAvatar(avatarPicker.person_id, photo.filename)}
+                            className={`relative w-[88px] h-[88px] rounded-xl overflow-hidden bg-pizarra transition-all ${esAvatar ? 'ring-2 ring-lavanda' : 'hover:ring-2 hover:ring-lavanda/60'}`}
+                            title={esAvatar ? 'Es la foto actual' : 'Usar esta foto'}
+                          >
+                            <img src={photoSrc(photo)} alt="" className="w-full h-full object-cover" />
+                            {esAvatar && (
+                              <span className="absolute top-1 left-1 w-5 h-5 rounded-full bg-lavanda flex items-center justify-center">
+                                <Check className="w-3 h-3 text-noche" strokeWidth={3} />
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {caras.length > 0 && (
+                  <>
+                    <p className="mb-2.5 font-mono text-[10px] tracking-wider uppercase text-humo">
+                      Sus caras en el archivo — las más nítidas primero
+                    </p>
+                    <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(104px, 1fr))' }}>
+                      {caras.map((c, i) => {
+                        const clave = c.file.id + ':' + c.faceIndex;
+                        const guardando = guardandoAvatar === clave;
+                        return (
+                          <button
+                            key={clave + ':' + i}
+                            onClick={() => handleAvatarDesdeCara(avatarPicker.person_id, c.file, c.faceIndex, clave)}
+                            disabled={!!guardandoAvatar}
+                            title={`${c.file.name} — usar esta cara`}
+                            className="relative aspect-square rounded-xl overflow-hidden bg-pizarra hover:ring-2 hover:ring-lavanda transition-all disabled:opacity-60"
+                          >
+                            <RecorteCara
+                              src={c.file.thumbnail || c.file.url}
+                              bbox={c.bbox}
+                              ancho={c.ancho}
+                              alto={c.alto}
+                            />
+                            {guardando && (
+                              <span className="absolute inset-0 bg-noche/70 flex items-center justify-center">
+                                <Loader2 className="w-5 h-5 text-lavanda animate-spin" />
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-4 text-[11px] text-humo leading-relaxed">
+                      El recorte se hace sobre el archivo original, no sobre la miniatura:
+                      lo que ves aquí es una vista previa.
+                    </p>
+                  </>
+                )}
+
+                {caras.length === 0 && photos.length === 0 && (
+                  <div className="py-12 text-center text-humo">
+                    <Camera className="w-8 h-8 mx-auto text-lavanda-archivo mb-3" />
+                    <p className="text-sm">Sin caras ni fotos todavía.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ===== Modal de detalle de persona ===== */}
       {selectedPerson && (() => {
         const p = selectedPerson;
-        const confirmed = isConfirmed(p);
         const appearances = mediaFiles ? mediaFiles.filter(f => f.faces?.some(face => face.person_id === p.person_id)) : [];
         const sessions = personStats.sessions.get(p.person_id) || 0;
         const last = personStats.last.get(p.person_id);
@@ -1743,30 +2101,105 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             className="fixed inset-0 z-[60] flex items-center justify-center p-6"
             style={{ background: 'rgba(8,9,14,0.82)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
           >
-            <div onClick={e => e.stopPropagation()} className="flex w-[min(920px,96vw)] max-h-[88vh] rounded-2xl overflow-hidden" style={glassStrong}>
-              {/* Columna izquierda: retrato */}
-              <div className="flex-[1_1_42%] min-w-[280px] relative flex-col items-center justify-center p-8 hidden md:flex" style={{ background: grad }}>
-                <div className="w-32 h-32 rounded-full overflow-hidden flex items-center justify-center text-[46px] font-semibold text-white select-none" style={{ background: 'rgba(15,17,26,0.28)', border: '3px solid rgba(255,255,255,.32)' }}>
+            <div
+              onClick={e => e.stopPropagation()}
+              className="w-[min(880px,96vw)] max-h-[88vh] rounded-2xl overflow-hidden flex flex-col"
+              style={glassStrong}
+            >
+              {/* Cabecera. Antes el 42% del ancho era un degradado de color con
+                  un avatar en medio, y el material de la persona se apretaba en
+                  la otra mitad. El retrato ahora ocupa lo que vale. */}
+              <div className="flex items-start gap-4 p-5 border-b border-borde-sutil">
+                {/* El retrato es el boton para cambiarlo: hasta ahora solo se
+                    podia elegir entre fotos subidas a mano, y casi nadie tiene. */}
+                <button
+                  onClick={() => setAvatarPicker(p)}
+                  title="Elegir foto de perfil"
+                  className="group/foto relative w-[88px] h-[88px] shrink-0 rounded-2xl overflow-hidden flex items-center justify-center text-[34px] font-semibold text-white/90 select-none"
+                  style={{ background: grad, boxShadow: '0 8px 24px rgba(0,0,0,.45)' }}
+                >
                   {avatarSrc(p)
                     ? <Avatar url={avatarSrc(p)} name={p.display_name} bust={avatarBust} />
                     : firstInitial(p.display_name)}
+                  <span className="absolute inset-0 bg-noche/65 opacity-0 group-hover/foto:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1">
+                    <Camera className="w-5 h-5 text-marfil" />
+                    <span className="text-[10px] font-medium text-marfil">Cambiar</span>
+                  </span>
+                </button>
+
+                <div className="min-w-0 flex-1">
+                  <DisplayNameEditor key={p.person_id} initial={p.display_name} onSave={(name) => handleUpdateDisplayName(p, name)} />
+                  <p className="mt-1 font-mono text-[11px] text-humo truncate">{p.person_id}</p>
+                  <div className="mt-3 flex items-center flex-wrap gap-x-5 gap-y-1.5 text-[13px] text-niebla">
+                    <span><b className="text-lavanda text-[15px] tabular-nums">{appearances.length}</b> apariciones</span>
+                    <span><b className="text-marfil text-[15px] tabular-nums">{sessions}</b> {sessions === 1 ? 'sesión' : 'sesiones'}</span>
+                    <span>última vez <b className="text-marfil">{relativeTime(last)}</b></span>
+                  </div>
                 </div>
-                <p className="mt-[18px] text-xl font-bold text-white" style={{ textShadow: '0 2px 8px rgba(0,0,0,.5)' }}>{p.display_name}</p>
-                <span className="mt-2.5 inline-flex items-center h-6 px-3 rounded-full text-[11px] font-semibold text-white" style={{ background: 'rgba(15,17,26,0.5)' }}>{confirmed ? 'Confirmada' : 'Por entrenar'}</span>
+
+                <button onClick={() => setSelectedPerson(null)} className="flex-none w-8 h-8 rounded-lg bg-pizarra text-niebla hover:text-marfil flex items-center justify-center">
+                  <X className="w-[15px] h-[15px]" />
+                </button>
               </div>
 
-              {/* Columna derecha: detalle */}
-              <div className="flex-[1_1_58%] min-w-0 md:min-w-[300px] p-[22px] flex flex-col gap-[18px] overflow-y-auto">
-                <div className="flex justify-between items-start gap-3">
-                  <div className="min-w-0">
-                    <DisplayNameEditor key={p.person_id} initial={p.display_name} onSave={(name) => handleUpdateDisplayName(p, name)} />
-                    <p className="mt-1.5 font-mono text-[11px] text-humo truncate">{p.person_id} · {sessions} {sessions === 1 ? 'sesión' : 'sesiones'}</p>
-                  </div>
-                  <button onClick={() => setSelectedPerson(null)} className="flex-none w-8 h-8 rounded-lg bg-pizarra text-niebla hover:text-marfil flex items-center justify-center">
-                    <X className="w-[15px] h-[15px]" />
+              {/* Acciones, a la vista. Antes vivian al fondo del panel, en
+                  botones de 38 px que habia que buscar con scroll. */}
+              <div className="flex items-center flex-wrap gap-2 px-5 py-3 border-b border-borde-sutil">
+                {onVerLineaDeVida && appearances.length > 0 && (
+                  <button
+                    onClick={() => { onVerLineaDeVida(p.person_id); setSelectedPerson(null); }}
+                    className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-lavanda text-noche text-[13px] font-semibold hover:bg-lavanda-claro transition-colors"
+                    title="Todos sus años, de la primera vez a la última"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Línea de vida
                   </button>
-                </div>
+                )}
+                {onFilterByPerson && appearances.length > 0 && (
+                  <button
+                    onClick={() => { onFilterByPerson(p.person_id); setSelectedPerson(null); }}
+                    style={glassSoft}
+                    className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil transition-colors"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Ver en la galería
+                  </button>
+                )}
+                {faceStatus?.ready && photos.length > 0 && (
+                  <button
+                    onClick={() => handleRetrain(p.person_id)}
+                    disabled={training}
+                    style={glassSoft}
+                    className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil disabled:opacity-60"
+                  >
+                    <Brain className={`w-4 h-4 ${training ? 'animate-pulse text-lavanda' : ''}`} />
+                    Re-entrenar
+                  </button>
+                )}
+                <span className="flex-1" />
+                {persons.length > 1 && (
+                  <button
+                    onClick={() => { setMergePersonOpen(true); setMergeLoserId(null); setMergeQuery(''); }}
+                    style={glassSoft}
+                    className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil"
+                    title="Fusionar otra persona en esta"
+                  >
+                    <GitMerge className="w-[15px] h-[15px]" />
+                    Fusionar
+                  </button>
+                )}
+                <button
+                  onClick={() => handleDelete(p)}
+                  title="Eliminar persona"
+                  style={glassSoft}
+                  className="inline-flex items-center justify-center w-9 h-9 rounded-full text-estado-error hover:bg-estado-error/10"
+                >
+                  <Trash2 className="w-[15px] h-[15px]" />
+                </button>
+              </div>
 
+              {/* Cuerpo */}
+              <div className="p-5 flex flex-col gap-5 overflow-y-auto">
                 {training && (
                   <div className="flex items-center gap-2 p-2.5 rounded-xl text-sm" style={{ background: 'rgba(200,182,255,0.1)', border: '1px solid rgba(200,182,255,0.3)' }}>
                     <Brain className="w-4 h-4 text-lavanda animate-pulse" />
@@ -1774,39 +2207,21 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   </div>
                 )}
 
-                {/* Stats reales */}
-                <div className="flex gap-2.5">
-                  <div className="flex-1 rounded-lg px-3.5 py-3" style={glassSoft}>
-                    <p className="text-[22px] font-bold text-lavanda leading-none">{appearances.length}</p>
-                    <p className="mt-1 font-mono text-[10px] tracking-wide uppercase text-humo">apariciones</p>
-                  </div>
-                  <div className="flex-1 rounded-lg px-3.5 py-3" style={glassSoft}>
-                    <p className="text-[22px] font-bold text-marfil leading-none">{sessions}</p>
-                    <p className="mt-1 font-mono text-[10px] tracking-wide uppercase text-humo">sesiones</p>
-                  </div>
-                  <div className="flex-1 rounded-lg px-3.5 py-3" style={glassSoft}>
-                    <p className="text-[13px] font-semibold text-marfil leading-tight">{relativeTime(last)}</p>
-                    <p className="mt-1 font-mono text-[10px] tracking-wide uppercase text-humo">última vez</p>
-                  </div>
-                </div>
-
-                {/* Aliases */}
                 <div>
                   <p className="mb-1.5 font-mono text-[10px] tracking-wider uppercase text-humo">Aliases</p>
                   <AliasesEditor initialAliases={p.aliases} onSave={(aliases) => handleUpdateAliases(p, aliases)} />
                 </div>
 
-                {/* Apariciones recientes (biblioteca real) */}
                 {appearances.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-2.5">
                       <p className="font-mono text-[10px] tracking-wider uppercase text-humo">Apariciones recientes</p>
-                      {onFilterByPerson && (
-                        <button onClick={() => { onFilterByPerson(p.person_id); setSelectedPerson(null); }} className="text-[11px] font-medium text-lavanda hover:text-lavanda-claro">Ver todas →</button>
-                      )}
+                      <span className="font-mono text-[10px] text-humo">
+                        {Math.min(12, appearances.length)} de {appearances.length}
+                      </span>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {appearances.slice(0, 9).map(file => (
+                    <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                      {appearances.slice(0, 12).map(file => (
                         <button
                           key={file.id}
                           onClick={() => { if (onSelectFile) onSelectFile(file); setSelectedPerson(null); }}
@@ -1821,7 +2236,6 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   </div>
                 )}
 
-                {/* Caras de entrenamiento (subir / avatar / borrar) */}
                 <div>
                   <div className="flex items-center justify-between mb-2.5">
                     <p className="font-mono text-[10px] tracking-wider uppercase text-humo">Caras de entrenamiento</p>
@@ -1831,56 +2245,45 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                     </button>
                     <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => handleUploadPhoto(p.person_id, e.target.files)} />
                   </div>
-                  {photos.length === 0 ? (
-                    <div className="p-4 rounded-lg border-2 border-dashed border-pizarra text-center text-[11px] text-lavanda-archivo">
-                      Sube 5-10 fotos con caras claras y distintos ángulos para entrenar el reconocimiento.
-                    </div>
-                  ) : (
-                    <div className="flex gap-2 flex-wrap">
-                      {photos.map(photo => {
-                        const isAvatar = p.avatar_path?.endsWith(photo.filename);
-                        return (
-                          <div key={photo.filename} className="relative group w-12 h-12 rounded-lg overflow-hidden bg-pizarra" style={{ border: '1px solid rgba(245,241,255,0.12)' }}>
-                            <img src={photoSrc(photo)} alt={photo.filename} className="w-full h-full object-cover" />
-                            {isAvatar && (
-                              <div className="absolute top-0.5 left-0.5 bg-lavanda rounded-full p-0.5">
-                                <Star className="w-2.5 h-2.5 text-noche fill-current" />
-                              </div>
-                            )}
-                            <div className="absolute inset-0 bg-noche/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
-                              {!isAvatar && (
-                                <button onClick={() => handleSetAvatar(p.person_id, photo.filename)} title="Marcar como avatar" className="p-1 bg-lavanda text-noche rounded-full">
-                                  <Star className="w-3 h-3" />
-                                </button>
-                              )}
-                              <button onClick={() => handleDeletePhoto(p.person_id, photo.filename)} title="Eliminar foto" className="p-1 bg-estado-error/90 text-noche rounded-full">
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                  {photos.length > 0 ? (
+                  <div className="flex gap-2 flex-wrap">
+                    {photos.map(photo => {
+                      const isAvatar = p.avatar_path?.endsWith(photo.filename);
+                      return (
+                        <div key={photo.filename} className="relative group w-12 h-12 rounded-lg overflow-hidden bg-pizarra" style={{ border: '1px solid rgba(245,241,255,0.12)' }}>
+                          <img src={photoSrc(photo)} alt={photo.filename} className="w-full h-full object-cover" />
+                          {isAvatar && (
+                            <div className="absolute top-0.5 left-0.5 bg-lavanda rounded-full p-0.5">
+                              <Star className="w-2.5 h-2.5 text-noche fill-current" />
                             </div>
+                          )}
+                          <div className="absolute inset-0 bg-noche/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                            {!isAvatar && (
+                              <button onClick={() => handleSetAvatar(p.person_id, photo.filename)} title="Marcar como avatar" className="p-1 bg-lavanda text-noche rounded-full">
+                                <Star className="w-3 h-3" />
+                              </button>
+                            )}
+                            <button onClick={() => handleDeletePhoto(p.person_id, photo.filename)} title="Eliminar foto" className="p-1 bg-estado-error/90 text-noche rounded-full">
+                              <Trash2 className="w-3 h-3" />
+                            </button>
                           </div>
-                        );
-                      })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  ) : appearances.length > 0 ? (
+                    /* Ya se le reconoce en el archivo: el recuadro punteado de
+                       "sube 5-10 fotos" pedia trabajo que no hace falta. */
+                    <p className="text-[12px] text-humo leading-relaxed">
+                      Sin fotos de referencia: se le reconoce por las caras que ya tiene
+                      asignadas en el archivo. Sube alguna solo si falla en material nuevo.
+                    </p>
+                  ) : (
+                    <div className="p-4 rounded-lg border-2 border-dashed border-pizarra text-center text-[11px] text-lavanda-archivo">
+                      Sube 5-10 fotos con caras claras y distintos ángulos para que el
+                      reconocimiento pueda empezar a encontrarla.
                     </div>
                   )}
-                </div>
-
-                {/* Acciones */}
-                <div className="flex gap-2.5 flex-wrap mt-auto pt-1.5">
-                  {faceStatus?.ready && photos.length > 0 && (
-                    <button onClick={() => handleRetrain(p.person_id)} disabled={training} className="inline-flex items-center gap-1.5 h-[38px] px-4 rounded-full bg-lavanda text-noche text-[13px] font-semibold hover:bg-lavanda-claro disabled:opacity-60">
-                      <Brain className={`w-4 h-4 ${training ? 'animate-pulse' : ''}`} />
-                      Re-entrenar
-                    </button>
-                  )}
-                  {persons.length > 1 && (
-                    <button onClick={() => { setMergePersonOpen(true); setMergeLoserId(null); setMergeQuery(''); }} style={glassSoft} className="inline-flex items-center gap-1.5 h-[38px] px-[15px] rounded-full text-[13px] font-medium text-niebla hover:text-marfil" title="Fusionar otra persona en esta">
-                      <GitMerge className="w-[15px] h-[15px]" />
-                      Fusionar
-                    </button>
-                  )}
-                  <button onClick={() => handleDelete(p)} title="Eliminar persona" style={glassSoft} className="inline-flex items-center justify-center w-[38px] h-[38px] rounded-full text-estado-error hover:bg-estado-error/10">
-                    <Trash2 className="w-[15px] h-[15px]" />
-                  </button>
                 </div>
               </div>
             </div>
@@ -1888,6 +2291,86 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         );
       })()}
     </div>
+  );
+}
+
+/**
+ * Dimensiones reales del archivo, que es el espacio en el que vienen las bbox.
+ */
+function dimensionesDe(f: import('../types').MediaFile): { ancho: number; alto: number } | null {
+  if (f.dimensions && f.dimensions.width && f.dimensions.height) {
+    return { ancho: f.dimensions.width, alto: f.dimensions.height };
+  }
+  const r = (f as unknown as { resolution?: string }).resolution;
+  const m = typeof r === 'string' ? r.match(/^(\d+)\s*x\s*(\d+)$/i) : null;
+  if (!m) return null;
+  const ancho = parseInt(m[1], 10);
+  const alto = parseInt(m[2], 10);
+  return ancho > 0 && alto > 0 ? { ancho, alto } : null;
+}
+
+/**
+ * Recorte de una cara hecho con CSS sobre la miniatura. La bbox esta en
+ * pixeles del fotograma original y la miniatura es ese mismo fotograma a otra
+ * escala, asi que basta con trabajar en fracciones: ancho y alto se fijan por
+ * separado pero salen del MISMO cuadrado en pixeles, de modo que la imagen no
+ * se deforma.
+ */
+function RecorteCara({ src, bbox, ancho, alto }: {
+  src?: string; bbox: number[]; ancho: number; alto: number;
+}) {
+  const [x1, y1, x2, y2] = bbox;
+  // Margen alrededor de la cara: un retrato pegado a las cejas no es retrato.
+  const lado = Math.max(x2 - x1, y2 - y1) * 1.7;
+  const rx = Math.min(1, lado / ancho);
+  const ry = Math.min(1, lado / alto);
+  const cx = (x1 + x2) / 2 / ancho;
+  const cy = (y1 + y2) / 2 / alto;
+  const izq = Math.min(Math.max(cx - rx / 2, 0), 1 - rx);
+  const arr = Math.min(Math.max(cy - ry / 2, 0), 1 - ry);
+  if (!src) return <div className="absolute inset-0 bg-pizarra" />;
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      style={{
+        position: 'absolute',
+        maxWidth: 'none',
+        width: `${100 / rx}%`,
+        height: `${100 / ry}%`,
+        left: `${(-izq * 100) / rx}%`,
+        top: `${(-arr * 100) / ry}%`,
+      }}
+      onError={e => { (e.target as HTMLImageElement).style.opacity = '0.25'; }}
+    />
+  );
+}
+
+/**
+ * Una cifra del panel de estado. Si lleva `onClick` se comporta como filtro:
+ * el numero es el sitio natural para pulsar cuando quieres ver "esos".
+ */
+function Cifra({ valor, etiqueta, acento, aviso, onClick }: {
+  valor: number; etiqueta: string; acento?: boolean; aviso?: boolean; onClick?: () => void;
+}) {
+  const color = aviso && valor > 0 ? 'text-melocoton' : acento ? 'text-lavanda' : 'text-marfil';
+  const cuerpo = (
+    <>
+      <span className={`block text-[26px] font-bold leading-none tabular-nums ${color}`}>
+        {valor.toLocaleString('es-ES')}
+      </span>
+      <span className="mt-1.5 block font-mono text-[10px] tracking-wider uppercase text-humo">{etiqueta}</span>
+    </>
+  );
+  if (!onClick) return <div>{cuerpo}</div>;
+  return (
+    <button
+      onClick={onClick}
+      className="text-left rounded-lg -mx-2 px-2 py-1 hover:bg-pizarra/60 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda"
+    >
+      {cuerpo}
+    </button>
   );
 }
 
@@ -1921,7 +2404,9 @@ function AliasesEditor({ initialAliases, onSave }: { initialAliases: string[]; o
       onChange={e => setValue(e.target.value)}
       onBlur={save}
       onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
-      placeholder="Ester, Esti, mi prima"
+      // Un ejemplo con nombres reales del archivo se lee como un valor ya
+      // escrito, no como un ejemplo. Mejor decir para que sirve el campo.
+      placeholder="Otros nombres con los que la buscas…"
       className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda text-sm"
     />
   );

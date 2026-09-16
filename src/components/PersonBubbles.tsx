@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
+import { GitCommitVertical } from 'lucide-react';
 import config from '../config';
 import type { Person } from '../types';
 
 interface PersonBubblesProps {
   selectedPersonIds: string[];
   onSelectionChange: (personIds: string[]) => void;
+  /** Abre la linea de vida de una persona (solo se ofrece con una sola activa). */
+  onVerLineaDeVida?: (personId: string) => void;
 }
 
 // Hash estable de un string a un entero no negativo (para derivar color)
@@ -41,7 +44,7 @@ function avatarFullUrl(relativePath: string): string {
 const MIN_BUBBLES = 10;
 const MAX_BUBBLES = 28;
 
-export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: PersonBubblesProps) {
+export default function PersonBubbles({ selectedPersonIds, onSelectionChange, onVerLineaDeVida }: PersonBubblesProps) {
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -198,6 +201,22 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange }: 
           {expanded ? '−' : `+${hiddenInBubblesCount}`}
         </button>
       )}
+      {/* Con UNA sola persona activa la pregunta natural es "y esta quien es
+          a lo largo del tiempo": la linea de vida. Con varias no significa
+          nada, asi que no aparece. */}
+      {onVerLineaDeVida && selectedPersonIds.length === 1 && (() => {
+        const activa = persons.find(p => p.person_id === selectedPersonIds[0]);
+        return (
+          <button
+            onClick={() => onVerLineaDeVida(selectedPersonIds[0])}
+            title={activa ? `Ver la linea de vida de ${activa.display_name}` : 'Ver su linea de vida'}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-pizarra text-lavanda hover:bg-lavanda hover:text-noche transition-colors"
+          >
+            <GitCommitVertical className="w-3.5 h-3.5" />
+            Línea de vida
+          </button>
+        );
+      })()}
       {hiddenBeyondMaxCount > 0 && (
         <span className="text-xs text-humo italic ml-1">
           +{hiddenBeyondMaxCount} mas · busca con <span className="font-mono text-lavanda-archivo not-italic">@nombre</span>

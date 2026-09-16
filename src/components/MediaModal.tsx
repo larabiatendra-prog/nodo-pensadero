@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
+  Lock,
   Download,
   Heart,
   FileText,
@@ -42,10 +43,50 @@ interface MediaModalProps {
   /** Nota humana de este archivo (vacia si no hay). */
   note?: string;
   /** Persiste la nota del archivo. note vacio borra. */
-  onSaveNote?: (fileId: string, note: string) => Promise<void> | void;
+  onSaveNote?: (fileId: string, note: string, mediaKey?: string) => Promise<void> | void;
   /** Abre la carpeta contenedora con el archivo seleccionado. */
   onOpenPath?: (fileId: string) => void;
+  /** Pone el archivo bajo candado (y cierra el visor: ya no se puede ver). */
+  onOcultar?: (file: MediaFile) => void;
 }
+
+/**
+ * Clases del media en la tarjeta (video e imagen). El alto maximo es lo que
+ * queda de la tarjeta (90vh) tras cabecera, padding y fila de relacionados:
+ * asi se ve lo mas grande posible sin forzar scroll dentro de la tarjeta.
+ * El suelo de 58vh evita que en pantallas bajas se quede demasiado pequeno.
+ */
+const CLASES_MEDIA = 'block max-h-[max(58vh,calc(90vh-300px))] w-auto max-w-full object-contain';
+
+/** Preferencias de visionado que se recuerdan entre sesiones. */
+const CLAVE_ENCADENAR = 'pensadero.encadenarClips';
+const CLAVE_VOLUMEN = 'pensadero.volumenVideo';
+
+/** Volumen con el que se dejo el reproductor. Sin nada guardado, al maximo. */
+function leerVolumen(): { volume: number; muted: boolean } {
+  try {
+    const crudo = localStorage.getItem(CLAVE_VOLUMEN);
+    if (!crudo) return { volume: 1, muted: false };
+    const dato = JSON.parse(crudo);
+    const volume = typeof dato.volume === 'number' && dato.volume >= 0 && dato.volume <= 1
+      ? dato.volume
+      : 1;
+    return { volume, muted: !!dato.muted };
+  } catch {
+    return { volume: 1, muted: false };
+  }
+}
+
+function guardarVolumen(volume: number, muted: boolean) {
+  try {
+    localStorage.setItem(CLAVE_VOLUMEN, JSON.stringify({ volume, muted }));
+  } catch {
+    // Navegacion privada o almacenamiento lleno: no es critico, se pierde la preferencia.
+  }
+}
+
+/** Archivos relacionados por pagina: una sola fila en la tarjeta. */
+const RELACIONADOS_POR_PAGINA = 8;
 
 export default function MediaModal({
   file,
@@ -61,9 +102,20 @@ export default function MediaModal({
   onPersonFilter,
   note,
   onSaveNote,
-  onOpenPath
+  onOpenPath,
+  onOcultar
 }: MediaModalProps) {
   const [relatedFilesStartIndex, setRelatedFilesStartIndex] = useState(0);
+  // Encadenar clips: al terminar un video salta al siguiente. Se recuerda entre
+  // sesiones porque es una preferencia de visionado, no un dato del archivo.
+  const [encadenarClips, setEncadenarClips] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(CLAVE_ENCADENAR) === '1';
+    } catch {
+      return false;
+    }
+  });
+
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [backgroundRemovalError, setBackgroundRemovalError] = useState<string | null>(null);
@@ -101,7 +153,10 @@ export default function MediaModal({
       return;
     }
     const ctrl = new AbortController();
-    setPlayable(null);
+    // Ojo: NO reseteamos playable a null aqui. Si lo hicieramos, React desmonta
+    // el <video> entre clip y clip y el navegador sale de pantalla completa al
+    // encadenar. Mantenemos el clip anterior (milisegundos, es un fetch local)
+    // hasta que resuelve el nuevo, y solo entonces cambia el src.
     resolvePlayable(file.id, {
       signal: ctrl.signal,
       onUpdate: (info) => { if (!ctrl.signal.aborted) setPlayable(info); },
@@ -110,6 +165,11 @@ export default function MediaModal({
     });
     return () => ctrl.abort();
   }, [file?.id, file?.type]);
+  // Al cerrar la tarjeta si soltamos el clip: sin esto, la proxima apertura
+  // mostraria un instante el video anterior (ver comentario de arriba).
+  useEffect(() => {
+    if (!isOpen) setPlayable(null);
+  }, [isOpen]);
   // Tolerancia (segundos) alrededor de detection_frame_time donde se muestran
   // los bboxes en video. Si te pasas, los bboxes desaparecen.
   const VIDEO_BBOX_TOLERANCE_S = 1.5;
@@ -142,7 +202,7 @@ export default function MediaModal({
     setNoteSaving(true);
     setNoteSaved(false);
     try {
-      await onSaveNote(file.id, text);
+      await onSaveNote(file.id, text, file.mediaKey);
       setNoteSaved(true);
     } finally {
       setNoteSaving(false);
@@ -347,6 +407,34 @@ export default function MediaModal({
     onFileSelect(allFiles[nextIndex]);
   };
 
+  const alternarEncadenarClips = () => {
+    setEncadenarClips(previo => {
+      const siguiente = !previo;
+      try {
+        localStorage.setItem(CLAVE_ENCADENAR, siguiente ? '1' : '0');
+      } catch {
+        // Sin localStorage el toggle sigue funcionando, solo no se recuerda.
+      }
+      return siguiente;
+    });
+  };
+
+  // Salta al siguiente clip reproducible (video o export), saltandose fotos y
+  // audio: encadenar solo tiene sentido entre cosas que se reproducen solas.
+  // Mismo loop circular que las flechas; si no hay otro clip, se queda donde esta.
+  const irAlSiguienteClip = () => {
+    if (!hasMultipleFiles || currentIndex === -1 || !onFileSelect) return;
+
+    for (let salto = 1; salto < allFiles.length; salto++) {
+      const indice = (currentIndex + salto) % allFiles.length;
+      const tipo = allFiles[indice].type;
+      if (tipo === 'video' || tipo === 'export') {
+        onFileSelect(allFiles[indice]);
+        return;
+      }
+    }
+  };
+
   // Manejar tecla Esc para cerrar modal o fullscreen y flechas para navegación
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -433,20 +521,20 @@ export default function MediaModal({
   };
 
   const relatedFiles = getRelatedFiles();
-  const visibleRelatedFiles = relatedFiles.slice(relatedFilesStartIndex, relatedFilesStartIndex + 8);
+  const visibleRelatedFiles = relatedFiles.slice(relatedFilesStartIndex, relatedFilesStartIndex + RELACIONADOS_POR_PAGINA);
 
   const canScrollLeft = relatedFilesStartIndex > 0;
-  const canScrollRight = relatedFilesStartIndex + 8 < relatedFiles.length;
+  const canScrollRight = relatedFilesStartIndex + RELACIONADOS_POR_PAGINA < relatedFiles.length;
 
   const scrollRelatedLeft = () => {
     if (canScrollLeft) {
-      setRelatedFilesStartIndex(Math.max(0, relatedFilesStartIndex - 4));
+      setRelatedFilesStartIndex(Math.max(0, relatedFilesStartIndex - RELACIONADOS_POR_PAGINA));
     }
   };
 
   const scrollRelatedRight = () => {
     if (canScrollRight) {
-      setRelatedFilesStartIndex(Math.min(relatedFiles.length - 8, relatedFilesStartIndex + 4));
+      setRelatedFilesStartIndex(Math.min(relatedFiles.length - RELACIONADOS_POR_PAGINA, relatedFilesStartIndex + RELACIONADOS_POR_PAGINA));
     }
   };
 
@@ -555,21 +643,27 @@ export default function MediaModal({
               ) : (
                 <video
                   ref={videoRef}
-                  key={file.id}
+                  src={playable.url}
                   controls
-                  className="block max-h-96 w-auto max-w-full object-contain"
+                  autoPlay
+                  className={CLASES_MEDIA}
                   poster={file.thumbnail.startsWith('data:') ? undefined : file.thumbnail}
                   preload="metadata"
                   onLoadedMetadata={(e) => {
                     const v = e.currentTarget;
+                    // Antes de que arranque el autoplay: volumen con el que se dejo.
+                    const { volume, muted } = leerVolumen();
+                    v.volume = volume;
+                    v.muted = muted;
                     if (v.videoWidth && v.videoHeight) {
                       setVideoNatural({ w: v.videoWidth, h: v.videoHeight });
                     }
                   }}
+                  onVolumeChange={(e) => guardarVolumen(e.currentTarget.volume, e.currentTarget.muted)}
+                  onEnded={() => { if (encadenarClips) irAlSiguienteClip(); }}
                   onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
                   onSeeked={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
                 >
-                  <source src={playable.url} type="video/mp4" />
                   Tu navegador no soporta la reproducción de video.
                 </video>
               )}
@@ -668,7 +762,7 @@ export default function MediaModal({
                 key={file.id}
                 src={file.url}
                 alt={file.name}
-                className="block max-h-96 w-auto max-w-full object-contain"
+                className={CLASES_MEDIA}
                 onLoad={(e) => {
                   const t = e.currentTarget;
                   if (t.naturalWidth && t.naturalHeight) {
@@ -735,7 +829,7 @@ export default function MediaModal({
   return (
     <>
       <div className="fixed inset-0 bg-noche bg-opacity-50 flex items-center justify-center p-4 z-50">
-        <div className="bg-tinta rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-auto relative">
+        <div className="bg-tinta rounded-2xl max-w-[min(92vw,1700px)] w-full max-h-[90vh] overflow-auto relative">
 
         {/* Navigation Arrows - Solo si hay múltiples archivos */}
         {hasMultipleFiles && (
@@ -770,10 +864,10 @@ export default function MediaModal({
         </button>
 
         <div className="p-4 md:p-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {/* Media preview — el nombre del archivo aparece como overlay
                 oscurecido al pasar el raton por encima */}
-            <div className="md:col-span-2 relative group/media">
+            <div className="md:col-span-3 relative group/media">
               {renderMediaPreview()}
               <div className="absolute top-0 inset-x-0 z-20 p-3 rounded-t-lg bg-gradient-to-b from-noche/85 via-noche/40 to-transparent opacity-0 group-hover/media:opacity-100 transition-opacity duration-200 pointer-events-none">
                 <span className="block text-sm font-medium text-marfil truncate" title={file.displayName ? `Archivo: ${file.name}` : file.name}>
@@ -812,6 +906,16 @@ export default function MediaModal({
                     <FolderOpen className="w-4 h-4" />
                   </button>
                 )}
+                {onOcultar && (
+                  <button
+                    onClick={() => onOcultar(file)}
+                    title="Ocultar bajo candado: deja de salir en la aplicacion hasta dar la clave"
+                    aria-label="Ocultar bajo candado"
+                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
+                  >
+                    <Lock className="w-4 h-4" />
+                  </button>
+                )}
                 {file.type === 'image' && (
                   <button
                     onClick={handleRemoveBackground}
@@ -832,7 +936,39 @@ export default function MediaModal({
                   </button>
                 )}
               </div>
+
+              {/* Encadenar clips â mismo interruptor que "Agrupar por sesiones".
+                  Solo en video/export: encadenar fotos no significa nada. */}
+              {(file.type === 'video' || file.type === 'export') && hasMultipleFiles && (
+                <button
+                  onClick={alternarEncadenarClips}
+                  aria-pressed={encadenarClips}
+                  title={encadenarClips
+                    ? 'Al terminar el clip salta al siguiente. Pulsa para desactivar.'
+                    : 'Al terminar el clip se queda aqui. Pulsa para encadenar con el siguiente.'}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 ${
+                    encadenarClips
+                      ? 'bg-lavanda-claro text-marfil shadow-md'
+                      : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
+                  }`}
+                >
+                  <div
+                    className={`relative w-8 h-4 rounded-full transition-colors duration-200 flex-shrink-0 ${
+                      encadenarClips ? 'bg-lavanda' : 'bg-slate-300'
+                    }`}
+                  >
+                    <div
+                      className={`absolute top-0.5 w-3 h-3 rounded-full bg-tinta shadow transition-transform duration-200 ${
+                        encadenarClips ? 'translate-x-4' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </div>
+                  Encadenar clips
+                </button>
+              )}
+
               {file.type === 'image' && backgroundRemovalError && (
+
                 <p className="text-xs text-red-500">{backgroundRemovalError}</p>
               )}
 
@@ -917,7 +1053,7 @@ export default function MediaModal({
                 </div>
               </div>
               
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
                 {visibleRelatedFiles.map((relatedFile) => (
                   <button
                     key={relatedFile.id}
@@ -964,7 +1100,7 @@ export default function MediaModal({
                 ))}
               </div>
               
-              {relatedFiles.length > 8 && (
+              {relatedFiles.length > RELACIONADOS_POR_PAGINA && (
                 <div className="text-center mt-2">
                   <p className="text-xs text-slate-500">
                     Usa las flechas para ver más archivos relacionados

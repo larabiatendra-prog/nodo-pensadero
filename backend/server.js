@@ -40,6 +40,7 @@ const pathsConfig = require('./config/paths');
 // Routers modulares
 const createAiRoutes = require('./routes/aiRoutes');
 const createOrganizationRoutes = require('./routes/organizationRoutes');
+const createDuplicatesRoutes = require('./routes/duplicatesRoutes');
 const createMediaRoutes = require('./routes/mediaRoutes');
 const createSystemRoutes = require('./routes/systemRoutes');
 const createScanRoutes = require('./routes/scanRoutes');
@@ -47,10 +48,14 @@ const createPersonsManageRoutes = require('./routes/personsManageRoutes');
 const createColorSearchRoutes = require('./routes/colorSearchRoutes');
 const createAliasRoutes = require('./routes/aliasRoutes');
 const createNotesRoutes = require('./routes/notesRoutes');
+const createOcultosRoutes = require('./routes/ocultosRoutes');
+const ocultosManager = require('./ocultosManager');
 const aliasTable = require('./aliasTable');
 const folderNames = require('./folderNames');
 const mediaIdentity = require('./utils/mediaIdentity');
 const clipIndex = require('./clipIndex');
+const fallos = require('./utils/failureReason');
+const { esCarpetaExcluida, esArchivoBasura } = require('./utils/carpetasExcluidas');
 const spacesRegistry = require('./spacesRegistry');
 const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
 
@@ -132,6 +137,27 @@ async function saveScanPaths(paths) {
   } catch (error) {
     console.error('❌ Error guardando rutas:', error.message);
   }
+}
+
+/**
+ * Guarda lo que una sincronizacion sabe de cada ruta (estado, conteo, ultima
+ * pasada) ENCIMA de lo que haya en disco en ese momento. La sincronizacion
+ * carga las rutas al empezar y puede durar minutos: guardarlas tal cual
+ * pisaba lo que el usuario hubiera cambiado entretanto (un interruptor de
+ * escaneo, un nombre, desvincular una ruta).
+ */
+async function guardarEstadoDeRutas(rutasSync) {
+  const frescas = await loadScanPaths();
+  if (!Array.isArray(frescas) || frescas.length === 0) return saveScanPaths(rutasSync);
+  const porId = new Map(rutasSync.map(r => [r.id, r]));
+  for (const r of frescas) {
+    const s = porId.get(r.id);
+    if (!s) continue;
+    for (const k of ['status', 'lastError', 'lastScan', 'fileCount']) {
+      if (Object.prototype.hasOwnProperty.call(s, k)) r[k] = s[k];
+    }
+  }
+  return saveScanPaths(frescas);
 }
 
 async function loadExportsPaths() {
@@ -324,6 +350,7 @@ async function loadCache() {
   try {
     await favoritesManager.loadFavorites();
     await collectionsManager.loadCollections();
+    await ocultosManager.ensureLoaded();
 
     const exists = await fs.access(CACHE_FILE).then(() => true).catch(() => false);
     if (exists) {
@@ -618,7 +645,88 @@ function svgPlaceholder(label, fileName, bg) {
 
 // === ESCANEO ===
 
+/**
+ * Progreso del indexado en curso.
+ *
+ * Lo abre quien lanza el recorrido (performSync, o la sincronizacion de una
+ * sola ruta) y lo va anotando scanDirectory archivo a archivo. Existe para que
+ * la pantalla de progreso muestre cifras de TODO el proceso —hechos de cuantos,
+ * cuanto lleva, en que biblioteca va— y no un porcentaje que volvia a cero en
+ * cada disco y decia "Escaneando" cuando no habia IA de por medio.
+ */
+let indexado = null;
+
+function abrirIndexado({ total = 0, bibliotecasTotal = 1 } = {}) {
+  indexado = {
+    inicio: Date.now(),
+    total,
+    hechos: 0,
+    nuevos: 0,
+    enCache: 0,
+    modificados: 0,
+    biblioteca: null,
+    bibliotecaN: 0,
+    bibliotecasTotal,
+    ultimoEnvio: 0,
+  };
+  return indexado;
+}
+
+/** Campos comunes de todos los frames del indexado. */
+function camposIndexado(extra = {}) {
+  const x = indexado;
+  if (!x) return extra;
+  return {
+    inicio: x.inicio,
+    hechos: x.hechos,
+    total: x.total,
+    nuevos: x.nuevos,
+    enCache: x.enCache,
+    modificados: x.modificados,
+    biblioteca: x.biblioteca,
+    bibliotecaN: x.bibliotecaN,
+    bibliotecasTotal: x.bibliotecasTotal,
+    percentage: x.total > 0 ? Math.min(100, Math.round((x.hechos / x.total) * 100)) : 0,
+    ...extra,
+  };
+}
+
+/**
+ * Anota un archivo recorrido y emite progreso. Los aciertos de cache van a
+ * miles por segundo: se emite como mucho cada 120 ms para no inundar el
+ * WebSocket (antes salia un frame por archivo, 28.000 en una sincronizacion).
+ * Los nuevos y modificados, que tardan de verdad, se emiten siempre.
+ * @param {'cache'|'nuevo'|'modificado'} accion
+ */
+function anotarIndexado(nombre, accion) {
+  const x = indexado;
+  if (!x) return;
+  x.hechos++;
+  if (accion === 'cache') x.enCache++;
+  else if (accion === 'modificado') x.modificados++;
+  else x.nuevos++;
+  const ahora = Date.now();
+  if (accion === 'cache' && ahora - x.ultimoEnvio < 120 && x.hechos < x.total) return;
+  x.ultimoEnvio = ahora;
+  broadcastProgress({
+    type: 'sync_progress',
+    ...camposIndexado({ fase: 'indexando', archivo: nombre, accion }),
+  });
+}
+
 async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles = 0, libraryId = null) {
+  // Llamada de primer nivel sin progreso abierto (p.ej. sincronizar una sola
+  // ruta): se abre aqui y se cierra al terminar.
+  const abreProgreso = !indexado && dir === baseDir;
+  if (abreProgreso) abrirIndexado({ total: totalFiles });
+  try {
+    return await recorrerDirectorio(dir, baseDir, totalFiles, processedFiles, libraryId);
+  } finally {
+    if (abreProgreso) indexado = null;
+  }
+}
+
+async function recorrerDirectorio(dir, baseDir = dir, totalFiles = 0, processedFiles = 0, libraryId = null) {
   const files = [];
   let newFiles = 0, cachedFiles = 0, modifiedFiles = 0;
   let lastSaveTime = Date.now();
@@ -635,13 +743,17 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
         // el escaner re-indexaria sus propios thumbnails .jpg como medios
         // (duplicados que se persisten en media_cache.json).
         if (entry.name.startsWith('.')) continue;
-        const sub = await scanDirectory(fullPath, baseDir, totalFiles, processedFiles, libraryId);
+        // Previews de render, auto-saves y caches de las suites de edicion:
+        // son archivos que el programa regenera solo, no son material.
+        if (esCarpetaExcluida(entry.name)) continue;
+        const sub = await recorrerDirectorio(fullPath, baseDir, totalFiles, processedFiles, libraryId);
         files.push(...sub.files);
         newFiles += sub.stats.newFiles;
         cachedFiles += sub.stats.cachedFiles;
         modifiedFiles += sub.stats.modifiedFiles;
         processedFiles = sub.currentProcessed;
       } else if (entry.isFile()) {
+        if (esArchivoBasura(entry.name)) continue;
         const fileType = getFileType(fullPath);
         if (!fileType) continue;
 
@@ -670,16 +782,7 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
             const merged = await catalogReader.applyCatalog(cached.fileData);
             files.push(merged);
             cachedFiles++;
-            if (totalFiles > 0) {
-              broadcastProgress({
-                type: 'scan_progress',
-                current: processedFiles,
-                total: totalFiles,
-                percentage: Math.round((processedFiles / totalFiles) * 100),
-                status: `Cargando desde cache: ${entry.name}`,
-                action: 'cached'
-              });
-            }
+            anotarIndexado(entry.name, 'cache');
             continue;
           }
           modifiedFiles++;
@@ -687,16 +790,9 @@ async function scanDirectory(dir, baseDir = dir, totalFiles = 0, processedFiles 
           newFiles++;
         }
 
-        if (totalFiles > 0) {
-          broadcastProgress({
-            type: 'scan_progress',
-            current: processedFiles,
-            total: totalFiles,
-            percentage: Math.round((processedFiles / totalFiles) * 100),
-            status: `Procesando: ${entry.name}`,
-            action: fileCache.has(fullPath) ? 'modified' : 'new'
-          });
-        }
+        // Se anota ANTES de procesarlo: lo que tarda es la miniatura de este
+        // archivo, y la pantalla debe decir en cual esta, no el anterior.
+        anotarIndexado(entry.name, fileCache.has(fullPath) ? 'modificado' : 'nuevo');
 
         const relativePath = path.relative(baseDir, fullPath);
         const fileId = generateFileId(fullPath);
@@ -790,8 +886,10 @@ async function countMediaFiles(dir) {
       if (entry.isDirectory()) {
         // Mismo skip que scanDirectory: no contar archivos dentro de .pensadero.
         if (entry.name.startsWith('.')) continue;
+        // Mismo criterio que scanDirectory: contar lo que se va a catalogar.
+        if (esCarpetaExcluida(entry.name)) continue;
         count += await countMediaFiles(fullPath);
-      } else if (entry.isFile() && getFileType(fullPath)) {
+      } else if (entry.isFile() && !esArchivoBasura(entry.name) && getFileType(fullPath)) {
         count++;
       }
     }
@@ -813,11 +911,38 @@ async function performSync() {
   // carpetas absolutas -> identidad portable (libraryId + relativeDir). Se hace
   // en cada sync para reflejar remapeos de raiz al instante.
   folderNames.setLibraries(activePaths.map(p => ({ id: p.id, path: p.path })));
+  // Mismo motivo para favoritos: sin las bibliotecas no puede derivar la
+  // mediaKey y se quedaria guardando por ruta absoluta (no portable).
+  favoritesManager.setLibraries(activePaths.map(p => ({ id: p.id, path: p.path })));
 
-  broadcastProgress({ type: 'sync_start', status: 'Contando archivos...', percentage: 0 });
+  // Se cuenta TODO antes de recorrer nada: asi el total es el del proceso
+  // entero y el porcentaje no vuelve a cero al cambiar de disco.
+  abrirIndexado({ bibliotecasTotal: activePaths.length });
+  broadcastProgress({ type: 'sync_start', ...camposIndexado({ fase: 'contando', status: 'Contando archivos...' }) });
+  const conteos = new Map();
+  for (const pathConfig of activePaths) {
+    try {
+      await fs.access(pathConfig.path);
+    } catch {
+      continue;
+    }
+    indexado.biblioteca = pathConfig.path;
+    indexado.bibliotecaN = conteos.size + 1;
+    broadcastProgress({ type: 'sync_progress', ...camposIndexado({ fase: 'contando' }) });
+    const n = await countMediaFiles(pathConfig.path);
+    conteos.set(pathConfig.id, n);
+    indexado.total += n;
+    console.log(`📊 ${n} archivos en ${pathConfig.path}`);
+  }
+  indexado.bibliotecasTotal = conteos.size;
+  indexado.bibliotecaN = 0;
 
   let allFiles = [];
   let totalStats = { newFiles: 0, cachedFiles: 0, modifiedFiles: 0 };
+  // Bibliotecas que se han podido LEER en esta pasada. Solo sobre estas se
+  // puede afirmar que un archivo ha desaparecido; sobre un disco desconectado
+  // la ausencia no prueba nada (ver cleanupOrphanedFavorites).
+  const librariesScanned = new Set();
 
   try {
     for (const pathConfig of activePaths) {
@@ -833,15 +958,18 @@ async function performSync() {
         continue;
       }
 
-      const totalFiles = await countMediaFiles(pathConfig.path);
-      console.log(`📊 ${totalFiles} archivos en ${pathConfig.path}`);
+      librariesScanned.add(pathConfig.id);
 
-      broadcastProgress({
-        type: 'sync_progress',
-        status: `Escaneando ${pathConfig.path}...`,
-        percentage: 0,
-        total: totalFiles
-      });
+      // Contada arriba; si el disco aparecio entre medias, se cuenta ahora.
+      let totalFiles = conteos.get(pathConfig.id);
+      if (typeof totalFiles !== 'number') {
+        totalFiles = await countMediaFiles(pathConfig.path);
+        indexado.total += totalFiles;
+        indexado.bibliotecasTotal++;
+      }
+      indexado.biblioteca = pathConfig.path;
+      indexado.bibliotecaN++;
+      broadcastProgress({ type: 'sync_progress', ...camposIndexado({ fase: 'indexando' }) });
 
       const result = await scanDirectory(pathConfig.path, pathConfig.path, totalFiles, 0, pathConfig.id);
       allFiles.push(...result.files);
@@ -856,8 +984,13 @@ async function performSync() {
     }
 
     if (paths.length > 0) {
-      await saveScanPaths(paths);
+      await guardarEstadoDeRutas(paths);
     }
+
+    // Tras el recorrido quedan unos segundos sin archivos que contar: nombres
+    // de carpeta, favoritos, indice visual, colecciones y personas. Sin este
+    // aviso la pantalla se quedaba clavada en el ultimo archivo.
+    broadcastProgress({ type: 'sync_progress', ...camposIndexado({ fase: 'rematando', percentage: 100 }) });
 
     // Limpiar cache de archivos inexistentes
     const existingPaths = new Set(allFiles.map(f => f.fullPath).filter(Boolean));
@@ -875,14 +1008,22 @@ async function performSync() {
     // re-derivar tags/fecha desde el nombre nuevo. El archivo fisico no se toca.
     allFiles = folderNames.applyFolderNames(allFiles, { smartTags: extractSmartTags });
 
+    // Herencia de la carpeta FISICA para las que no tienen nombre propio: el
+    // material de camara ("P1248278.MP4") hereda las etiquetas y la fecha de su
+    // carpeta-evento ("260811_Ondara") y pasa a ser buscable como lo busca una
+    // persona. No se persiste: se recalcula en cada sync.
+    allFiles = folderNames.applyFolderInheritance(allFiles, { smartTags: extractSmartTags });
+
     // Aplicar favoritos
     mediaFiles = favoritesManager.applyFavoritesToFiles(allFiles);
 
     // Limpieza de huérfanos
-    const currentFileIds = mediaFiles.map(f => f.id);
-    const currentPaths = mediaFiles.map(f => f.fullPath).filter(Boolean);
-    await favoritesManager.cleanupOrphanedFavorites(currentPaths);
-    await collectionsManager.cleanupOrphanedFiles(currentFileIds);
+    await favoritesManager.cleanupOrphanedFavorites(mediaFiles, librariesScanned);
+    await sincronizarIndiceClip(mediaFiles, librariesScanned.size === activePaths.length);
+    await collectionsManager.cleanupOrphanedFiles(mediaFiles, {
+      scannedLibraryIds: librariesScanned,
+      todasLasBibliotecasLeidas: librariesScanned.size === activePaths.length,
+    });
 
     // Recalcular agregado de personas tras cada sync (memoización)
     recomputePersonsAggregate();
@@ -891,6 +1032,8 @@ async function performSync() {
       type: 'sync_complete',
       status: 'Sincronización completada',
       percentage: 100,
+      inicio: indexado ? indexado.inicio : undefined,
+      duracionMs: indexado ? Date.now() - indexado.inicio : undefined,
       total: mediaFiles.length,
       stats: {
         nuevos: totalStats.newFiles,
@@ -909,9 +1052,42 @@ async function performSync() {
     broadcastProgress({ type: 'sync_error', status: 'Error', error: error.message });
     return allFiles;
   } finally {
+    indexado = null;
     if (fileCache.size > 0) {
       await saveCache().catch(() => {});
     }
+  }
+}
+
+/**
+ * Mantiene el indice de busqueda visual (CLIP/SigLIP-2) a la par de la
+ * biblioteca: quita las entradas que apuntan a archivos que ya no existen.
+ *
+ * Por que importa y no es solo disco: `searchNearest` coge los N mejores del
+ * indice ENTERO y los huerfanos se descartan DESPUES. Con el indice sucio se
+ * pedian 50 resultados y llegaban 19 — medido: en "una playa con el mar al
+ * fondo", 31 de los 50 mejores apuntaban a material borrado. La busqueda
+ * rendia a una fraccion de lo que puede sin que nada lo dijera.
+ *
+ * Mismo criterio que los favoritos: solo se poda si TODAS las bibliotecas
+ * activas se han podido leer. Con un disco desconectado la ausencia no prueba
+ * nada, y aqui el error seria caro: borrar el indice entero de esa biblioteca.
+ */
+async function sincronizarIndiceClip(files, todasLasBibliotecasLeidas) {
+  try {
+    if (!todasLasBibliotecasLeidas) return;
+    if (!clipIndex.isLoaded()) await clipIndex.load();
+    if (clipIndex.size() === 0) return;
+    const antes = clipIndex.size();
+    const quitados = clipIndex.pruneOrphans(files.map(f => f.id));
+    if (quitados > 0) {
+      await clipIndex.save();
+      console.log(`🧹 Indice visual podado: ${quitados} entradas huerfanas (${antes} -> ${clipIndex.size()})`);
+    }
+  } catch (err) {
+    // El indice es regenerable desde los `clip_embedding_b64` de cada sidecar:
+    // que falle la poda no puede tumbar el sync.
+    fallos.record('podar el indice de busqueda visual', err);
   }
 }
 
@@ -1029,6 +1205,7 @@ async function refreshFilesInDir(dirPath) {
   // Re-aplicar el display name de carpeta (+ enumeracion) sobre los refrescados:
   // applyCatalog parte del base sin esta capa, asi que hay que volver a ponerla.
   folderNames.applyFolderNames(touched, { smartTags: extractSmartTags });
+  folderNames.applyFolderInheritance(touched, { smartTags: extractSmartTags });
   // Recalcular el agregado de personas: si el refresco cambio las caras de un
   // archivo (re-id, assign-face, promote), los conteos/bubbles del home deben
   // reflejarlo. Sin esto, el mediaFile se actualizaba pero personsAggregate no.
@@ -1038,9 +1215,15 @@ async function refreshFilesInDir(dirPath) {
 
 // === ROUTERS ===
 
+// Lo que la aplicacion puede enseñar: todo menos lo que esta bajo candado.
+// Lo reciben las rutas que ENTREGAN material (galeria, busquedas, recuerdos,
+// colecciones, gemelas). Las que escanean, sincronizan o limpian siguen viendo
+// el catalogo entero: ocultar algo no puede sacarlo del archivo.
+const mediaFilesVisibles = () => ocultosManager.visibles(mediaFiles);
+
 const aiRoutes = createAiRoutes({
   broadcastProgress,
-  getMediaFiles: () => mediaFiles,
+  getMediaFiles: mediaFilesVisibles,
   getFileCache: () => fileCache,
   imageUpload,
   // Hints para el LLM: TODAS las personas conocidas por Pensadero, sin cap.
@@ -1076,12 +1259,21 @@ const aiRoutes = createAiRoutes({
 app.use('/api', aiRoutes);
 
 const organizationRoutes = createOrganizationRoutes({
-  getMediaFiles: () => mediaFiles
+  getMediaFiles: mediaFilesVisibles
 });
 app.use('/api', organizationRoutes);
 
+// Tomas gemelas: deteccion de material casi identico y lista de descartes.
+const duplicatesRoutes = createDuplicatesRoutes({
+  getMediaFiles: mediaFilesVisibles
+});
+app.use('/api', duplicatesRoutes);
+
 const mediaRoutes = createMediaRoutes({
   getMediaFiles: () => mediaFiles,
+  // /files, /files/:id y /tags entregan solo lo visible; stream, miniatura y
+  // descarga siguen resolviendo cualquier id (la caja de ocultos los usa).
+  getMediaFilesVisibles: mediaFilesVisibles,
   setMediaFiles: (files) => { mediaFiles = files; },
   getFileCache: () => fileCache,
   setFileCache: (p, data) => { fileCache.set(p, data); },
@@ -1145,20 +1337,27 @@ app.use('/api', spacesManageRoutes);
 // Busqueda por color (Delta E sobre la palette del schema v2). Alimenta
 // la "rueda de colores" del frontend.
 const colorSearchRoutes = createColorSearchRoutes({
-  getMediaFiles: () => mediaFiles,
+  getMediaFiles: mediaFilesVisibles,
 });
 app.use('/api', colorSearchRoutes);
 
 // Tabla de sinonimos para expandir queries (Stage 1). El LLM propone grupos
 // que el usuario revisa via /api/tags/aliases/propose.
 const aliasRoutes = createAliasRoutes({
-  getMediaFiles: () => mediaFiles,
+  getMediaFiles: mediaFilesVisibles,
 });
 app.use('/api', aliasRoutes);
 
 // === NOTAS (notas humanas por archivo y por sesion colapsada) ===
 const notesRoutes = createNotesRoutes();
 app.use('/api', notesRoutes);
+
+// === MATERIAL OCULTO (candado con clave) ===
+const ocultosRoutes = createOcultosRoutes({
+  getMediaFiles: () => mediaFiles,
+  broadcastProgress,
+});
+app.use('/api', ocultosRoutes);
 
 // === PERSONS (registry + agregado memoizado) ===
 
@@ -1241,7 +1440,19 @@ function mountFrontend() {
     console.warn('⚠️ No existe dist/index.html. Ejecuta "npm run build". El backend sirve solo la API.');
     return;
   }
-  app.use(express.static(DIST_DIR, { index: 'index.html', maxAge: '1h', etag: true }));
+  // index.html sin cache: con maxAge de 1 h, tras cada build el navegador
+  // seguia cargando el bundle ANTERIOR durante una hora y los cambios no se
+  // veian. Los assets llevan hash en el nombre, asi que esos si pueden
+  // guardarse mucho tiempo: un bundle nuevo siempre tiene otro nombre.
+  app.use(express.static(DIST_DIR, {
+    index: 'index.html',
+    etag: true,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+      else if (filePath.includes(path.sep + 'assets' + path.sep)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      else res.setHeader('Cache-Control', 'public, max-age=3600');
+    },
+  }));
   app.get('*', (req, res, next) => {
     const p = req.path;
     if (p.startsWith('/api') || p.startsWith('/ws') ||
@@ -1249,6 +1460,7 @@ function mountFrontend() {
         p.startsWith('/persons-avatars') || p.startsWith('/spaces-covers')) {
       return next();
     }
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(DIST_DIR, 'index.html'), (err) => { if (err) next(); });
   });
   console.log(`🖥️ Frontend servido desde: ${DIST_DIR}`);
@@ -1332,6 +1544,15 @@ async function initialize() {
       console.log(`✅ Sync inicial completado: ${fileCache.size} archivos`);
       setTimeout(() => cleanOrphanedThumbnails(), 5000);
       watchFileSystem();
+      // Si el proceso anterior murio con un escaneo en marcha, retomarlo.
+      // Va DESPUES del sync porque el escaneo necesita la lista de archivos ya
+      // en memoria. Sin esto el supervisor devolvia el backend en segundos
+      // pero la GPU se quedaba parada el resto de la noche.
+      if (typeof scanRoutes.reanudarSiQuedoAMedias === 'function') {
+        scanRoutes.reanudarSiQuedoAMedias(PORT).catch(err => {
+          console.warn('🔁 Reanudacion de escaneo fallo:', err.message);
+        });
+      }
     })
     .catch(err => {
       console.error('❌ Error en sync inicial:', err);

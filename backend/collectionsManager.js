@@ -5,6 +5,8 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const fallos = require('./utils/failureReason');
+const mediaIdentity = require('./utils/mediaIdentity');
 const crypto = require('crypto');
 const { quarantineCorrupt } = require('./utils/jsonStore');
 
@@ -103,7 +105,7 @@ class CollectionsManager {
 
       console.log(`✅ Colecciones guardadas correctamente: ${collectionsArray.length} colecciones con ${this.getTotalFilesCount()} archivos totales`);
     } catch (error) {
-      console.error('❌ Error guardando colecciones:', error);
+      fallos.record('guardar las colecciones', error, { path: this.collectionsFile });
 
       // Intentar limpiar el archivo temporal si existe
       try {
@@ -394,16 +396,44 @@ class CollectionsManager {
   /**
    * Limpiar archivos huérfanos (archivos en colecciones que ya no existen)
    */
-  async cleanupOrphanedFiles(existingFileIds) {
+  async cleanupOrphanedFiles(files, opts = {}) {
     try {
+      // Set (no Array.includes: esto corre en cada sync sobre miles de
+      // archivos por cada coleccion) con las DOS identidades de cada archivo:
+      // el id md5 de runtime y la mediaKey portable.
+      const presentes = new Set();
+      const lista = Array.isArray(files) ? files : [];
+      for (const f of lista) {
+        if (!f) continue;
+        if (typeof f === 'string') { presentes.add(f); continue; }
+        if (f.id) presentes.add(f.id);
+        if (f.mediaKey) presentes.add(f.mediaKey);
+      }
+      const scanned = opts.scannedLibraryIds instanceof Set
+        ? opts.scannedLibraryIds
+        : new Set(Array.isArray(opts.scannedLibraryIds) ? opts.scannedLibraryIds : []);
+      // Si alguna biblioteca activa no se ha podido leer, no se puede afirmar
+      // que un id md5 haya desaparecido: puede estar en el disco desconectado.
+      const todasLeidas = !!opts.todasLasBibliotecasLeidas;
+
+      // ¿Se puede DEMOSTRAR que esta referencia ya no existe?
+      const puedeProbarQueFalta = (ref) => {
+        const libId = mediaIdentity.libraryIdFromKey(ref);
+        if (libId) return scanned.has(libId);   // mediaKey: mira SU biblioteca
+        return todasLeidas;                     // id md5: solo si se leyo todo
+      };
+
       let totalRemovedFiles = 0;
+      let protegidos = 0;
       const updatedCollections = [];
 
       for (const collection of this.collections.values()) {
         const initialFileCount = collection.mediaFiles.length;
-        collection.mediaFiles = collection.mediaFiles.filter(fileId =>
-          existingFileIds.includes(fileId)
-        );
+        collection.mediaFiles = collection.mediaFiles.filter(ref => {
+          if (presentes.has(ref)) return true;
+          if (!puedeProbarQueFalta(ref)) { protegidos++; return true; }
+          return false;
+        });
 
         const removedFiles = initialFileCount - collection.mediaFiles.length;
         if (removedFiles > 0) {
@@ -413,6 +443,9 @@ class CollectionsManager {
         }
       }
 
+      if (protegidos > 0) {
+        console.log(`🛡️ ${protegidos} referencia(s) de bibliotecas no recorridas: se conservan en sus colecciones`);
+      }
       if (totalRemovedFiles > 0) {
         await this.saveCollections();
         console.log(`🧹 Archivos huérfanos eliminados: ${totalRemovedFiles} archivos de ${updatedCollections.length} colecciones`);

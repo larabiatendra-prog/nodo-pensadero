@@ -24,6 +24,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { atomicWriteFile } = require('./utils/jsonStore');
+const fallos = require('./utils/failureReason');
 
 const ALIAS_FILE = path.join(__dirname, 'data', 'alias_table.json');
 
@@ -78,7 +79,7 @@ async function save() {
     await atomicWriteFile(ALIAS_FILE, JSON.stringify(_data, null, 2));
     rebuildIndex();
   } catch (err) {
-    console.error('[aliasTable] error guardando:', err.message);
+    fallos.record('guardar la tabla de alias', err, { path: ALIAS_FILE });
     throw err;
   }
 }

@@ -1,4 +1,5 @@
 import { config } from '../config';
+import type { MediaFile } from '../types';
 
 const API_BASE_URL = config.apiBaseUrl;
 
@@ -20,6 +21,18 @@ export interface VlmModel {
   label: string;
   notes: string;
   installed: boolean;
+}
+
+/** Trabajos que puede hacer un escaneo (ver backend/services/escaneoConfig.js). */
+export type CapacidadEscaneo = 'descripcion' | 'caras' | 'busquedaVisual' | 'movimiento' | 'proxies';
+
+export interface CapacidadInfo {
+  id: CapacidadEscaneo;
+  nombre: string;
+  detalle: string;
+  recurso: string;
+  coste: 'alto' | 'medio' | 'bajo';
+  soloVideo?: boolean;
 }
 
 class ApiService {
@@ -123,10 +136,15 @@ class ApiService {
   }
 
   /** Guarda (o borra, si `note` viene vacio) una nota de archivo o de sesion. */
-  async saveNote(scope: 'file' | 'session', key: string, note: string) {
+  /**
+   * Guarda (o borra, con `note` vacio) una nota.
+   * `legacyKey`: clave anterior del MISMO archivo (id md5) para que el backend
+   * retire el duplicado al escribir bajo la mediaKey portable.
+   */
+  async saveNote(scope: 'file' | 'session', key: string, note: string, legacyKey?: string) {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/notes`, {
       method: 'POST',
-      body: JSON.stringify({ scope, key, note }),
+      body: JSON.stringify({ scope, key, note, legacyKey }),
     });
   }
 
@@ -227,8 +245,108 @@ class ApiService {
   }
 
   // Estadísticas
+  /** Estado del circuito entero: IA, caras, ffmpeg, bibliotecas, pendientes. */
+  async getHealth() {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/health`);
+  }
+
   async getStatistics() {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/statistics`);
+  }
+
+  // La carta de la semana: prosa corta que el archivo escribe sobre si mismo.
+  // Todas las cartas guardadas, de la mas nueva a la mas vieja.
+  async getCartas() {
+    return this.fetchWithErrorHandling<ApiResponse<Array<{
+      semana: string; texto: string; tipo: string; fileIds: string[]; redactadaPor: string;
+    }>>>(`${API_BASE_URL}/cartas`);
+  }
+
+  async getCarta() {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      semana: string; texto: string; tipo: string; fileIds: string[]; redactadaPor: string;
+    } | null>>(`${API_BASE_URL}/carta`);
+  }
+
+  // Tomas gemelas: grupos de material casi identico dentro de una misma
+  // carpeta, calculados con los embeddings que ya dejo el escaneo.
+  async getDuplicates(umbral?: number) {
+    const q = typeof umbral === 'number' ? `?umbral=${umbral}` : '';
+    return this.fetchWithErrorHandling<ApiResponse<{
+      grupos: Array<{ id: string; carpeta: string; etiqueta: string; fileIds: string[]; similitudMin: number }>;
+      stats: Record<string, number>;
+    }>>(`${API_BASE_URL}/duplicates${q}`);
+  }
+
+  // Descartes: fileIds apartados de la galeria (nada se borra en disco).
+  async getDescartes() {
+    return this.fetchWithErrorHandling<ApiResponse<string[]>>(`${API_BASE_URL}/descartes`);
+  }
+
+  async setDescartes(fileIds: string[], descartar: boolean) {
+    return this.fetchWithErrorHandling<ApiResponse<string[]>>(`${API_BASE_URL}/descartes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileIds, descartar }),
+    });
+  }
+
+  // ── Material oculto (candado) ──────────────────────────────────────────
+  // Ocultar no pide clave; ver o liberar si. La llave va en cabecera, nunca
+  // en la URL, para que no quede en el historial.
+  async getOcultosEstado() {
+    return this.fetchWithErrorHandling<ApiResponse<{ total: number }>>(`${API_BASE_URL}/ocultos/estado`);
+  }
+
+  async ocultar(ids: string[]) {
+    return this.fetchWithErrorHandling<ApiResponse<{ ocultados: number; deshacer: string | null; total: number }>>(`${API_BASE_URL}/ocultos/ocultar`, {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+  }
+
+  async deshacerOcultado(token: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ mostrados: number; total: number }>>(`${API_BASE_URL}/ocultos/deshacer`, {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  async abrirOcultos(clave: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ llave: string; caduca: number }>>(`${API_BASE_URL}/ocultos/abrir`, {
+      method: 'POST',
+      body: JSON.stringify({ clave }),
+    });
+  }
+
+  async cerrarOcultos(llave: string) {
+    return this.fetchWithErrorHandling<ApiResponse<unknown>>(`${API_BASE_URL}/ocultos/cerrar`, {
+      method: 'POST',
+      headers: { 'x-llave-ocultos': llave },
+    });
+  }
+
+  async listarOcultos(llave: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      files: MediaFile[];
+      ausentes: Array<{ clave: string; nombre: string; desde: string }>;
+      total: number;
+    }>>(`${API_BASE_URL}/ocultos`, { headers: { 'x-llave-ocultos': llave } });
+  }
+
+  async mostrarOcultos(llave: string, ids: string[]) {
+    return this.fetchWithErrorHandling<ApiResponse<{ mostrados: number; total: number }>>(`${API_BASE_URL}/ocultos/mostrar`, {
+      method: 'POST',
+      headers: { 'x-llave-ocultos': llave },
+      body: JSON.stringify({ ids }),
+    });
+  }
+
+  async cambiarClaveOcultos(actual: string, nueva: string) {
+    return this.fetchWithErrorHandling<ApiResponse<unknown>>(`${API_BASE_URL}/ocultos/clave`, {
+      method: 'POST',
+      body: JSON.stringify({ actual, nueva }),
+    });
   }
 
   // Personas agregadas (person_id, display_name, count, avatar_url). Mismo
@@ -276,6 +394,31 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan-paths/${pathId}/toggle`, {
       method: 'PATCH',
       body: JSON.stringify({ isActive }),
+    });
+  }
+
+  // Trabajos del escaneo propios de una ruta: { caras: false } apaga solo aqui,
+  // { caras: null } vuelve a heredar del global.
+  async setEscaneoRuta(pathId: string, escaneo: Partial<Record<CapacidadEscaneo, boolean | null>>) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan-paths/${pathId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ escaneo }),
+    });
+  }
+
+  // Que trabajos hace un escaneo: catalogo, global y efectivas por ruta.
+  async getCapacidades() {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      catalogo: CapacidadInfo[];
+      global: Record<CapacidadEscaneo, boolean>;
+      rutas: Array<{ id: string; sobrescribe: Partial<Record<CapacidadEscaneo, boolean>>; efectivas: Record<CapacidadEscaneo, boolean> }>;
+    }>>(`${API_BASE_URL}/scan/capacidades`);
+  }
+
+  async setCapacidadesGlobal(parcial: Partial<Record<CapacidadEscaneo, boolean>>) {
+    return this.fetchWithErrorHandling<ApiResponse<{ global: Record<CapacidadEscaneo, boolean> }>>(`${API_BASE_URL}/scan/capacidades`, {
+      method: 'PATCH',
+      body: JSON.stringify({ global: parcial }),
     });
   }
 

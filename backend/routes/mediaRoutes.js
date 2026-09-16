@@ -102,6 +102,10 @@ module.exports = function createMediaRoutes(deps) {
     extractSmartTags,
     CONTENT_DIR
   } = deps;
+  // Sin candado inyectado (pruebas, arranques viejos) se entrega todo.
+  const getVisibles = typeof deps.getMediaFilesVisibles === 'function'
+    ? deps.getMediaFilesVisibles
+    : getMediaFiles;
 
   // ============================================
   // ARCHIVOS - CRUD Y METADATOS
@@ -113,7 +117,7 @@ module.exports = function createMediaRoutes(deps) {
    */
   router.get('/files', async (req, res) => {
     try {
-      const mediaFiles = getMediaFiles();
+      const mediaFiles = getVisibles();
       console.log(`📡 Solicitud de archivos - ${mediaFiles.length} disponibles`);
 
       // Aplicar favoritos persistentes antes de devolver los archivos
@@ -171,7 +175,7 @@ module.exports = function createMediaRoutes(deps) {
    * Obtiene un archivo específico por ID
    */
   router.get('/files/:id', (req, res) => {
-    const mediaFiles = getMediaFiles();
+    const mediaFiles = getVisibles();
     const file = mediaFiles.find(f => f.id === req.params.id);
     if (file) {
       res.json({ success: true, data: file });
@@ -396,7 +400,7 @@ module.exports = function createMediaRoutes(deps) {
    * Obtiene todos los tags únicos disponibles
    */
   router.get('/tags', (req, res) => {
-    const mediaFiles = getMediaFiles();
+    const mediaFiles = getVisibles();
     const allTags = [];
     const tagCounts = new Map(); // recuento de uso para topTags
     const years = new Set();

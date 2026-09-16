@@ -28,6 +28,11 @@
  */
 
 const { Ollama } = require('ollama');
+// Via semantica: SigLIP-2 convierte la consulta en el mismo espacio que los
+// embeddings de imagen ya indexados. Ambos son de arranque perezoso, asi que
+// importarlos aqui no levanta nada.
+const { getInstance: getClipService } = require('./services/clipService');
+const clipIndex = require('./clipIndex');
 require('dotenv').config();
 
 class AISearchService {
@@ -161,8 +166,25 @@ class AISearchService {
   async extractSearchIntent(query, peopleHints = []) {
     const peopleBlock = this.formatPeopleHints(peopleHints);
 
-    const intentPrompt = `Eres un asistente que analiza búsquedas de archivos multimedia (fotos y videos) producidas por una pipeline de visión por computador. Devuelve SOLO un JSON sin explicaciones.
+    // El LLM no sabe en que dia vive: sin esto resolvia "el año pasado" con la
+    // fecha de su entrenamiento (devolvia 2022 estando en 2026) y la busqueda
+    // salia vacia sin que nada explicara por que. Las fechas relativas son de
+    // lo mas natural que escribe una persona.
+    const ahora = new Date();
+    const anioActual = ahora.getFullYear();
+    const MESES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+    const bloqueFecha = `
+FECHA DE HOY: ${ahora.getDate()} de ${MESES_ES[ahora.getMonth()]} de ${anioActual}.
+Resuelve SIEMPRE las expresiones relativas contra esa fecha:
+  "este año" -> ${anioActual}          "el año pasado" -> ${anioActual - 1}
+  "hace dos años" -> ${anioActual - 2}  "hace tres años" -> ${anioActual - 3}
+  "este mes" -> month "${String(ahora.getMonth() + 1).padStart(2, '0')}" y year ${anioActual}
+Si la expresion no fija un año (por ejemplo "en verano"), deja year en null.
+`;
 
+    const intentPrompt = `Eres un asistente que analiza búsquedas de archivos multimedia (fotos y videos) producidas por una pipeline de visión por computador. Devuelve SOLO un JSON sin explicaciones.
+${bloqueFecha}
 Campos esperados:
 - type: "image" | "video" | "audio" | null
 - year: número (ej. 2023) o null
@@ -330,7 +352,13 @@ Output:`;
    *  - color_terms (matches contra dominant_colors[])
    *  - free_terms (búsqueda libre sobre name/tags/visual_description/ocr/composition)
    */
-  scoreMediaFiles(intent, mediaFiles, limit = 200) {
+  /**
+   * @param {Map<string,number>|null} semanticScores - fileId -> 0..1 de la via
+   *   semantica. Entra como BONUS al score, antes de ordenar: asi el corte
+   *   primary/secondary y el limite siguen siendo los mismos de siempre y no
+   *   hay una segunda definicion de "resultado relevante".
+   */
+  scoreMediaFiles(intent, mediaFiles, limit = 200, semanticScores = null, opciones = {}) {
     const {
       type, year, month, month_name,
       person_ids, space_ids, tags, free_terms, expanded_terms,
@@ -489,6 +517,25 @@ Output:`;
       results.push({ fileId: file.id, file, score, matchedIn });
     }
 
+    // Bonus semantico. El peso lo fija AI_SEMANTIC_WEIGHT: con 12, un archivo
+    // que el VLM no describio con esas palabras pero que ES la escena sube lo
+    // que un tag acertado (+10), suficiente para entrar en los resultados
+    // claros pero no para adelantar a uno que casa por tags Y por persona.
+    if (semanticScores && semanticScores.size > 0) {
+      const PESO = parseInt(process.env.AI_SEMANTIC_WEIGHT || '12', 10);
+      for (const r of results) {
+        // OJO: el resultado lleva `fileId` (ver results.push mas arriba), no
+        // `id`. Con `r.id` el bonus era siempre undefined y la via semantica
+        // se ejecutaba entera para no aportar nada: 400 candidatos calculados
+        // y 0 resultados afectados.
+        const sem = semanticScores.get(r.fileId);
+        if (sem > 0) {
+          r.score += Math.round(PESO * sem);
+          r.semanticScore = Number(sem.toFixed(4));
+        }
+      }
+    }
+
     results.sort((a, b) => b.score - a.score);
 
     // === CORTE DE RELEVANCIA EN DOS TRAMOS ===
@@ -531,6 +578,13 @@ Output:`;
         secondary.push({ ...r, tier: 'secondary' });
       }
     }
+
+    // `sinTramos`: devuelve TODO lo que paso el filtro, sin separar claros de
+    // menos probables y sin el tope de 50 del segundo tramo. Lo usa el bloque
+    // de sugerencias, cuyo cometido es justamente rescatar lo que ese tope
+    // esconde: un hallazgo puramente visual cae del corte por tener score bajo,
+    // que es la razon por la que hace falta rescatarlo.
+    if (opciones.sinTramos) return results;
 
     const primaryOut = primary.slice(0, limit);
     const remainingSlots = Math.max(0, limit - primaryOut.length);
@@ -788,8 +842,15 @@ Respuesta JSON:`;
       }
     }
 
-    // === STAGE 1 ===
-    const stage1Results = this.scoreMediaFiles(intent, mediaFiles);
+    // === VIA SEMANTICA (paralela a Stage 1) ===
+    // Se lanza con la consulta CRUDA: SigLIP-2 entiende español nativo y la
+    // frase entera tiene mas señal que los terminos sueltos que extrae el LLM.
+    const semStart = Date.now();
+    const semanticScores = await this.computeSemanticScores(query, mediaFiles);
+    const semanticTime = Date.now() - semStart;
+
+    // === STAGE 1 (+ bonus semantico) ===
+    const stage1Results = this.scoreMediaFiles(intent, mediaFiles, 200, semanticScores);
     const stage1Relevance = stage1Results.__relevance || null;
     const stage1PrimaryCount = stage1Relevance?.primaryCount ?? 0;
 
@@ -821,8 +882,25 @@ Respuesta JSON:`;
     }
 
     const relevance = finalResults.__relevance || null;
+
+    // === SUGERENCIAS (bloque "ademas, te puede interesar") ===
+    // Van DETRAS de los resultados y marcadas como secondary: el separador que
+    // ya pinta MediaGrid las coloca solas, sin pelear por los huecos de arriba.
+    const sugerencias = this.buscarRescatesSemanticos(intent, mediaFiles, finalResults, semanticScores);
+    let resultadosFinales = finalResults;
+    if (sugerencias.length > 0) {
+      resultadosFinales = finalResults.concat(sugerencias);
+      // `__relevance` es no enumerable: concat la pierde y el metadata de abajo
+      // se quedaria a cero. Se reengancha tal cual estaba.
+      if (relevance) {
+        Object.defineProperty(resultadosFinales, '__relevance', {
+          value: relevance, enumerable: false,
+        });
+      }
+    }
+
     return {
-      results: finalResults,
+      results: resultadosFinales,
       intent,
       metadata: {
         model: this.model,
@@ -834,6 +912,13 @@ Respuesta JSON:`;
         stage2Applied,
         stage2Reason,
         stage2Time,
+        // Via semantica: si sale en 0, es que CLIP no estaba y la busqueda
+        // ha ido solo con palabras. Conviene poder verlo.
+        semanticApplied: !!(semanticScores && semanticScores.size > 0),
+        semanticCandidates: semanticScores ? semanticScores.size : 0,
+        semanticTime,
+        // Cuantos van en el bloque "ademas, te puede interesar".
+        suggestionCount: sugerencias.length,
         // Diagnóstico de relevancia para el separador y el debug.
         topScore: relevance?.topScore ?? 0,
         primaryCutoff: relevance?.primaryCutoff ?? 0,
@@ -843,6 +928,106 @@ Respuesta JSON:`;
         totalCandidates: relevance?.totalCandidates ?? 0,
       }
     };
+  }
+
+
+  /**
+   * Vía SEMÁNTICA (SigLIP-2 texto->imagen).
+   *
+   * Stage 1 encuentra por palabras: "bailando" solo casa si el VLM escribio
+   * "bailando". Esto encuentra por ESCENA, diga el VLM lo que diga. Es la
+   * diferencia entre certero y generico, y el indice ya existia sin que la
+   * busqueda natural lo usara ni una vez.
+   *
+   * Sobre la escala: las similitudes de SigLIP-2 en este corpus viven entre
+   * 0.00 y 0.15 (medido: max 0.141, mediana 0.030 para una consulta tipica),
+   * y el techo cambia con la consulta. Por eso NO se usa un umbral absoluto
+   * sino la posicion RELATIVA dentro del pool: el mejor de esta consulta vale
+   * 1, el ultimo del pool vale 0.
+   *
+   * Degrada en silencio a proposito: si CLIP no esta, devuelve null y la
+   * busqueda funciona exactamente como antes (la IA es opcional para usar la
+   * herramienta, nunca un requisito).
+   *
+   * @returns {Promise<Map<string, number>|null>} fileId -> 0..1
+   */
+  async computeSemanticScores(query, mediaFiles) {
+    const POOL = parseInt(process.env.AI_SEMANTIC_POOL || '400', 10);
+    try {
+      const clipSvc = getClipService();
+      if (!clipSvc.getStatus().ready) {
+        const warm = await clipSvc.warmup();
+        if (!warm || !warm.ok) return null;
+      }
+      if (!clipIndex.isLoaded()) await clipIndex.load();
+      if (clipIndex.size() === 0) return null;
+
+      const emb = await clipSvc.embedText(query);
+      if (!emb) return null;
+
+      // Solo se puntuan archivos vivos: el indice puede arrastrar huerfanos
+      // hasta que el proximo sync lo pode.
+      const vivos = new Set(mediaFiles.map(f => f.id));
+      const top = clipIndex.searchNearest(emb, POOL, (id) => vivos.has(id));
+      if (top.length === 0) return null;
+
+      const mejor = top[0].similarity;
+      const peor = top[top.length - 1].similarity;
+      const rango = mejor - peor;
+      const out = new Map();
+      for (const t of top) {
+        // Sin rango util (todo igual de parecido) la señal no discrimina: se
+        // deja plana en vez de inventar diferencias.
+        out.set(t.fileId, rango > 1e-6 ? (t.similarity - peor) / rango : 0);
+      }
+      return out;
+    } catch (err) {
+      console.warn('[semantica] no disponible:', err && err.message);
+      return null;
+    }
+  }
+
+
+  /**
+   * RESCATES SEMANTICOS — el bloque "ademas, te puede interesar".
+   *
+   * Existe porque la via semantica sola no basta: un archivo SIN descripcion
+   * (los renders de Premiere, que SigLIP-2 si entiende) saca score 1 + bonus,
+   * y nunca alcanza a los que casan por tags (35-40). Compitiendo por los
+   * mismos huecos no aparece jamas. En su propio bloque, si.
+   *
+   * Que se relaja y que no:
+   *  - Se relaja la FECHA. Es la relajacion util: "no hay nada de Ester el año
+   *    pasado, pero mira estos". Ademas convierte un resultado vacio —que hoy
+   *    no explica nada— en algo que si acompaña.
+   *  - NO se relajan persona ni tipo. Enseñar desconocidos a quien pregunto por
+   *    Ester, o fotos a quien pidio videos, no es sugerir: es ruido.
+   *
+   * El filtrado no se reimplementa: se reusa `scoreMediaFiles` con la misma
+   * intencion sin fecha. Una sola definicion de "que pasa el filtro".
+   */
+  buscarRescatesSemanticos(intent, mediaFiles, yaMostrados, semanticScores) {
+    const LIMITE = parseInt(process.env.AI_SUGERENCIAS_MAX || '18', 10);
+    if (!semanticScores || semanticScores.size === 0) return [];
+    try {
+      const sinFecha = { ...intent, year: null, month: null, month_name: null };
+      // Limite deliberadamente enorme: `scoreMediaFiles` corta por SCORE, y un
+      // hallazgo puramente visual (score ~13, sin descripcion que casara) queda
+      // fuera del corte justo por ser lo que este bloque existe para rescatar.
+      // Aqui solo se usa como filtro, no como ranking: ordenamos por similitud.
+      const pool = this.scoreMediaFiles(sinFecha, mediaFiles, 100000, semanticScores, { sinTramos: true });
+      const vistos = new Set((yaMostrados || []).map(r => r.fileId));
+      return pool
+        .filter(r => !vistos.has(r.fileId) && r.semanticScore > 0)
+        .sort((a, b) => b.semanticScore - a.semanticScore)
+        .slice(0, LIMITE)
+        .map(r => ({ ...r, tier: 'secondary', porSemantica: true }));
+    } catch (err) {
+      // Un bloque de sugerencias es un extra: si falla, los resultados
+      // principales salen igual.
+      console.warn('[sugerencias] no se pudieron calcular:', err && err.message);
+      return [];
+    }
   }
 
   /**

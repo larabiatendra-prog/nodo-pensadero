@@ -13,6 +13,7 @@ const router = express.Router();
 const aiSearchService = require('../aiSearchService');
 const peopleRegistry = require('../peopleRegistry');
 const aliasTable = require('../aliasTable');
+const cartaService = require('../services/cartaService');
 
 module.exports = function createAiRoutes(deps) {
   const { getMediaFiles, getPeopleHints } = deps;
@@ -72,6 +73,10 @@ module.exports = function createAiRoutes(deps) {
       };
       results = results.filter(file => {
         if (matchesAnyExpanded(file.name)) return true;
+        // La carpeta contenedora ("260811_Ondara"), que es donde vive el
+        // significado del material de camara. Cubre tambien el nombre propio
+        // puesto a mano, que folderName replica.
+        if (matchesAnyExpanded(file.folderName)) return true;
         if ((file.tags || []).some(tag => matchesAnyExpanded(tag))) return true;
         if (matchesAnyExpanded(file.visual_description)) return true;
         if (matchesAnyExpanded(file.ocr_text)) return true;
@@ -170,6 +175,37 @@ module.exports = function createAiRoutes(deps) {
   // BÚSQUEDA EN LENGUAJE NATURAL (LLM)
   // ============================================
 
+  /**
+   * GET /api/carta — la carta de esta semana (se genera una vez y se guarda).
+   *   ?forzar=1 la vuelve a redactar, para probar sin esperar al lunes.
+   *
+   * El hallazgo lo calcula cartaService sobre datos duros; el modelo local solo
+   * redacta, y si no esta levantado la carta sale igual, mas seca.
+   */
+  router.get('/carta', async (req, res) => {
+    try {
+      const files = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const chat = async (mensajes) => {
+        const r = await aiSearchService.callOllamaChat(mensajes);
+        return (r && r.message && r.message.content) || '';
+      };
+      const carta = await cartaService.cartaDeLaSemana(files, { chat }, { forzar: req.query.forzar === '1' });
+      if (!carta) return res.json({ success: true, data: null });
+      res.json({ success: true, data: carta });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /** GET /api/cartas — las anteriores, de la mas nueva a la mas vieja. */
+  router.get('/cartas', async (req, res) => {
+    try {
+      res.json({ success: true, data: await cartaService.listarCartas() });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   router.post('/ai/search', async (req, res) => {
     try {
       const { query, person_ids } = req.body;
@@ -201,7 +237,10 @@ module.exports = function createAiRoutes(deps) {
         fileId: r.fileId,
         score: r.score,
         matchedIn: r.matchedIn,
-        tier: r.tier || 'primary'  // 'primary' (resultados claros) o 'secondary' (menos probables)
+        tier: r.tier || 'primary',  // 'primary' (resultados claros) o 'secondary' (menos probables)
+        // Aporte de la via semantica (0..1). Sirve para diagnosticar por que
+        // algo ha subido, y lo necesitara el bloque "ademas te puede interesar".
+        semanticScore: r.semanticScore
       }));
 
       res.json({

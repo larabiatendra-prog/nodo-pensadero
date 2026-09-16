@@ -41,10 +41,36 @@ export interface ProgressData {
   // leia; ahora viaja en el evento para poder decirlo en pantalla.
   capabilities?: { faces: boolean; clip: boolean; motion: boolean };
   degraded?: string[];     // nombres de las capacidades caidas ('faces', 'clip', 'motion')
+  // Fallos de escritura del job y su causa ya traducida (failureReason.js).
+  // Un job que no puede guardar NO esta completado: la UI lo pinta aparte.
+  escriturasFallidas?: number;
+  causaPrincipal?: { reason: string; hint?: string; code?: string } | null;
+  incidencias?: Array<{ operacion: string; code: string; reason: string; hint?: string; veces: number }>;
   // --- Tiempos del escaneo visual (scan_progress / scan_error) ---
   elapsedMs?: number;      // tiempo transcurrido del job
   avgMsPerFile?: number;   // media movil (ultimos N) de ms por archivo
   etaMs?: number;          // estimacion de tiempo restante
+  // --- Pantalla de progreso: vocabulario comun de indexado y escaneo ---
+  fase?: string;           // contando | indexando | rematando | miniaturas | preparando | buscando | describiendo | guardando
+  hechos?: number;         // archivos recorridos del total
+  inicio?: number;         // epoch ms del arranque del proceso
+  duracionMs?: number;     // al cerrar
+  archivo?: string;
+  accion?: 'nuevo' | 'modificado' | 'cache';
+  nuevos?: number;
+  enCache?: number;
+  modificados?: number;
+  biblioteca?: string;
+  bibliotecaN?: number;
+  bibliotecasTotal?: number;
+  carpeta?: string;
+  force?: boolean;
+  unArchivo?: boolean;     // escaneo desde la tarjeta: no abre la pantalla completa
+  yaHechos?: number;       // ya descritos en escaneos anteriores
+  errores?: number;
+  estado?: string;         // scan_done: done | done_con_fallos | cancelled
+  index?: number;          // batch_scan_progress
+  aborted?: boolean;       // batch_scan_done
   // cluster_*
   processed?: number;
   unknown?: number;
@@ -160,4 +186,4 @@ export function useWebSocket(url: string) {
     progressData,
     clearProgress
   };
-}
+}

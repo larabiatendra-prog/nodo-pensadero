@@ -109,6 +109,8 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     stage2Time?: number;
     primaryCount?: number;
     secondaryCount?: number;
+    /** Rescates de la via semantica: se parecen a lo pedido aunque el texto no casara. */
+    suggestionCount?: number;
     processingTime?: number;
   } | null>(null);
 
@@ -922,9 +924,14 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
               {typeof naturalMetadata.primaryCount === 'number' && naturalMetadata.primaryCount > 0 && (
                 <span className="text-humo text-[11px]">
                   {naturalMetadata.primaryCount} {naturalMetadata.primaryCount === 1 ? 'resultado claro' : 'resultados claros'}
-                  {typeof naturalMetadata.secondaryCount === 'number' && naturalMetadata.secondaryCount > 0 && (
-                    <span> · {naturalMetadata.secondaryCount} menos probables</span>
-                  )}
+                  {/* Segundo bloque: casaron debilmente con la consulta, o los
+                      encontro la via semantica (se parecen a lo pedido aunque
+                      el texto no coincidiera). Mismo nombre que el separador
+                      de la galeria, para que se entienda que son lo mismo. */}
+                  {(() => {
+                    const extra = (naturalMetadata.secondaryCount || 0) + (naturalMetadata.suggestionCount || 0);
+                    return extra > 0 ? <span> · {extra} que te pueden interesar</span> : null;
+                  })()}
                 </span>
               )}
             </>

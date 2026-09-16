@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Grid, List, LayoutGrid, LayoutList, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft } from 'lucide-react';
+import { Grid, List, LayoutGrid, LayoutList, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
+import { noteFor } from './utils/mediaNotes';
+import Ecos from './components/Ecos';
+import { calcularEcos, type Eco } from './utils/ecos';
 import { MediaFile, SearchFilters, Collection } from './types';
 import { addFilesToCollection, api, createCollection, deleteCollection, deleteFromCollection, getCollectionsByUser, getFavouritesByUser, handleSupabaseFavourite, updateCoverCollection, updateNameCollection } from './services/api';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -22,7 +25,6 @@ import { FolderScanner } from './components/FolderScanner';
 import { CreateCollectionModal } from './components/CreateCollectionModal';
 import { AddToCollectionModal } from './components/AddToCollectionModal';
 import Statistics from './components/Statistics';
-import AtlasView from './components/AtlasView';
 import PresentationMode from './components/PresentationMode';
 import Loader from './components/Loader';
 import PersonBubbles from './components/PersonBubbles';
@@ -32,8 +34,11 @@ import PersonsManager from './components/PersonsManager';
 import SynonymsManager from './components/SynonymsManager';
 import CollectionsView from './components/CollectionsView';
 import SpacesManager from './components/SpacesManager';
+import PersonLife from './components/PersonLife';
+import DuplicatesView from './components/DuplicatesView';
+import Carta from './components/Carta';
+import OcultosView from './components/OcultosView';
 
-import { CollectionsCarousel } from './components/CollectionsCarousel';
 import { CoverImageSelector } from './components/CoverImageSelector';
 import { EditCollectionModal } from './components/EditCollectionModal';
 import ImageSearchView from './components/ImageSearchView';
@@ -41,14 +46,17 @@ import { QuickPreviewOverlay } from './components/QuickPreviewOverlay';
 import { ConnectionBanner } from './components/ConnectionBanner';
 import { getFileSortDate } from './utils/filenameParser';
 import { normalizePath } from './utils/formatData';
+import { leerFrame, type ContextoLote, type Muestra, type VistaProgreso } from './utils/progresoProceso';
 
 // ── Routing por URL (Eje B) ────────────────────────────────────────────────
 // Mapa vista interna -> ruta. El inverso (ruta -> vista) lo hace viewFromPath.
 // Modulo (no dentro de App) para que el shim setActiveView sea estable.
 const VIEW_TO_PATH: Record<string, string> = {
   home: '/', paths: '/rutas', persons: '/personas', spaces: '/espacios',
-  collections: '/colecciones', statistics: '/estadisticas', atlas: '/atlas',
+  collections: '/colecciones', statistics: '/estadisticas',
   tags: '/etiquetas', synonyms: '/sinonimos', imageSearch: '/busqueda-imagen',
+  duplicates: '/gemelas',
+  ocultos: '/ocultos',
   admin: '/admin',
 };
 
@@ -60,12 +68,14 @@ function viewFromPath(pathname: string): string {
   if (pathname === '/') return 'home';
   if (pathname.startsWith('/rutas')) return 'paths';
   if (pathname.startsWith('/personas')) return 'persons';
+  if (pathname.startsWith('/persona/') && pathname.endsWith('/vida')) return 'personLife';
   if (pathname.startsWith('/persona/')) return 'home';       // home filtrado por persona
   if (pathname.startsWith('/espacios')) return 'spaces';
+  if (pathname.startsWith('/gemelas')) return 'duplicates';
+  if (pathname.startsWith('/ocultos')) return 'ocultos';
   if (pathname === '/colecciones') return 'collections';
   if (pathname.startsWith('/colecciones/')) return 'home';   // home con coleccion abierta
   if (pathname.startsWith('/estadisticas')) return 'statistics';
-  if (pathname.startsWith('/atlas')) return 'atlas';
   if (pathname.startsWith('/etiquetas')) return 'tags';
   if (pathname.startsWith('/sinonimos')) return 'synonyms';
   if (pathname.startsWith('/busqueda-imagen')) return 'imageSearch';
@@ -74,6 +84,24 @@ function viewFromPath(pathname: string): string {
   if (pathname.startsWith('/admin')) return 'admin';
   return '__notfound__';
 }
+
+// Normaliza para comparar: minusculas y sin acentos. Sin esto "Fenix" no
+// encuentra "260906_La Fènix" ni "cumpleanos" a "Cumpleaños". El backend ya
+// normalizaba asi; el filtro local no, y las dos busquedas no daban lo mismo.
+/**
+ * Claves de pertenencia de una coleccion. Una coleccion manual guarda RUTAS
+ * normalizadas; una Smart Folder recibe del servidor los IDS ya resueltos.
+ * Aceptar solo una de las dos hacia que las Smart Folders con material se
+ * abrieran vacias.
+ */
+const clavesDeColeccion = (col: { mediaFiles?: string[] }) => new Set(col.mediaFiles || []);
+const estaEnColeccion = (claves: Set<string>, f: MediaFile) =>
+  claves.has(f.id) || (!!f.fullPath && claves.has(normalizePath(f.fullPath)));
+
+const normalizaTexto = (s: unknown) => String(s ?? '')
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '');
 
 function App() {
   // Uso personal single-user: sin login, sin user.id, sin roles.
@@ -136,8 +164,25 @@ function App() {
   const [downloadDone, setDownloadDone] = useState(false);
   const downloadDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Tomas gemelas apartadas: fuera de la galeria, intactas en disco. Se cargan
+  // una vez al arrancar; la vista de gemelas es quien las cambia.
+  const [descartadas, setDescartadas] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    api.getDescartes()
+      .then(r => { if (r.success && Array.isArray(r.data)) setDescartadas(new Set(r.data)); })
+      .catch(() => { /* sin backend nuevo: la galeria no filtra nada */ });
+  }, []);
+
+  const cambiarDescartes = React.useCallback(async (fileIds: string[], descartar: boolean) => {
+    const r = await api.setDescartes(fileIds, descartar);
+    if (r.success && Array.isArray(r.data)) setDescartadas(new Set(r.data));
+  }, []);
+
   // Presentation mode state
   const [showPresentationMode, setShowPresentationMode] = useState(false);
+  // Archivos que reproduce el modo presentacion. null = todo lo que se ve
+  // ahora (boton de la barra); con valor, los de una sesion concreta.
+  const [presentationFiles, setPresentationFiles] = useState<MediaFile[] | null>(null);
 
   // Quick Preview (Space key)
   const [quickPreviewFile, setQuickPreviewFile] = useState<MediaFile | null>(null);
@@ -174,6 +219,12 @@ function App() {
   // Filtro de color de la rueda HSL. Mantenemos los fileIds que matchearon
   // contra el endpoint /api/search/by-color y el hex objetivo para mostrarlo en UI.
   const [colorFilterFileIds, setColorFilterFileIds] = useState<Set<string> | null>(null);
+  // Reposo activo: eco abierto (filtra la galeria a sus archivos) y ocultado
+  // del dia. Se guarda la FECHA, no un booleano: manana vuelve solo.
+  const [ecoActivo, setEcoActivo] = useState<Eco | null>(null);
+  const [ecosOcultosEl, setEcosOcultosEl] = useState<string>(() => {
+    try { return localStorage.getItem('pensadero.ecosOcultosEl') || ''; } catch { return ''; }
+  });
   const [colorFilterHex, setColorFilterHex] = useState<string | null>(null);
   // Busqueda por imagen similar: array ordenado por similitud (la mas parecida
   // primero). Se trata como un orden, no como un Set, para que la galeria
@@ -231,16 +282,36 @@ function App() {
     setEditingSessionNote({ key, label });
   }, []);
 
+
+  // Play de una sesion colapsada: modo presentacion con solo esos archivos.
+  // Estable (useCallback) porque SessionCard esta memoizada y compara callbacks
+  // por referencia.
+  const handlePlaySession = React.useCallback((files: MediaFile[]) => {
+    setPresentationFiles(files);
+    setShowPresentationMode(true);
+  }, []);
+
+  const handleClosePresentation = React.useCallback(() => {
+    setShowPresentationMode(false);
+    setPresentationFiles(null);
+  }, []);
+
   // Guarda (optimista) la nota de un archivo. Texto vacio = borrar.
-  const handleSaveFileNote = React.useCallback(async (fileId: string, note: string) => {
+  // Se guarda bajo la identidad PORTABLE (mediaKey) para que la nota sobreviva
+  // a un cambio de letra de unidad; `legacyKey` hace que el backend retire la
+  // entrada vieja por id, y asi no queden dos notas del mismo archivo.
+  const handleSaveFileNote = React.useCallback(async (fileId: string, note: string, mediaKey?: string) => {
     const text = note.trim();
+    const key = mediaKey || fileId;
+    const legacy = mediaKey && mediaKey !== fileId ? fileId : undefined;
     setFileNotes((prev) => {
       const next = { ...prev };
-      if (text) next[fileId] = text; else delete next[fileId];
+      if (text) next[key] = text; else delete next[key];
+      if (legacy) delete next[legacy];
       return next;
     });
     try {
-      await api.saveNote('file', fileId, text);
+      await api.saveNote('file', key, text, legacy);
     } catch (err) {
       console.warn('No se pudo guardar la nota del archivo:', err);
     }
@@ -259,17 +330,61 @@ function App() {
 
   // WebSocket para progreso de sincronización
   const { isConnected, progressData, clearProgress } = useWebSocket(config.wsUrl);
+
+  /**
+   * Overlay silenciado por el usuario para ESTE proceso. Sin esto, ocultarlo no
+   * sirve de nada: el siguiente archivo emite otro frame de progreso y lo vuelve
+   * a abrir medio segundo despues. Se levanta sola cuando el proceso termina,
+   * asi que el proximo escaneo vuelve a avisar.
+   */
+  const progresoSilenciadoRef = useRef(false);
+
+  /**
+   * Parada del overlay de progreso.
+   *
+   * Intenta cancelar un escaneo de verdad (el de vision local, que si es
+   * cancelable y guarda lo procesado). Si lo que corre es la indexacion del
+   * arranque —que no es un job y no se puede interrumpir— al menos devuelve la
+   * aplicacion: un overlay bloqueante del que no se puede salir es una carcel,
+   * y hasta ahora la unica salida era recargar la pagina.
+   */
+  const detenerProgreso = React.useCallback(async () => {
+    let cancelado = false;
+    try {
+      const r = await api.cancelScanAll();
+      cancelado = !!(r && r.success);
+    } catch { /* no habia escaneo masivo en curso */ }
+
+    if (!cancelado) {
+      try {
+        const jobs = await api.listScanJobs();
+        const enCurso = Array.isArray(jobs?.data)
+          ? jobs.data.filter((j: { jobId?: string; status?: string }) => j && j.status === 'running')
+          : [];
+        for (const j of enCurso) {
+          if (j.jobId) { await api.cancelScan(j.jobId); cancelado = true; }
+        }
+      } catch { /* sin jobs: no hay nada que cancelar */ }
+    }
+
+    progresoSilenciadoRef.current = true;
+    setShowProgress(false);
+    clearProgress();
+    toast.success(cancelado
+      ? 'Escaneo detenido. Lo procesado hasta ahora se ha guardado.'
+      : 'No habia escaneo que detener. La indexacion del arranque sigue en segundo plano.');
+  }, [clearProgress]);
   const [showProgress, setShowProgress] = useState(false);
-  // Estado dedicado de la barra de sync: solo lo alimentan frames sync_*/scan_*.
-  // Antes la barra leia el slot WS compartido (progressData), asi que un frame
-  // ajeno sin percentage (persons_refresh, reidentify_*) la dejaba en 0% =
-  // "sincronizando sin avanzar".
-  const [syncPct, setSyncPct] = useState(0);
-  const [syncStatus, setSyncStatus] = useState('Preparando...');
-  // Variante del overlay de progreso: 'escaneo' (scan_progress) vs 'sync' (sync_*).
-  // progressDone activa la animacion 'listo' durante la ventana de cierre.
-  const [progressKind, setProgressKind] = useState<'escaneo' | 'sync'>('sync');
-  const [progressDone, setProgressDone] = useState(false);
+  // Lo que pinta la pantalla de progreso: fase, cuantos de cuantos, tiempos y
+  // archivo. Solo lo alimentan frames de indexado (sync_*) y escaneo (scan_*):
+  // un frame ajeno (persons_refresh, reidentify_*) no puede tocarla. La ref
+  // guarda la misma vista para leer la anterior sin esperar al render.
+  const [vistaProgreso, setVistaProgreso] = useState<VistaProgreso | null>(null);
+  const vistaProgresoRef = useRef<VistaProgreso | null>(null);
+  const muestrasProgresoRef = useRef<Muestra[]>([]);
+  // Escaneo de todas las rutas en lote: en que ruta va. Cada ruta es un job
+  // con su propio scan_done; sin esto, cada uno cerraria la pantalla.
+  const loteEscaneoRef = useRef<ContextoLote>({ activo: false, indice: 0, total: 0 });
 
   // Infinite scroll state
   const [loadedItemsCount, setLoadedItemsCount] = useState(96);
@@ -443,6 +558,8 @@ function App() {
   useEffect(() => {
     const p = displayLocation.pathname;
     if (!p.startsWith('/persona/')) return;
+    // /persona/:id/vida es otra vista: no toca el filtro de la galeria.
+    if (p.endsWith('/vida')) return;
     const pid = decodeURIComponent(p.slice('/persona/'.length));
     if (!pid) return;
     setSelectedPersonIds(prev => (prev.length === 1 && prev[0] === pid ? prev : [pid]));
@@ -458,7 +575,9 @@ function App() {
     const titles: Record<string, string> = {
       home: 'Pensadero', paths: 'Rutas · Pensadero', persons: 'Personas · Pensadero',
       spaces: 'Espacios · Pensadero', collections: 'Colecciones · Pensadero',
-      statistics: 'Estadísticas · Pensadero', atlas: 'Atlas · Pensadero',
+      duplicates: 'Tomas gemelas · Pensadero', ocultos: 'Material oculto · Pensadero',
+      personLife: 'Línea de vida · Pensadero',
+      statistics: 'Estadísticas · Pensadero',
       tags: 'Etiquetas · Pensadero', synonyms: 'Sinónimos · Pensadero',
       imageSearch: 'Búsqueda por imagen · Pensadero', admin: 'Admin · Pensadero',
       __notfound__: 'No encontrado · Pensadero',
@@ -546,17 +665,26 @@ function App() {
     } = {}
   ) => {
     let filtered = [...baseFiles];
+
+    // Tomas gemelas apartadas: nunca en la galeria. Va lo primero porque no es
+    // un filtro del usuario sino una decision ya tomada sobre el material.
+    if (descartadas.size > 0) {
+      filtered = filtered.filter(f => !descartadas.has(f.id));
+    }
     const { searchQuery, searchTerms = currentSearchTerms, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
 
-    // Coincidencia de texto (substring) sobre name/displayName/tags.
+    // Coincidencia de texto (substring, sin acentos) sobre nombre, nombre de
+    // presentacion, CARPETA contenedora y tags. La carpeta es lo que hace
+    // encontrable el material de camara: "Ondara" encuentra "P1248278.MP4".
     const matchesText = (file: MediaFile, q: string) =>
-      file.name.toLowerCase().includes(q) ||
-      (file.displayName ? file.displayName.toLowerCase().includes(q) : false) ||
-      file.tags.some(tag => tag.toLowerCase().includes(q));
+      normalizaTexto(file.name).includes(q) ||
+      normalizaTexto(file.displayName).includes(q) ||
+      normalizaTexto(file.folderName).includes(q) ||
+      file.tags.some(tag => normalizaTexto(tag).includes(q));
 
     // 1. Búsqueda de texto suelta (query única; p.ej. fallback de natural).
     if (searchQuery && searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
+      const query = normalizaTexto(searchQuery);
       filtered = filtered.filter(file => matchesText(file, query));
     }
 
@@ -564,7 +692,7 @@ function App() {
     // coincidir. Naturaleza distinta a `tags` (que es coincidencia exacta).
     if (Array.isArray(searchTerms) && searchTerms.length > 0) {
       for (const term of searchTerms) {
-        const q = String(term || '').toLowerCase().trim();
+        const q = normalizaTexto(term).trim();
         if (!q) continue;
         filtered = filtered.filter(file => matchesText(file, q));
       }
@@ -650,6 +778,13 @@ function App() {
       filtered = filtered.filter(file => colorFileIds.has(file.id));
     }
 
+    // 5b-bis. Eco abierto: el archivo propuso algo y se ha pulsado. Es un
+    // filtro mas, con la misma salida que los demas (limpiar filtros).
+    if (ecoActivo && ecoActivo.fileIds.length > 0) {
+      const delEco = new Set(ecoActivo.fileIds);
+      filtered = filtered.filter(file => delEco.has(file.id));
+    }
+
     // 5c. Busqueda por imagen (SigLIP-2) — array de fileIds ordenado por
     // similitud descendente. Mantenemos ese orden en la galeria (mismo
     // patron que naturalSearchIds): primero las mas parecidas.
@@ -728,7 +863,7 @@ function App() {
       resetInfiniteScroll();
       console.log(`📜 Scroll reseteado por cambio de filtros: ${currentCount} -> ${newCount} archivos`);
     }
-  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds]);
+  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, ecoActivo, descartadas]);
 
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
@@ -843,59 +978,76 @@ function App() {
       return;
     }
 
-    // Solo los frames de sync/scan alimentan la barra. Los de PersonsManager
-    // (reidentify_*, cluster_*) tienen su propia UI y no deben tocarla.
-    const isSyncFrame = t === 'sync_start' || t === 'sync_progress' || t === 'scan_progress'
-      || t === 'sync_complete' || t === 'sync_error';
-    if (!isSyncFrame) return;
-
-    // Watchdog: si tras mostrarse no llega ningun frame de sync en 30s, ocultar.
-    // Cubre un sync_complete perdido por una reconexion WS durante un sync largo.
+    // Watchdog: si tras mostrarse no llega ningun frame en 2 min, ocultar.
+    // Cubre un cierre perdido por una reconexion WS. Es largo a proposito:
+    // cargar los modelos o describir un video 4K puede pasar de 30 s sin frames.
     const armWatchdog = () => {
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
       watchdogRef.current = setTimeout(() => {
         watchdogRef.current = null;
         setShowProgress(false);
         clearProgress();
-      }, 30000);
+      }, 120000);
+    };
+    const pintar = (v: VistaProgreso | null) => {
+      vistaProgresoRef.current = v;
+      setVistaProgreso(v);
+    };
+    // Cierre con la vista de "terminado" a la vista unos segundos.
+    const cerrarEn = (ms: number, recargar: boolean) => {
+      progresoSilenciadoRef.current = false;
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = setTimeout(() => {
+        progressTimerRef.current = null;
+        setShowProgress(false);
+        clearProgress();
+        if (recargar) reloadFilesAfterSync();
+      }, ms);
     };
 
-    switch (progressData.type) {
-      case 'sync_start':
-      case 'sync_progress':
-      case 'scan_progress':
-        if (typeof progressData.percentage === 'number') setSyncPct(progressData.percentage);
-        if (progressData.status) setSyncStatus(progressData.status);
-        setProgressKind(progressData.type === 'scan_progress' ? 'escaneo' : 'sync');
-        setProgressDone(false);
-        setShowProgress(true);
-        armWatchdog();
-        break;
-      case 'sync_complete':
-        setSyncPct(100);
-        setProgressDone(true);
-        if (progressData.status) setSyncStatus(progressData.status);
-        if (watchdogRef.current) clearTimeout(watchdogRef.current);
-        if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
-        progressTimerRef.current = setTimeout(() => {
-          progressTimerRef.current = null;
-          setShowProgress(false);
-          setProgressDone(false);
-          clearProgress();
-          reloadFilesAfterSync();
-        }, 3000);
-        break;
-      case 'sync_error':
-        if (progressData.status) setSyncStatus(progressData.status);
-        if (watchdogRef.current) clearTimeout(watchdogRef.current);
-        if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
-        progressTimerRef.current = setTimeout(() => {
-          progressTimerRef.current = null;
-          setShowProgress(false);
-          setProgressDone(false);
-          clearProgress();
-        }, 5000);
-        break;
+    // Lote de escaneo: se apunta en que ruta va; no pinta por si solo.
+    if (t === 'batch_scan_start') {
+      loteEscaneoRef.current = { activo: true, indice: 0, total: progressData.total ?? 0 };
+      return;
+    }
+    if (t === 'batch_scan_progress') {
+      loteEscaneoRef.current = { ...loteEscaneoRef.current, activo: true, indice: progressData.index ?? 0 };
+      return;
+    }
+    if (t === 'batch_scan_done') {
+      const lote = loteEscaneoRef.current;
+      loteEscaneoRef.current = { activo: false, indice: 0, total: 0 };
+      const previa = vistaProgresoRef.current;
+      if (previa) {
+        pintar({
+          ...previa,
+          tipo: 'escaneo',
+          terminado: true,
+          fase: 'listo',
+          micro: 'IA · VISIÓN LOCAL',
+          cap: progressData.aborted ? 'Escaneo detenido' : 'Escaneo completado',
+          sub: `${progressData.processed ?? 0} de ${progressData.total ?? lote.total} rutas`,
+          cifras: [],
+          duracionMs: progressData.elapsedMs,
+        });
+      }
+      cerrarEn(4000, false);
+      return;
+    }
+
+    const vista = leerFrame(vistaProgresoRef.current, progressData, muestrasProgresoRef.current, loteEscaneoRef.current);
+    if (!vista) return;
+    pintar(vista);
+
+    if (vista.terminado) {
+      // Si algo ha ido mal (sin guardar, sin caras, error) se deja leer mas rato.
+      const ms = t === 'sync_error' || vista.aviso ? 9000 : 3500;
+      cerrarEn(ms, t === 'sync_complete');
+    } else {
+      // Si el usuario lo aparto, no se lo devolvemos a la cara en cada archivo.
+      if (!progresoSilenciadoRef.current) setShowProgress(true);
+      armWatchdog();
     }
     // OJO: sin cleanup que cancele los timers en cada cambio de progressData.
     // El cleanup anterior cancelaba el timer de ocultar si llegaba CUALQUIER
@@ -1392,6 +1544,56 @@ function App() {
     openFile(file);
   }, [openFile]);
 
+  /**
+   * Candado. Lo oculto sale de la galeria al pulsar (sin esperar al servidor,
+   * que desde ese momento tampoco lo entrega) y durante unos segundos se puede
+   * deshacer sin clave: un candado puesto por error no deberia costar la
+   * contraseña. Si el servidor no lo guarda, vuelve a su sitio y se dice.
+   */
+  const ocultarArchivos = React.useCallback(async (ids: string[]) => {
+    const unicos = Array.from(new Set(ids.filter(Boolean)));
+    if (unicos.length === 0) return;
+    const fuera = new Set(unicos);
+    const antes = mediaFilesRef.current;
+    setMediaFiles(prev => prev.filter(f => !fuera.has(f.id)));
+    setSelectedFiles(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      unicos.forEach(id => next.delete(id));
+      return next;
+    });
+    try {
+      const r = await api.ocultar(unicos);
+      const n = r.data?.ocultados ?? unicos.length;
+      const token = r.data?.deshacer || null;
+      toast((t) => (
+        <span className="flex items-center gap-3 text-sm">
+          <Lock className="w-4 h-4 shrink-0" />
+          <span>{n === 1 ? 'Oculto bajo candado' : `${n} archivos ocultos bajo candado`}</span>
+          {token && (
+            <button
+              className="px-2 py-0.5 rounded-full bg-lavanda text-noche text-xs font-medium"
+              onClick={async () => {
+                toast.dismiss(t.id);
+                try {
+                  await api.deshacerOcultado(token);
+                  toast.success('Vuelve a estar a la vista');
+                } catch (e: any) {
+                  toast.error(e?.message || 'Ya no se puede deshacer');
+                }
+              }}
+            >
+              Deshacer
+            </button>
+          )}
+        </span>
+      ), { duration: 8000 });
+    } catch (e: any) {
+      setMediaFiles(antes);
+      toast.error(e?.message || 'No se pudo ocultar');
+    }
+  }, []);
+
   const exitSelectionMode = () => {
     setIsSelectionMode(false);
     setSelectedFiles(new Set());
@@ -1441,7 +1643,8 @@ function App() {
           const collection = collections.find(c => c.id === selectedCollectionId);
           if (collection) {
             // 1. First get all files that belong to the collection
-            const collectionFiles = mediaFiles.filter(file => collection.mediaFiles.includes(normalizePath(file.fullPath!)));
+            const clavesCol = clavesDeColeccion(collection);
+            const collectionFiles = mediaFiles.filter(file => estaEnColeccion(clavesCol, file));
 
             // 2. Apply all active filters to the collection files
             files = applyAllFilters(collectionFiles, {
@@ -1797,9 +2000,8 @@ function App() {
       toast.loading(`Preparando descarga de "${collection.name}"...`, { id: collectionId });
 
       // Get all files in the collection
-      const collectionFiles = mediaFiles.filter(file =>
-        collection.mediaFiles.includes(normalizePath(file.fullPath!))
-      );
+      const clavesCol = clavesDeColeccion(collection);
+      const collectionFiles = mediaFiles.filter(file => estaEnColeccion(clavesCol, file));
 
       console.log(`📄 Archivos filtrados: ${collectionFiles.length} de ${collection.mediaFiles.length}`);
 
@@ -2389,6 +2591,7 @@ function App() {
     setNaturalSearchIds(null);
     setColorFilterFileIds(null);
     setColorFilterHex(null);
+    setEcoActivo(null);
     setImageSearchFileIds(null);
     setImageSearchPreview(null);
 
@@ -2607,6 +2810,33 @@ function App() {
   // ── Timeline-onda (pasiva) del home ─────────────────────────────────────
   // Solo cuando el grid esta en orden cronologico real: home, sin coleccion,
   // sin orden aleatorio y sin busqueda (imagen/natural traen su propio orden).
+  // Ecos del dia. Solo en el inicio, sin busqueda ni filtros de conjunto: el
+  // archivo habla cuando no le estas preguntando otra cosa.
+  const hoyClave = new Date().toDateString();
+  // Cada "otros" suma uno: otra seleccion del mismo dia. No se guarda; al
+  // volver a entrar el archivo propone la de siempre.
+  const [ecosGiro, setEcosGiro] = useState(0);
+  const ecos = React.useMemo(() => {
+    if (activeView !== 'home' || selectedCollectionId) return [];
+    if (ecosOcultosEl === hoyClave) return [];
+    if (naturalSearchIds !== null || imageSearchFileIds || colorFilterFileIds) return [];
+    if (!mediaFiles || mediaFiles.length === 0) return [];
+    try {
+      return calcularEcos(mediaFiles, { giro: ecosGiro, notaDe: (f) => noteFor(fileNotes, f) });
+    } catch (err) {
+      // Un eco es un extra: si falla el calculo, la galeria sigue igual.
+      console.warn('No se pudieron calcular los ecos:', err);
+      return [];
+    }
+  }, [mediaFiles, activeView, selectedCollectionId, ecosOcultosEl, hoyClave, naturalSearchIds, imageSearchFileIds, colorFilterFileIds, ecosGiro, fileNotes]);
+
+  const ocultarEcos = React.useCallback(() => {
+    const hoy = new Date().toDateString();
+    setEcosOcultosEl(hoy);
+    setEcoActivo(null);
+    try { localStorage.setItem('pensadero.ecosOcultosEl', hoy); } catch { /* modo privado: se oculta solo esta sesion */ }
+  }, []);
+
   const showTimeline = activeView === 'home'
     && !selectedCollectionId
     && !isRandomized
@@ -2694,7 +2924,10 @@ function App() {
     let baseFiles = mediaFiles;
     if (selectedCollectionId) {
       const col = collections.find(c => c.id === selectedCollectionId);
-      if (col) baseFiles = mediaFiles.filter(f => col.mediaFiles.includes(f.id));
+      if (col) {
+        const clavesCol = clavesDeColeccion(col);
+        baseFiles = mediaFiles.filter(f => estaEnColeccion(clavesCol, f));
+      }
     }
     if (baseFiles.length === 0) return null;
 
@@ -2882,6 +3115,12 @@ function App() {
                 onTypeClick={(type) => { setSelectedTypes([type]); setActiveView('home'); }}
                 onYearClick={(year) => { setCurrentSearchFilters(prev => ({ ...(prev || {}), year })); setActiveView('home'); }}
                 onPersonClick={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
+                onMonthClick={(year, month) => {
+                  const from = new Date(year, month, 1, 0, 0, 0, 0);
+                  const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
+                  handleDateRangeChange(from, to);
+                  setActiveView('home');
+                }}
                 onColorClick={async (hex) => {
                   try {
                     const r = await api.searchByColor(hex);
@@ -2894,30 +3133,6 @@ function App() {
                     console.error('[stats] búsqueda por color:', e);
                   }
                 }}
-              />
-            </div>
-          );
-
-        case 'atlas':
-          return (
-            <div>
-              <button
-                onClick={() => setActiveView('home')}
-                className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>Volver</span>
-              </button>
-              <AtlasView
-                files={mediaFiles}
-                onOpenDay={(date) => {
-                  const from = new Date(date); from.setHours(0, 0, 0, 0);
-                  const to = new Date(date); to.setHours(23, 59, 59, 999);
-                  handleDateRangeChange(from, to);
-                  setActiveView('home');
-                }}
-                onPersonClick={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
-                onTagClick={(tag) => { handleTagClick(tag); setActiveView('home'); }}
               />
             </div>
           );
@@ -2954,6 +3169,39 @@ function App() {
 
         case 'synonyms':
           return <SynonymsManager onBack={() => setActiveView('home')} />;
+
+        case 'ocultos':
+          return <OcultosView onBack={() => navigate('/')} />;
+
+        case 'duplicates':
+          return (
+            <DuplicatesView
+              files={mediaFiles}
+              descartadas={descartadas}
+              notas={fileNotes}
+              onBack={() => navigate('/')}
+              onSelectFile={openFile}
+              onCambiarDescartes={cambiarDescartes}
+            />
+          );
+
+        // Linea de vida: /persona/:id/vida. El id sale de la URL para que el
+        // enlace se pueda compartir y sobreviva a un refresco.
+        case 'personLife': {
+          const ruta = displayLocation.pathname;
+          const pid = decodeURIComponent(
+            ruta.slice('/persona/'.length, ruta.length - '/vida'.length)
+          );
+          return (
+            <PersonLife
+              personId={pid}
+              files={mediaFiles}
+              onBack={() => navigate('/')}
+              onSelectFile={openFile}
+              onVerEnGaleria={(id) => navigate('/persona/' + encodeURIComponent(id))}
+            />
+          );
+        }
 
         case 'spaces':
           return (
@@ -2999,6 +3247,7 @@ function App() {
               mediaFiles={mediaFiles}
               onSelectFile={openFile}
               onFilterByPerson={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
+              onVerLineaDeVida={(personId) => navigate('/persona/' + encodeURIComponent(personId) + '/vida')}
             />
           );
 
@@ -3209,6 +3458,7 @@ function App() {
                   <PersonBubbles
                     selectedPersonIds={selectedPersonIds}
                     onSelectionChange={setSelectedPersonIds}
+                    onVerLineaDeVida={(pid) => navigate('/persona/' + encodeURIComponent(pid) + '/vida')}
                   />
                 </div>
               )}
@@ -3343,6 +3593,15 @@ function App() {
                     </svg>
                   </button>
 
+                  {/* Candado para toda la seleccion */}
+                  <button
+                    onClick={() => { const ids = Array.from(selectedFiles); exitSelectionMode(); ocultarArchivos(ids); }}
+                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-grafito hover:bg-pizarra text-lavanda flex items-center justify-center transition-colors"
+                    title="Ocultar seleccionados bajo candado"
+                  >
+                    <Lock className="w-5 h-5" />
+                  </button>
+
                   {/* Add to Collection Button */}
                   <button
                     onClick={() => setShowBulkAddToCollection(true)}
@@ -3386,6 +3645,24 @@ function App() {
               )}
 
 
+              {/* Reposo activo: el archivo propone antes de que preguntes. */}
+              {/* La carta va ENCIMA de los ecos: primero lo que el archivo
+                  tiene que decir, y debajo lo que tiene que enseñar. */}
+              {!isLoading && (
+                <Carta files={mediaFiles} onSelectFile={openFile} />
+              )}
+              {!isLoading && ecos.length > 0 && (
+                <Ecos
+                  ecos={ecos}
+                  activoId={ecoActivo ? ecoActivo.id : null}
+                  onAbrir={(eco) => { setEcoActivo(eco); resetInfiniteScroll(); }}
+                  onCerrar={() => { setEcoActivo(null); resetInfiniteScroll(); }}
+                  onDescartar={ocultarEcos}
+                  onBarajar={() => { setEcosGiro(g => g + 1); if (ecoActivo) { setEcoActivo(null); resetInfiniteScroll(); } }}
+                  giro={ecosGiro}
+                />
+              )}
+
               {/* Content */}
               {isLoading ? (
                 <div className="flex items-center justify-center py-16">
@@ -3403,6 +3680,7 @@ function App() {
                     onRemoveFromCollection={selectedCollectionId ? handleRemoveFromCollection : undefined}
                     onOpenPath={handleOpenPath}
                     onScanFile={handleScanFile}
+                    onOcultar={ocultarArchivos}
                     scanningFiles={scanningFiles}
                     downloadingFiles={downloadingFiles}
                     isSelectionMode={isSelectionMode}
@@ -3417,6 +3695,7 @@ function App() {
                     onSelectSessionFiles={handleSelectSessionFiles}
                     sessionNotes={sessionNotes}
                     onEditSessionNote={handleEditSessionNote}
+                    onPlaySession={handlePlaySession}
                     fileNotes={fileNotes}
                     secondaryStartIndex={
                       naturalSearchIds !== null && naturalSearchPrimaryCount > 0 && naturalSearchPrimaryCount < displayFiles.length
@@ -3534,7 +3813,7 @@ function App() {
   // Get selected collection data
   const selectedCollection = selectedCollectionId ? collections.find(c => c.id === selectedCollectionId) : null;
   const allCollectionFiles = selectedCollection
-    ? mediaFiles.filter(file => selectedCollection.mediaFiles.includes(normalizePath(file.fullPath!)))
+    ? mediaFiles.filter(file => estaEnColeccion(clavesDeColeccion(selectedCollection), file))
     : [];
 
   // Check if any filters are active
@@ -3669,9 +3948,14 @@ function App() {
       <MediaModal
         file={selectedFile}
         isOpen={isModalOpen}
-        note={selectedFile ? fileNotes[selectedFile.id] : ''}
+        note={noteFor(fileNotes, selectedFile) || ''}
         onSaveNote={handleSaveFileNote}
         onOpenPath={handleOpenPath}
+        onOcultar={(f) => {
+          const bg = (location.state as { backgroundLocation?: typeof location } | null)?.backgroundLocation;
+          navigate(bg ? (bg as any) : '/');
+          ocultarArchivos([f.id]);
+        }}
         onClose={() => {
           // Volver a la vista de fondo si existe; si no (deep-link directo), a home.
           const bg = (location.state as { backgroundLocation?: typeof location } | null)?.backgroundLocation;
@@ -3787,19 +4071,22 @@ function App() {
       )}
 
       <PresentationMode
-        videos={getAllDisplayFiles()}
+        videos={presentationFiles ?? getAllDisplayFiles()}
         isOpen={showPresentationMode}
-        onClose={() => setShowPresentationMode(false)}
+        onClose={handleClosePresentation}
       />
 
       {/* Overlay de progreso (bloqueante) para escaneo / sincronización */}
       {showProgress && (
         <Loader
           fullscreen
-          variant={progressDone ? 'listo' : progressKind}
-          cap={progressDone ? (progressKind === 'escaneo' ? 'Escaneo completado' : 'Sincronización completada') : undefined}
-          sub={syncStatus}
-          progress={progressDone ? undefined : syncPct}
+          variant={vistaProgreso?.terminado ? 'listo' : (vistaProgreso?.tipo ?? 'sync')}
+          micro={vistaProgreso?.micro}
+          cap={vistaProgreso?.cap}
+          sub={vistaProgreso?.sub}
+          vista={vistaProgreso ?? undefined}
+          onCancel={vistaProgreso?.terminado ? undefined : detenerProgreso}
+          cancelLabel={vistaProgreso?.tipo === 'escaneo' ? 'Detener' : 'Ocultar'}
         />
       )}
 

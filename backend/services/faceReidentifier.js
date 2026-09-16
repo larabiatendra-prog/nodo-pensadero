@@ -25,6 +25,7 @@ const peopleRegistry = require('../peopleRegistry');
 const catalogReader = require('../catalogReader');
 const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount, rebuildFaces, inferDemographics } = require('../utils/faceCatalog');
+const fallos = require('../utils/failureReason');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 
@@ -105,6 +106,11 @@ function reidentifyEntry(entry, faceSvc) {
     // asignacion justo en el caso que la necesitaba (cosine < umbral).
     if (det.assigned_manually) continue;
     const match = identified[i];
+    // Sin veredicto posible (deteccion antigua sin embedding_b64): conservar lo
+    // que hubiera. Borrarla seria irreversible — no se puede recalcular el
+    // match sin re-escanear la imagen, y el re-id existe para NO tener que
+    // hacerlo. Se cuenta aparte como skippedNoDetections/entries sin embedding.
+    if (match && match.unverifiable) continue;
     if (match && match.person_id) {
       det.person_id = match.person_id;
       det.display_name = peopleRegistry.getDisplayName(match.person_id);
@@ -183,6 +189,10 @@ async function reidentifyAll(opts = {}) {
     changed: 0,
     skippedNoDetections: 0,
     catalogsWritten: 0,
+    // Catalogos que NO se pudieron guardar, y marca del registro de fallos para
+    // poder contar al cerrar solo los de este job (con su causa).
+    escriturasFallidas: 0,
+    marcaFallos: fallos.mark(),
     cancelRequested: false,
     startedAt: Date.now(),
     perPerson: {}, // person_id → nº de caras recien etiquetadas (resumen "que cambio")
@@ -314,14 +324,32 @@ async function reidentifyAll(opts = {}) {
             // catalogos en disco; sin esto, /api/files seguiria sirviendo lo viejo).
             if (typeof refreshDir === 'function') { try { await refreshDir(folder); } catch {} }
           } catch (err) {
-            console.warn(`[reidentify] error escribiendo ${catalogPath}: ${err.message}`);
+            // Apuntado con su causa: un re-id que no puede escribir deja las
+            // caras sin etiquetar y antes se cerraba diciendo "completada".
+            fallos.record('guardar la re-identificacion', err, { path: catalogPath });
+            job.escriturasFallidas++;
           }
         }
       });
     }
 
-    job.status = job.cancelRequested ? 'cancelled' : 'done';
+    const incidencias = fallos.summary({ since: job.marcaFallos });
+    const noGuardado = job.escriturasFallidas > 0;
+    job.status = job.cancelRequested ? 'cancelled' : (noGuardado ? 'done_con_fallos' : 'done');
     job.finishedAt = Date.now();
+
+    // "Completada" solo si de verdad se ha guardado. Si no, se dice cuantos
+    // catalogos se han quedado sin escribir y por que.
+    let estadoTexto;
+    if (job.status === 'cancelled') estadoTexto = 'Re-identificacion cancelada';
+    else if (noGuardado) {
+      const causa = incidencias.principal;
+      estadoTexto = `Re-identificacion SIN GUARDAR ${job.escriturasFallidas} carpeta(s)`
+        + (causa ? `: ${causa.reason}` : '');
+      console.error(`[reidentify] ${estadoTexto}`);
+      if (causa && causa.hint) console.error(`[reidentify] ${causa.hint}`);
+    } else estadoTexto = 'Re-identificacion completada';
+
     broadcastProgress({
       type: 'reidentify_done',
       jobId,
@@ -330,10 +358,15 @@ async function reidentifyAll(opts = {}) {
       changed: job.changed,
       skippedNoDetections: job.skippedNoDetections,
       catalogsWritten: job.catalogsWritten,
+      escriturasFallidas: job.escriturasFallidas,
+      incidencias: incidencias.items,
+      causaPrincipal: incidencias.principal
+        ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
+        : null,
       perPerson: job.perPerson,
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
-      status: job.status === 'cancelled' ? 'Re-identificacion cancelada' : 'Re-identificacion completada',
+      status: estadoTexto,
       percentage: 100,
     });
     return job;
@@ -394,6 +427,8 @@ async function rewritePersonInCatalogs(fromId, toId, opts = {}) {
 
   let catalogsWritten = 0;
   let facesUpdated = 0;
+  let escriturasFallidas = 0;
+  const marcaFallos = fallos.mark();
   let processed = 0;
   const toName = toId ? peopleRegistry.getDisplayName(toId) : null;
   const verb = toId ? `Reasignando "${fromId}" → "${toId}"` : `Limpiando "${fromId}"`;
@@ -449,23 +484,36 @@ async function rewritePersonInCatalogs(fromId, toId, opts = {}) {
           catalogReader.invalidateCatalog(folder);
           catalogsWritten++;
         } catch (err) {
-          console.warn(`[rewrite-person] error escribiendo ${catalogPath}: ${err.message}`);
+          fallos.record('reasignar/limpiar persona en el catalogo', err, { path: catalogPath });
+          escriturasFallidas++;
         }
       }
     });
+  }
+
+  const incidencias = fallos.summary({ since: marcaFallos });
+  const causa = incidencias.principal;
+  const sufijoFallo = escriturasFallidas > 0
+    ? `. NO se pudo guardar en ${escriturasFallidas} carpeta(s)${causa ? `: ${causa.reason}` : ''}`
+    : '';
+  if (escriturasFallidas > 0) {
+    console.error(`[rewrite-person] ${escriturasFallidas} carpeta(s) sin guardar${causa ? `: ${causa.reason}` : ''}`);
   }
 
   broadcastProgress({
     type: 'reidentify_done', jobId,
     total: processed, done: processed, changed: facesUpdated,
     catalogsWritten, skippedNoDetections: 0,
-    status: toId
+    escriturasFallidas,
+    incidencias: incidencias.items,
+    causaPrincipal: causa ? { reason: causa.reason, hint: causa.hint, code: causa.code } : null,
+    status: (toId
       ? `"${fromId}" reasignado a "${toId}" en ${catalogsWritten} carpeta(s)`
-      : `"${fromId}" eliminado de ${catalogsWritten} carpeta(s)`,
+      : `"${fromId}" eliminado de ${catalogsWritten} carpeta(s)`) + sufijoFallo,
     percentage: 100,
   });
 
-  return { catalogsWritten, facesUpdated };
+  return { catalogsWritten, facesUpdated, escriturasFallidas, causa };
 }
 
 // Purga (borra) un person_id de los catalogos. Wrapper de rewrite con toId=null.

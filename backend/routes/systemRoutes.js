@@ -27,6 +27,8 @@ const { getInstance: getScanner } = require('../visualScanService');
 const { getInstance: getClipService } = require('../services/clipService');
 const { getInstance: getFaceService } = require('../services/faceService');
 const runtime = require('../config/runtime');
+const fallos = require('../utils/failureReason');
+const escaneoConfig = require('../services/escaneoConfig');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -194,10 +196,35 @@ module.exports = function createSystemRoutes(deps) {
       checks.clip = { ok: false, state: 'roto', error: err.message };
     }
 
+    // --- Incidencias: que ha fallado y por que. Agregadas por causa, asi que
+    // 9.378 errores iguales salen como una linea con su contador. Es lo que
+    // faltaba el 09/09/2026, cuando un disco lleno tiro un escaneo entero y
+    // health seguia todo en verde.
+    try {
+      const inc = fallos.summary();
+      checks.incidencias = {
+        ok: inc.ok,
+        total: inc.total,
+        distintas: inc.distintas,
+        porCausa: inc.porCausa,
+        error: inc.principal ? `${inc.principal.reason} (${inc.principal.operacion}, x${inc.principal.veces})` : undefined,
+        hint: inc.principal ? inc.principal.hint : undefined,
+        items: inc.items.slice(0, 10).map(i => ({
+          operacion: i.operacion, code: i.code, reason: i.reason, hint: i.hint,
+          veces: i.veces, ultima: new Date(i.ultima).toISOString(), ultimoPath: i.ultimoPath,
+        })),
+      };
+    } catch (err) {
+      checks.incidencias = { ok: false, error: err.message };
+    }
+
     try {
       const fs2 = getFaceService().getStatus();
       checks.faces = lazyPiece(fs2);
       if (fs2) checks.faces.trainedPersons = fs2.trainedPersons;
+      if (fs2 && Array.isArray(fs2.providers) && fs2.providers.length) {
+        checks.faces.providers = fs2.providers;
+      }
     } catch (err) {
       checks.faces = { ok: false, state: 'roto', error: err.message };
     }
@@ -509,7 +536,7 @@ module.exports = function createSystemRoutes(deps) {
             }
           }
         }
-        return { ...p, visualTotal, visualScanned };
+        return { ...p, visualTotal, visualScanned, escaneoEfectivo: escaneoConfig.deRuta(p) };
       });
       res.json({
         success: true,
@@ -637,6 +664,9 @@ module.exports = function createSystemRoutes(deps) {
           videoCount++;
           broadcastProgress({
             type: 'sync_progress',
+            fase: 'miniaturas',
+            archivo: file.name,
+            hechos: videoCount,
             status: `Generando miniatura para video ${videoCount}...`,
             percentage: Math.round((videoCount / scanResult.files.length) * 100)
           });
@@ -663,12 +693,16 @@ module.exports = function createSystemRoutes(deps) {
       console.log(`✅ Total de archivos en el sistema: ${mediaFiles.length}`);
 
       // Actualizar configuración
-      pathConfig.lastScan = new Date().toISOString();
-      pathConfig.fileCount = scanResult.files.length;
-      pathConfig.status = 'connected';
-      pathConfig.isActive = true;
+      // Sobre las rutas RELEIDAS: el recorrido puede haber tardado minutos y
+      // el usuario haber cambiado algo de otra ruta (o de esta) mientras.
+      const frescas = await loadScanPaths();
+      const destino = (Array.isArray(frescas) ? frescas : []).find(p => p.id === pathConfig.id) || pathConfig;
+      destino.lastScan = new Date().toISOString();
+      destino.fileCount = scanResult.files.length;
+      destino.status = 'connected';
+      destino.isActive = true;
 
-      await saveScanPaths(paths);
+      await saveScanPaths(destino === pathConfig ? paths : frescas);
 
       // Guardar cache si hay cambios
       if (scanResult.stats.newFiles > 0 || scanResult.stats.modifiedFiles > 0) {
@@ -758,7 +792,7 @@ module.exports = function createSystemRoutes(deps) {
   router.patch('/scan-paths/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const { path: newPath, displayName, role, isActive } = req.body || {};
+      const { path: newPath, displayName, role, isActive, escaneo } = req.body || {};
 
       const paths = await loadScanPaths();
       const pathConfig = paths.find(p => p.id === id);
@@ -787,6 +821,13 @@ module.exports = function createSystemRoutes(deps) {
       if (typeof isActive === 'boolean') {
         pathConfig.isActive = isActive;
         pathConfig.status = isActive ? 'connected' : 'disconnected';
+      }
+      // Trabajos del escaneo propios de esta ruta: { caras: false } apaga,
+      // { caras: null } vuelve a heredar del global.
+      if (escaneo && typeof escaneo === 'object') {
+        const propio = escaneoConfig.aplicarARuta(pathConfig, escaneo);
+        if (Object.keys(propio).length > 0) pathConfig.escaneo = propio;
+        else delete pathConfig.escaneo;
       }
 
       await saveScanPaths(paths);

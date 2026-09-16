@@ -31,8 +31,15 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   const getActiveVideoRef = () => (activePlayer === 'A' ? videoRefA : videoRefB);
   const getInactiveVideoRef = () => (activePlayer === 'A' ? videoRefB : videoRefA);
 
-  const nextIndex = total > 0 ? (currentVideoIndex + 1) % total : 0;
-  const prevIndex = currentVideoIndex === 0 ? total - 1 : currentVideoIndex - 1;
+  // El indice vive en estado, pero la LISTA puede cambiar debajo: abrir el pase
+  // de una sesion corta despues de uno largo, un filtro, el randomizador o una
+  // actualizacion por WebSocket. El reset a 0 llega en un efecto, o sea un
+  // render DESPUES, y para entonces ya habriamos leido fuera de rango
+  // (videoFiles[i] === undefined, y al pintar su nombre reventaba la vista).
+  // Acotar aqui cubre de una vez todos los usos derivados.
+  const indiceActual = currentVideoIndex < total ? currentVideoIndex : 0;
+
+  const nextIndex = total > 0 ? (indiceActual + 1) % total : 0;
 
   // URLs reproducibles (proxy MP4 para formatos no web-nativos). Se resuelven
   // para el video actual y el siguiente (precarga). Cache por fileId.
@@ -40,7 +47,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   useEffect(() => {
     if (!isOpen) return;
     const ctrl = new AbortController();
-    const targets = [videoFiles[currentVideoIndex], videoFiles[nextIndex]].filter(Boolean) as MediaFile[];
+    const targets = [videoFiles[indiceActual], videoFiles[nextIndex]].filter(Boolean) as MediaFile[];
     for (const f of targets) {
       if (resolvedUrls[f.id]) continue;
       resolvePlayable(f.id, { signal: ctrl.signal })
@@ -52,9 +59,9 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         .catch(() => {});
     }
     return () => ctrl.abort();
-  }, [isOpen, currentVideoIndex, nextIndex]);
+  }, [isOpen, indiceActual, nextIndex]);
 
-  const activeUrl = resolvedUrls[videoFiles[currentVideoIndex]?.id] ?? '';
+  const activeUrl = resolvedUrls[videoFiles[indiceActual]?.id] ?? '';
   const inactiveUrl = resolvedUrls[videoFiles[nextIndex]?.id] ?? '';
 
   // Avanzar: swap de player + indice. El inactivo ya tiene precargado el siguiente,
@@ -181,8 +188,12 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
       inactive.muted = true;
       inactive.pause();
     }
+    // activeUrl entra en las dependencias a proposito: al abrir, la URL
+    // reproducible aun se esta resolviendo y el elemento no tiene src todavia.
+    // Sin esto el play() se lanza en vacio y el pase se queda parado en el
+    // primer clip hasta que le das al play a mano.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, currentVideoIndex, activePlayer, isPlaying, isMuted]);
+  }, [isOpen, indiceActual, activePlayer, isPlaying, isMuted, activeUrl]);
 
   // Resetear indicador de precarga al cambiar de video
   useEffect(() => {
@@ -193,7 +204,9 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
 
   if (!isOpen || total === 0) return null;
 
-  const currentVideo = videoFiles[currentVideoIndex];
+  const currentVideo = videoFiles[indiceActual];
+  // Cinturon: si aun asi no hubiera video, no pintamos en vez de reventar.
+  if (!currentVideo) return null;
   const isActiveA = activePlayer === 'A';
 
   return (
@@ -246,7 +259,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
             <div className="text-white">
               <h1 className="text-xl font-semibold mb-2" title={currentVideo.name}>{currentVideo.displayName || currentVideo.name}</h1>
               <p className="text-white/80 text-sm flex items-center gap-3">
-                <span>Video {currentVideoIndex + 1} de {total}</span>
+                <span>Video {indiceActual + 1} de {total}</span>
                 {isPreloaded && total > 1 && (
                   <span className="inline-flex items-center gap-1 text-green-400 text-xs">
                     <span className="w-2 h-2 bg-green-400 rounded-full"></span>
@@ -349,7 +362,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
               <div
                 className="bg-tinta rounded-full h-1 transition-all duration-300"
                 style={{
-                  width: `${((currentVideoIndex + 1) / total) * 100}%`
+                  width: `${((indiceActual + 1) / total) * 100}%`
                 }}
               />
             </div>

@@ -6,7 +6,9 @@
  * el modelo en cada imagen (carga ~3-5s).
  *
  * API:
- *   await faceService.init()                  → arranca el daemon Python
+ *   await faceService.init()                  → arranca el daemon Python y
+ *                                               CARGA el modelo (warmup); solo
+ *                                               entonces `ready` es cierto
  *   await faceService.detectFaces(imagePath)  → [{ bbox, embedding, det_score, age, gender }, ...]
  *   await faceService.trainPerson(personDir)  → { centroid, count, photos_used, ... }
  *   faceService.shutdown()                    → cierra el daemon
@@ -21,6 +23,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const { atomicWriteFile } = require('../utils/jsonStore');
 const peopleRegistry = require('../peopleRegistry');
+const fallos = require('../utils/failureReason');
 
 const PYTHON_DIR = path.join(__dirname, '..', 'python');
 const PYTHON_EXE_WIN = path.join(PYTHON_DIR, '.venv', 'Scripts', 'python.exe');
@@ -73,6 +76,7 @@ class FaceService {
     this.ready = false;
     this.unavailable = false;
     this.lastError = null;
+    this.providers = [];       // providers reales de onnxruntime tras el warmup
     this.embeddingsCache = new Map(); // person_id → { centroid: Float32Array, count }
   }
 
@@ -133,23 +137,30 @@ class FaceService {
         this._rejectAllPending(`python exited with code ${code}`);
         this.proc = null;
         this.ready = false;
+        this.providers = [];
       });
       this.proc.on('error', (err) => {
         console.error('[faceService] error de proceso:', err.message);
         this._rejectAllPending(err.message);
       });
 
-      // Ping para confirmar que el modelo cargó. Damos 60s de margen (cold
-      // start de InsightFace puede tardar varios segundos).
+      // Warmup (NO ping) para confirmar que el modelo cargó de verdad. El ping
+      // solo prueba que el proceso Python vive: con la carga perezosa del
+      // modelo en el primer `detect`, un InsightFace roto (pesos ausentes, OOM
+      // de VRAM compartiendo GPU con el VLM, onnxruntime mal instalado) dejaba
+      // `ready = true`, el escaneo se declaraba NO degradado y cada archivo se
+      // catalogaba con cero caras en silencio. Mismo criterio que el warmup de
+      // CLIP. Damos 60s de margen (cold start real medido: ~3s).
       try {
-        const pong = await this._sendCommand({ op: 'ping' }, 60_000);
-        if (pong && pong === 'pong') {
+        const warm = await this._sendCommand({ op: 'warmup' }, 60_000);
+        if (warm && warm.loaded) {
           this.ready = true;
-          console.log('[faceService] InsightFace daemon listo');
+          this.providers = Array.isArray(warm.providers) ? warm.providers : [];
+          console.log(`[faceService] InsightFace daemon listo (providers=${this.providers.join(', ') || 'desconocidos'})`);
           return true;
         }
         this.unavailable = true;
-        this.lastError = 'ping no devolvió pong';
+        this.lastError = 'warmup no confirmó la carga del modelo';
         return false;
       } catch (err) {
         this.unavailable = true;
@@ -280,7 +291,11 @@ class FaceService {
       const r = await this._sendCommand({ op: 'detect', path: imagePath });
       return Array.isArray(r?.faces) ? r.faces : [];
     } catch (err) {
-      console.warn(`[faceService] detect falló (${imagePath}):`, err.message);
+      // Apuntarlo con su causa. Devolver [] a secas hacia indistinguible "no
+      // hay caras en esta foto" de "el daemon se ha caido", y como el escaneo
+      // salta lo ya catalogado, ese archivo quedaba congelado con 0 caras para
+      // siempre. Ahora el fallo aparece en el resumen del job y en /api/health.
+      fallos.record('detectar caras', err, { path: imagePath });
       return [];
     }
   }
@@ -322,8 +337,24 @@ class FaceService {
       } catch (err) {
         console.warn(`[faceService] no se pudo persistir embeddings: ${err.message}`);
       }
-      // Invalidar cache para esta persona — se recarga la próxima vez
-      this.embeddingsCache.delete(result.person_id);
+      // Refrescar el cache de ESTA persona con el centroide recien calculado.
+      // Antes aqui se hacia un delete "se recarga la proxima vez", pero no hay
+      // recarga perezosa: identifyFaces solo mira el cache, y este solo se
+      // rellena entero en loadAllEmbeddings (inicio de escaneo, re-id o
+      // promote). Resultado: entrenar a alguien —o subirle una foto, que
+      // dispara auto-train— la dejaba SIN reconocer hasta la siguiente recarga
+      // completa; con un escaneo en marcha, durante el resto del lote y en
+      // silencio. Ya tenemos el centroide en memoria, asi que no hace falta
+      // tocar disco para taparlo.
+      if (result.centroid.length === 512) {
+        this.embeddingsCache.set(result.person_id, {
+          centroid: Float32Array.from(result.centroid),
+          count: result.count || 0,
+        });
+      } else {
+        // Centroide con forma inesperada: mejor sin entrada que con una mala.
+        this.embeddingsCache.delete(result.person_id);
+      }
     }
     return result;
   }
@@ -384,15 +415,38 @@ class FaceService {
    * embeddings. Si la similitud coseno supera el umbral, retorna el
    * person_id correspondiente. Si no, deja la cara como desconocida.
    *
+   * El resultado describe SOLO este matching: nunca hereda la identidad que
+   * ya trajera la detección de entrada (ver `freshCopy`).
+   *
    * @param {Array} detectedFaces - salida de detectFaces()
    * @param {number} threshold - similitud coseno mínima (default env o 0.5)
-   * @returns {Array} mismas caras con campo `person_id` opcional + `similarity`
+   * @returns {Array} mismas caras con `person_id` opcional + `similarity`, y
+   *   `unverifiable: true` cuando no se ha podido evaluar (sin embedding usable
+   *   o sin nadie entrenado) — que NO es lo mismo que "no es nadie".
    */
   identifyFaces(detectedFaces, threshold = DEFAULT_MATCH_THRESHOLD) {
     if (!Array.isArray(detectedFaces) || detectedFaces.length === 0) return [];
+
+    // Copia SIN la identidad previa. Antes esto era un `{ ...face }` a secas y,
+    // al identificar detecciones ya guardadas en un _pensadero.json, el
+    // person_id viejo se colaba en el resultado: como abajo solo se ASIGNA
+    // person_id (nunca se quita), una etiqueta obsoleta salia "confirmada" con
+    // similitud 0.11. Consecuencias que esto arregla:
+    //   - reidentifyEntry no podia limpiar etiquetas muertas (su rama de
+    //     borrado era codigo muerto para toda deteccion ya etiquetada).
+    //   - la verificacion del promote confirmaba lo que ya hubiera puesto.
+    //   - el clusterer daba por conocida a gente ya borrada del registry.
+    const freshCopy = (f) => {
+      const c = { ...f };
+      delete c.person_id;
+      delete c.display_name;
+      delete c.confidence;
+      return c;
+    };
+
     if (this.embeddingsCache.size === 0) {
-      // No hay personas entrenadas: devolver caras tal cual sin person_id
-      return detectedFaces.map(f => ({ ...f }));
+      // Nadie entrenado: no se puede afirmar ni negar nada.
+      return detectedFaces.map(f => ({ ...freshCopy(f), unverifiable: true }));
     }
 
     return detectedFaces.map(face => {
@@ -400,7 +454,10 @@ class FaceService {
       // de un _pensadero.json para re-identificación retroactiva).
       let emb = face.embedding;
       if (!emb && face.embedding_b64) emb = decodeEmbedding(face.embedding_b64);
-      if (!emb || emb.length !== 512) return { ...face };
+      // Sin embedding usable no hay veredicto: marcarlo para que el llamador
+      // conserve lo que hubiera en vez de borrarlo (no se puede recalcular sin
+      // re-escanear la imagen).
+      if (!emb || emb.length !== 512) return { ...freshCopy(face), unverifiable: true };
 
       // Embedding ya viene L2-normalizado de InsightFace (`normed_embedding`),
       // así que cosine = dot product.
@@ -416,7 +473,7 @@ class FaceService {
         }
       }
 
-      const out = { ...face };
+      const out = freshCopy(face);
       out.similarity = bestSim;
       if (bestId && bestSim >= threshold) {
         out.person_id = bestId;
@@ -441,6 +498,9 @@ class FaceService {
       lastError: this.lastError,
       threshold: DEFAULT_MATCH_THRESHOLD,
       trainedPersons: this.embeddingsCache.size,
+      // Providers reales del modelo ya cargado. Sirve para ver en /api/health
+      // si las caras cayeron a CPU (VRAM ocupada por el VLM) sin darse cuenta.
+      providers: this.providers,
     };
   }
 }

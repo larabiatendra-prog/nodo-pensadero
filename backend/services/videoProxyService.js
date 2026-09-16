@@ -26,6 +26,7 @@ const fsp = fs.promises;
 const { spawn } = require('child_process');
 const pathsConfig = require('../config/paths');
 const { atomicWriteFile } = require('../utils/jsonStore');
+const fallos = require('../utils/failureReason');
 
 // Binario ffmpeg de respaldo (sin NVENC) si no hay ffmpeg en el PATH.
 let installerFfmpeg = null;
@@ -67,7 +68,7 @@ function scheduleSave() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try { await atomicWriteFile(INDEX_FILE, JSON.stringify(index, null, 2)); }
-    catch (err) { console.warn('[videoProxy] no se pudo guardar el indice:', err.message); }
+    catch (err) { fallos.record('guardar el indice de proxies de video', err, { path: INDEX_FILE }); }
   }, 500);
 }
 
@@ -138,8 +139,18 @@ function classify(info) {
   const aNative = !info.acodec || (NATIVE_ACODECS.has(info.acodec) && (info.achannels || 0) <= 2);
 
   if (vNative && containerNative && aNative) return 'native';
-  if (vNative) return 'remux';   // video ya vale; arreglar contenedor/audio (copy de video)
-  return 'transcode';            // recodificar video
+
+  // El remux copia el video TAL CUAL (-c:v copy) y no reescala: el proxy acaba
+  // pesando lo mismo que el original. En camara 4K eso son cientos de MB
+  // duplicados por clip, y muchas veces solo para cambiar una pista de audio
+  // PCM por AAC. Medido sobre este archivo el 12/09/2026: remux = 0.99x del
+  // original (311 GB duplicados en 1.164 clips), transcode = 0.06x.
+  //
+  // Por encima de MAX_HEIGHT compensa recodificar: el proxy es para verlo en
+  // una tarjeta del navegador, no para masterizar. Por debajo se queda en
+  // remux, que es casi instantaneo y ahi la copia no duele.
+  if (vNative && (info.height || 0) <= MAX_HEIGHT) return 'remux';
+  return 'transcode';            // recodificar video (y reescalar a MAX_HEIGHT)
 }
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,10 @@ module.exports = function createNotesRoutes() {
   // body: { scope: 'file'|'session', key: string, note: string }
   // note vacio o ausente => borra la nota de esa key.
   router.post('/notes', async (req, res) => {
-    const { scope, key, note } = req.body || {};
+    // legacyKey: la clave anterior del mismo archivo (id md5). El frontend la
+    // manda mientras conviven las dos identidades, para que al guardar se
+    // retire el duplicado y la nota quede solo bajo la mediaKey.
+    const { scope, key, note, legacyKey } = req.body || {};
     if (scope !== 'file' && scope !== 'session') {
       return res.status(400).json({ success: false, error: "scope debe ser 'file' o 'session'" });
     }
@@ -37,7 +40,7 @@ module.exports = function createNotesRoutes() {
       return res.status(400).json({ success: false, error: 'key requerida' });
     }
     try {
-      const result = await notesManager.setNote(scope, key, note);
+      const result = await notesManager.setNote(scope, key, note, legacyKey);
       res.json({ success: true, ...result });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });

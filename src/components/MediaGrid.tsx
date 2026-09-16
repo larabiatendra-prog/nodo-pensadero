@@ -7,6 +7,7 @@ import { SessionItem } from '../hooks/useSessionGroups';
 import { SessionCard, SessionHeader, SessionShowMore, SessionBoundaryCard } from './SessionCard';
 import { normalizePath } from '../utils/formatData';
 import MediaCard, { formatFileSize, formatDuration } from './MediaCard';
+import { noteFor } from '../utils/mediaNotes';
 
 interface MediaGridProps {
   files: MediaFile[];
@@ -23,6 +24,8 @@ interface MediaGridProps {
   // Notas humanas por sesion: mapa session key -> nota, y callback de edicion.
   sessionNotes?: Record<string, string>;
   onEditSessionNote?: (key: string, label: { line1: string; line2: string }) => void;
+  // Play de una sesion colapsada: reproduce sus videos en modo presentacion.
+  onPlaySession?: (files: MediaFile[]) => void;
   // Notas humanas por archivo: mapa file.id -> nota. Se muestran en el hover
   // de la tarjeta en lugar del nombre del archivo.
   fileNotes?: Record<string, string>;
@@ -33,6 +36,7 @@ interface MediaGridProps {
   onRemoveFromCollection?: (fileId: string) => void; // New callback for removing from collection
   onOpenPath?: (fileId: string) => void; // New callback for opening file path (admin only)
   onScanFile?: (file: MediaFile) => void; // Escaneo visual de un solo archivo (boton de la tarjeta)
+  onOcultar?: (fileIds: string[]) => void; // Candado: fuera de la aplicacion hasta dar la clave
   scanningFiles?: Set<string>; // IDs de archivos con escaneo visual en curso
   downloadingFiles?: Set<string>; // IDs of files currently being downloaded
   isSelectionMode?: boolean; // Whether selection mode is active
@@ -40,7 +44,9 @@ interface MediaGridProps {
   isAdmin?: boolean; // Whether the current user is admin
   updatingFavs?: boolean
   // Búsqueda natural: índice (dentro del array `files`) a partir del cual los
-  // resultados son "menos probables". Si está definido y > 0 y < files.length,
+  // resultados van en el segundo bloque: o casaron debilmente con la consulta,
+  // o los encontro la via semantica (se parecen a lo pedido aunque el texto no
+  // coincidiera). Si está definido y > 0 y < files.length,
   // se inserta un separador visual entre los dos tramos y los items del segundo
   // tramo se renderizan con menor opacidad. Si no se pasa o es 0, se comporta
   // como una grid normal.
@@ -57,6 +63,7 @@ export default function MediaGrid({
   onRemoveFromCollection,
   onOpenPath,
   onScanFile,
+  onOcultar,
   scanningFiles = new Set(),
   downloadingFiles = new Set(),
   isSelectionMode = false,
@@ -69,6 +76,7 @@ export default function MediaGrid({
   onSelectSessionFiles,
   sessionNotes,
   onEditSessionNote,
+  onPlaySession,
   fileNotes,
   isAdmin = false,
   updatingFavs = false,
@@ -121,7 +129,7 @@ export default function MediaGrid({
       isSelected={selectedFiles.has(file.id)}
       isScanning={scanningFiles.has(file.id)}
       isDownloading={downloadingFiles.has(file.id)}
-      note={fileNotes?.[file.id]}
+      note={noteFor(fileNotes, file)}
       isSelectionMode={isSelectionMode}
       updatingFavs={updatingFavs}
       onFileClick={onFileClick}
@@ -131,6 +139,7 @@ export default function MediaGrid({
       onAddToCollection={onAddToCollection}
       onRemoveFromCollection={onRemoveFromCollection}
       onOpenPath={onOpenPath}
+      onOcultar={onOcultar}
     />
   );
 
@@ -191,6 +200,8 @@ export default function MediaGrid({
                 onSelectAll={onSelectSessionFiles}
                 note={sessionNotes?.[item.key]}
                 onEditNote={onEditSessionNote}
+                onPlaySession={onPlaySession}
+                onOcultar={onOcultar}
                 dimmed={item.dimmed}
               />
             );
@@ -243,7 +254,7 @@ export default function MediaGrid({
                     {isFirstSecondary && (
                       <tr className="bg-grafito">
                         <td colSpan={totalCols} className="py-3 px-4 text-center text-niebla text-xs uppercase tracking-widest font-medium border-t border-b border-pizarra">
-                          Resultados menos probables · {files.length - (secondaryStartIndex as number)}
+                          Además, te puede interesar · {files.length - (secondaryStartIndex as number)}
                         </td>
                       </tr>
                     )}
@@ -431,7 +442,7 @@ export default function MediaGrid({
       <div className="my-8 px-3 flex items-center gap-4">
         <div className="flex-1 h-px bg-pizarra" />
         <span className="text-niebla text-xs uppercase tracking-widest font-medium whitespace-nowrap">
-          Resultados menos probables · {secondaryFiles.length}
+          Además, te puede interesar · {secondaryFiles.length}
         </span>
         <div className="flex-1 h-px bg-pizarra" />
       </div>

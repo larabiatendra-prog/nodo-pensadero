@@ -64,6 +64,31 @@ function normalizeLibraryRoot(root) {
 }
 
 /**
+ * ¿Esta cadena es una mediaKey ("<libraryId>:<relativa>") y no una ruta?
+ *
+ * El libraryId es hex (hoy 16 chars, pero no se fija la longitud aqui para no
+ * atarse a como se generen manana). Con exigir 8 o mas ya no se confunde con
+ * una unidad de Windows ("c:\..."), que solo tiene una letra antes de los dos
+ * puntos. Definicion UNICA: favoritos y colecciones la comparten, y asi no
+ * pueden discrepar sobre que es una clave portable.
+ */
+function isMediaKey(s) {
+  if (typeof s !== 'string') return false;
+  const i = s.indexOf(':');
+  if (i < 8) return false;
+  if (!/^[a-f0-9]+$/i.test(s.slice(0, i))) return false;
+  const rest = s.slice(i + 1);
+  return rest.length > 0 && rest[0] !== '\\' && rest[0] !== '/';
+}
+
+/**
+ * libraryId de una mediaKey, o '' si no lo es.
+ */
+function libraryIdFromKey(s) {
+  return isMediaKey(s) ? s.slice(0, s.indexOf(':')) : '';
+}
+
+/**
  * Construye la mediaKey portable: "<libraryId>:<relativePathNormalizado>".
  * Devuelve '' si falta libraryId o relativePath.
  */
@@ -135,8 +160,16 @@ function deriveMediaKeyForPath(fullPath, libraries) {
   let bestLen = -1;
   for (const lib of libraries) {
     if (!lib || !lib.path || !lib.id) continue;
-    const root = path.resolve(lib.path).toLowerCase();
-    if (target === root || target.startsWith(root + path.sep) || target.startsWith(root + '/')) {
+    // Raiz normalizada SIN separador final. Para una biblioteca que es la raiz
+    // de una unidad, path.resolve('F:\\') ya devuelve 'F:\\', y concatenarle
+    // otro separador daba 'f:\\\\', que no casa con ninguna ruta: la biblioteca
+    // entera se quedaba sin identidad portable en todo lo que pase por aqui
+    // (migrador, favoritos, notas). Con F:\\ como biblioteca real, eso era todo
+    // el disco.
+    const root = path.resolve(lib.path).toLowerCase().replace(/[\\/]+$/, '');
+    if (target === root
+        || target.startsWith(root + '\\')
+        || target.startsWith(root + '/')) {
       if (root.length > bestLen) {
         best = lib;
         bestLen = root.length;
@@ -195,6 +228,8 @@ function migrateScanPaths(paths) {
 }
 
 module.exports = {
+  isMediaKey,
+  libraryIdFromKey,
   normalizeRelativePath,
   normalizeLibraryRoot,
   makeMediaKey,

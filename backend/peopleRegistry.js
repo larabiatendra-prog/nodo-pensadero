@@ -27,6 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicWriteFileSync } = require('./utils/jsonStore');
+const fallos = require('./utils/failureReason');
 
 // Estado del módulo. Se rellena con `loadRegistry()`.
 let registryPath = null;       // Ruta absoluta al `people_registry.json`
@@ -256,7 +257,8 @@ function upsertPerson(data) {
     throw new Error('person_id debe ser alfanumérico (a-z, 0-9, _, -)');
   }
 
-  const existing = peopleById.get(personId) || {};
+  const previo = peopleById.get(personId);   // undefined si es alta
+  const existing = previo || {};
   const entry = {
     person_id: personId,
     display_name: (data.display_name || '').toString().trim() || existing.display_name || personId,
@@ -272,7 +274,15 @@ function upsertPerson(data) {
   };
   peopleById.set(personId, entry);
   bumpDataVersion();
-  saveToDisk();
+  // Si no se puede persistir, se DESHACE el cambio en memoria y se lanza. Antes
+  // saveToDisk() devolvia false y nadie lo miraba: la persona quedaba viva en
+  // memoria, la UI decia "guardada", y al reiniciar habia desaparecido.
+  if (!saveToDisk()) {
+    if (previo === undefined) peopleById.delete(personId);
+    else peopleById.set(personId, previo);
+    bumpDataVersion();
+    throw new Error(`No se ha podido guardar "${personId}" en el registro de personas. Mira /api/health (incidencias) para el motivo.`);
+  }
   return entry;
 }
 
@@ -281,10 +291,16 @@ function upsertPerson(data) {
  */
 function deletePerson(personId) {
   if (!personId) return false;
+  const previo = peopleById.get(personId);
   const existed = peopleById.delete(personId);
   if (existed) {
     bumpDataVersion();
-    saveToDisk();
+    if (!saveToDisk()) {
+      // Mismo criterio que el alta: si no se persiste, no se finge que si.
+      peopleById.set(personId, previo);
+      bumpDataVersion();
+      throw new Error(`No se ha podido borrar "${personId}" del registro de personas. Mira /api/health (incidencias) para el motivo.`);
+    }
   }
   return existed;
 }
@@ -309,7 +325,7 @@ function saveToDisk() {
     atomicWriteFileSync(registryPath, JSON.stringify(data, null, 2), { backup: true });
     return true;
   } catch (err) {
-    console.error('❌ Error escribiendo registry:', err.message);
+    fallos.record('guardar el registro de personas', err, { path: registryPath });
     return false;
   }
 }

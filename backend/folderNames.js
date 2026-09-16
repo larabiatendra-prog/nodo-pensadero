@@ -10,6 +10,12 @@
  * El archivo FISICO no se toca nunca (regla canonica de Pensadero). Esto es
  * solo una capa de presentacion persistida aparte.
  *
+ * Este modulo tiene dos mitades, con la misma idea detras (la carpeta es la
+ * unidad atomica de significado): `applyFolderNames` aplica los nombres
+ * puestos a mano desde la UI, y `applyFolderInheritance` hace que los
+ * archivos hereden nombre, etiquetas y fecha de la carpeta que YA esta bien
+ * nombrada en disco ("260811_Ondara"). Ver esa funcion mas abajo.
+ *
  * IDENTIDAD PORTABLE (clave de carpeta):
  *   - Clave NUEVA (portable): "<libraryId>:<relativeDirNorm>" — sobrevive al
  *     remapeo de la raiz de la biblioteca (D:\Fotos -> K:\Fotos), porque el
@@ -40,6 +46,7 @@
 const path = require('path');
 const fs = require('fs').promises;
 const { atomicWriteFile } = require('./utils/jsonStore');
+const fallos = require('./utils/failureReason');
 const mediaIdentity = require('./utils/mediaIdentity');
 
 const NAMES_FILE = path.join(__dirname, 'data', 'folder_names.json');
@@ -155,7 +162,7 @@ async function save() {
     await atomicWriteFile(NAMES_FILE, JSON.stringify(_data, null, 2));
     rebuildIndex();
   } catch (err) {
-    console.error('[folderNames] error guardando:', err.message);
+    fallos.record('guardar los nombres de carpeta', err, { path: NAMES_FILE });
     throw err;
   }
 }
@@ -304,6 +311,116 @@ function applyFolderNames(files, opts = {}) {
   return files;
 }
 
+/**
+ * Carpeta cuyo nombre empieza por fecha ("260811_Ondara"). Es la convencion
+ * del archivo: AAMMDD_Evento, Lugar.
+ */
+const FOLDER_DATE_PREFIX = /^\d{6}[_\s]/;
+
+/**
+ * Cadena de carpetas de las que hereda un archivo, de la mas cercana a la mas
+ * lejana y SIEMPRE por debajo de la biblioteca: su raiz nunca entra, porque
+ * "BRUTOS" o "F:\" no significan nada y ensuciarian todas las etiquetas.
+ *
+ * Sube desde la carpeta contenedora, que va siempre, y por encima recoge solo
+ * los ancestros con fecha: asi un "clips" dentro de "260811_Ondara" hereda las
+ * dos, y los tramos organizativos intermedios no meten ruido.
+ *
+ * Los nombres salen de `fullPath` y no de `relativePath` para conservar
+ * mayusculas y acentos, que la ruta relativa normaliza a minusculas.
+ */
+function inheritedFolderChain(f) {
+  if (!f || !f.fullPath) return [];
+  const absSegs = String(f.fullPath).split(/[\\/]/).filter(Boolean);
+  if (absSegs.length < 2) return [];
+
+  // Cuantas carpetas del final cuelgan de la biblioteca. Con relativePath es
+  // exacto; sin el (datos legacy) nos quedamos con la carpeta contenedora.
+  let dirCount = 1;
+  if (typeof f.relativePath === 'string') {
+    const rel = mediaIdentity.normalizeRelativePath(f.relativePath);
+    if (rel) dirCount = rel.split('/').length - 1;
+  }
+  if (dirCount <= 0) return []; // el archivo cuelga de la raiz de la biblioteca
+
+  const start = Math.max(0, absSegs.length - 1 - dirCount);
+  const dirs = absSegs.slice(start, absSegs.length - 1); // sin el nombre de archivo
+  if (dirs.length === 0) return [];
+
+  const chain = [dirs[dirs.length - 1]];
+  for (let i = dirs.length - 2; i >= 0; i--) {
+    if (FOLDER_DATE_PREFIX.test(dirs[i])) chain.push(dirs[i]);
+  }
+  return chain;
+}
+
+/**
+ * Hace que cada archivo herede el significado de su carpeta FISICA. Es la otra
+ * mitad de `applyFolderNames`: aquella cubre las carpetas renombradas a mano,
+ * esta las que ya estan bien nombradas en disco ("260811_Ondara"), que son la
+ * convencion del archivo y hasta ahora no heredaban nada.
+ *
+ * Sin esto, "P1248278.MP4" solo aparece tecleando "P1248278" — un nombre que
+ * no sirve para buscar como busca una persona.
+ *
+ * Por archivo:
+ *   - `folderName`: nombre crudo de la carpeta contenedora, buscable tal cual
+ *     ("260811_Ondara", y por tanto tambien "260811" o "Ondara").
+ *   - tags: las derivadas del nombre de la carpeta y de los ancestros con
+ *     fecha, ANTEPUESTAS a las que ya tenia. Son etiquetas de verdad: entran
+ *     en el autocompletado del buscador, en TagManager y en estadisticas.
+ *   - `extractedDate`: la fecha de la carpeta, solo si el archivo no traia una
+ *     (la del propio nombre del archivo es mas especifica y manda).
+ *
+ * Los archivos de una carpeta con nombre propio quedan fuera: ese nombre es
+ * una decision explicita del usuario y `applyFolderNames` ya derivo de el sus
+ * tags y su fecha. Solo se les rellena `folderName`, para que buscar por
+ * carpeta sea una sola cosa se llame como se llame.
+ *
+ * NO se persiste: se recalcula en cada sync (indices reconstruibles). Renombrar
+ * una carpeta en disco cambia lo que heredan sus archivos sin reescanear nada.
+ */
+function applyFolderInheritance(files, opts = {}) {
+  if (!Array.isArray(files)) return files;
+  const smartTags = typeof opts.smartTags === 'function' ? opts.smartTags : null;
+
+  for (const f of files) {
+    if (!f) continue;
+
+    // Carpeta con nombre propio: manda el override, ya aplicado. Se le quita
+    // la enumeracion "_NNN" para que el nombre de carpeta sea uno solo.
+    if (f.displayName) {
+      f.folderName = String(f.displayName).replace(/_\d{3,}$/, '');
+      continue;
+    }
+
+    const chain = inheritedFolderChain(f);
+    if (chain.length === 0) continue;
+
+    // Rastro de carpetas, de fuera a dentro ("260811_Ondara / clips"), con el
+    // mismo formato que la etiqueta de sesion del front. Asi el archivo de una
+    // subcarpeta tambien se encuentra tecleando la carpeta-evento entera.
+    f.folderName = chain.slice().reverse().join(' / ');
+    if (!smartTags) continue;
+
+    const heredadas = [];
+    let fecha = null;
+    for (const nombre of chain) {
+      const derived = smartTags(nombre) || {};
+      if (Array.isArray(derived.tags)) heredadas.push(...derived.tags);
+      if (!fecha && derived.extractedDate) fecha = derived.extractedDate;
+    }
+
+    if (heredadas.length > 0) {
+      const previas = Array.isArray(f.tags) ? f.tags : [];
+      f.tags = [...new Set([...heredadas, ...previas])];
+    }
+    if (fecha && !f.extractedDate) f.extractedDate = fecha;
+  }
+
+  return files;
+}
+
 module.exports = {
   load,
   save,
@@ -312,6 +429,7 @@ module.exports = {
   clearName,
   getAll,
   applyFolderNames,
+  applyFolderInheritance,
   setLibraries,
   // Para testing/debug
   _normalizeDir: normalizeDir,

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Download, Heart, Plus, X, Sparkles, FolderOpen } from 'lucide-react';
+import { Download, Heart, Plus, X, Sparkles, FolderOpen, Lock } from 'lucide-react';
 import { MediaFile, VideoItem } from '../types';
 import { formatDate } from '../utils/dateUtils';
 import { normalizePath } from '../utils/formatData';
@@ -61,6 +61,8 @@ export interface MediaCardProps {
   onAddToCollection?: (fileId: string) => void;
   onRemoveFromCollection?: (fileId: string) => void;
   onOpenPath?: (fileId: string) => void; // Abrir carpeta contenedora con el archivo seleccionado
+  /** Poner bajo candado: deja de salir en toda la aplicacion hasta dar la clave. */
+  onOcultar?: (fileIds: string[]) => void;
 }
 
 function MediaCardBase({
@@ -79,6 +81,7 @@ function MediaCardBase({
   onAddToCollection,
   onRemoveFromCollection,
   onOpenPath,
+  onOcultar,
 }: MediaCardProps) {
   // El VideoItem solo se recalcula si cambian sus campos; así VideoThumbnail
   // (memoizado) no se repinta en cada render del grid.
@@ -156,6 +159,9 @@ function MediaCardBase({
             {onOpenPath && (
               <button onClick={(e) => { e.stopPropagation(); onOpenPath(file.id); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-bruma/20 text-white hover:bg-bruma/30" title="Ir a ruta (abrir carpeta)"><FolderOpen className="w-4 h-4" /></button>
             )}
+            {onOcultar && (
+              <button onClick={(e) => { e.stopPropagation(); onOcultar([file.id]); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-noche/40 text-white hover:bg-noche/70" title="Ocultar (bajo candado)" aria-label="Ocultar bajo candado"><Lock className="w-4 h-4" /></button>
+            )}
             <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} disabled={isDownloading} className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${isDownloading ? 'bg-bruma/30 text-white cursor-not-allowed' : 'bg-bruma/20 text-white hover:bg-bruma/30'}`} title="Descargar">
               {isDownloading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Download className="w-4 h-4" />}
             </button>
@@ -204,7 +210,8 @@ function areEqual(prev: MediaCardProps, next: MediaCardProps): boolean {
     prev.onScanFile !== next.onScanFile ||
     prev.onAddToCollection !== next.onAddToCollection ||
     prev.onRemoveFromCollection !== next.onRemoveFromCollection ||
-    prev.onOpenPath !== next.onOpenPath
+    prev.onOpenPath !== next.onOpenPath ||
+    prev.onOcultar !== next.onOcultar
   ) {
     return false;
   }

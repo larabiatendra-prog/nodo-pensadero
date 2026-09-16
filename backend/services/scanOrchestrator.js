@@ -26,11 +26,13 @@ function fileIdFor(filePath) {
   return crypto.createHash('md5').update(filePath).digest('hex');
 }
 const { getInstance: getScanner } = require('../visualScanService');
-const { getInstance: getFaceService, encodeEmbedding } = require('./faceService');
+const { getInstance: getFaceService, encodeEmbedding, decodeEmbedding } = require('./faceService');
 const { getInstance: getClipService } = require('./clipService');
 const { getInstance: getCameraMotionService } = require('./cameraMotionService');
 const videoProxyService = require('./videoProxyService');
+const scanState = require('./scanState');
 const clipIndex = require('../clipIndex');
+const { esCarpetaExcluida } = require('../utils/carpetasExcluidas');
 const colorAnalyzer = require('../colorAnalyzer');
 const { enrichPalette } = require('../colorNamer');
 const peopleRegistry = require('../peopleRegistry');
@@ -38,11 +40,115 @@ const spacesRegistry = require('../spacesRegistry');
 const catalogReader = require('../catalogReader');
 const folderContext = require('./folderContext');
 const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
-const { computeFaceCount } = require('../utils/faceCatalog');
+const { computeFaceCount, mergeIdentityOnRescan } = require('../utils/faceCatalog');
+const fallos = require('../utils/failureReason');
 const { computeShotType } = require('../utils/shotType');
 const { computePeopleFraming } = require('../utils/peopleFraming');
 const { computeTimeOfDay } = require('../utils/timeOfDay');
 const { computeLighting } = require('../utils/lighting');
+const escaneoConfig = require('./escaneoConfig');
+
+/** Trabajos que dejan huella en la entrada (los proxies no: viven aparte). */
+const TRABAJOS = ['descripcion', 'caras', 'busquedaVisual', 'movimiento'];
+
+/**
+ * ¿Se le hizo a esta entrada el trabajo `cap`? Las entradas anteriores a los
+ * interruptores no llevan `escaneo`: se escanearon con todo encendido, asi que
+ * cuentan como hechas. Tratarlas como pendientes relanzaria miles de archivos.
+ */
+function trabajoHecho(entry, cap) {
+  if (!entry) return false;
+  if (entry.escaneo && typeof entry.escaneo[cap] === 'boolean') return entry.escaneo[cap];
+  return true;
+}
+
+/**
+ * Lo que le falta a una entrada ya catalogada, de entre lo que este escaneo
+ * puede hacer (`vivos`: encendido y con su servicio levantado).
+ */
+function trabajosPendientes(entry, vivos, esVideo) {
+  return TRABAJOS.filter(cap => {
+    if (!vivos[cap]) return false;
+    if (cap === 'movimiento' && !esVideo) return false;
+    return !trabajoHecho(entry, cap);
+  });
+}
+
+/** Copia profunda de una entrada JSON (las entradas son JSON puro). */
+function clonarEntrada(entry) {
+  return JSON.parse(JSON.stringify(entry));
+}
+
+/**
+ * Base de la entrada cuando la descripcion no se hace en esta pasada: la que
+ * ya habia (para completarla sin perder nada) o un esqueleto con lo que
+ * ffprobe sabe del video.
+ */
+function entradaSinDescripcion(previa, probe) {
+  if (previa) return clonarEntrada(previa);
+  const entry = {
+    schema_version: 2,
+    technical: {},
+    identity: { faces: [], face_count: 0, spaces: [] },
+    colors: {},
+  };
+  if (probe) {
+    entry.technical = {
+      duration: probe.duration || null,
+      resolution: probe.width && probe.height ? `${probe.width}x${probe.height}` : null,
+      fps: probe.fps || null,
+      codec: probe.codec || null,
+      creation_time: probe.creation_time || null,
+    };
+  }
+  return entry;
+}
+
+/**
+ * Antes de volcar: lo que esta pasada NO ha rehecho se hereda de la entrada
+ * que hay en disco, y se apunta en `entry.escaneo` que tiene hecho cada
+ * trabajo. Sin la herencia, re-describir una carpeta con la busqueda visual
+ * apagada tiraria sus embeddings; sin la marca, un archivo escaneado sin caras
+ * nunca volveria a la cola cuando las caras se encienden.
+ */
+function heredarYMarcar(entry, previa, hecho, esVideo) {
+  if (previa) {
+    if (!hecho.busquedaVisual) {
+      if (previa.clip_embedding_b64 && !entry.clip_embedding_b64) entry.clip_embedding_b64 = previa.clip_embedding_b64;
+      const espacios = previa.identity && previa.identity.spaces;
+      if (Array.isArray(espacios) && espacios.length > 0) {
+        entry.identity = entry.identity || {};
+        if (!Array.isArray(entry.identity.spaces) || entry.identity.spaces.length === 0) {
+          entry.identity.spaces = espacios;
+        }
+      }
+    }
+    if (!hecho.caras) {
+      // El bloque de caras lo conserva mergeIdentityOnRescan (caso "sin
+      // detecciones nuevas"). Aqui va lo que se deriva de ellas.
+      if (previa.demographics && !entry.demographics) entry.demographics = previa.demographics;
+      const pc = previa.composition;
+      if (pc && pc.shot_type_face_ratio != null && entry.composition) {
+        for (const k of ['shot_type', 'shot_type_source', 'shot_type_confidence', 'shot_type_face_ratio', 'people_framing', 'people_framing_source']) {
+          if (pc[k] !== undefined) entry.composition[k] = pc[k];
+        }
+      }
+    }
+    if (!hecho.movimiento && previa.composition && previa.composition.motion_debug) {
+      entry.composition = entry.composition || {};
+      entry.composition.camera_movement = previa.composition.camera_movement;
+      if (typeof previa.composition.scene_changes === 'boolean') entry.composition.scene_changes = previa.composition.scene_changes;
+      entry.composition.motion_debug = previa.composition.motion_debug;
+    }
+  }
+  const marca = {};
+  for (const cap of TRABAJOS) {
+    if (cap === 'movimiento' && !esVideo) continue;
+    marca[cap] = hecho[cap] ? true : trabajoHecho(previa, cap);
+  }
+  entry.escaneo = marca;
+  return entry;
+}
 const exifReader = require('exif-reader');
 
 // Mapeo InsightFace gender (0=female, 1=male) → vocabulario español de Pensadero
@@ -92,6 +198,10 @@ async function collectImages(folderPath) {
       if (ent.name.startsWith('.') || ent.name.startsWith('$')) continue;
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
+        // Previews de render, auto-saves y caches de las suites de edicion:
+        // describir con el VLM un preview de Premiere es quemar ~9 s de GPU
+        // en un archivo que el propio Premiere regenera solo.
+        if (esCarpetaExcluida(ent.name)) continue;
         await walk(full);
       } else if (ent.isFile()) {
         const ext = path.extname(ent.name).toLowerCase();
@@ -124,6 +234,9 @@ async function listFoldersWithMedia(folderPath) {
       if (ent.name.startsWith('.') || ent.name.startsWith('$')) continue;
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
+        // Mismo criterio que collectImages: el inventario debe contar lo que
+        // el escaneo va a mirar, no lo que hay en el disco.
+        if (esCarpetaExcluida(ent.name)) continue;
         await walk(full);
       } else if (ent.isFile()) {
         const ext = path.extname(ent.name).toLowerCase();
@@ -240,7 +353,20 @@ async function scanFolder(folderPath, opts = {}) {
     // singleFile: ruta absoluta. Si se pasa, escanea SOLO ese archivo (no
     // recorre el arbol). Lo usa scanSingleFile para el escaneo desde la tarjeta.
     singleFile = null,
+    // Que trabajos se hacen (ver escaneoConfig). Sin nada, todos: es lo de
+    // siempre para quien llame sin saber de interruptores.
+    capacidades = null,
   } = opts;
+  const caps = escaneoConfig.normalizar(capacidades);
+
+  // Campos comunes de los frames de este escaneo. unArchivo: el escaneo desde
+  // la tarjeta tiene su propio aviso y no debe abrir la pantalla completa.
+  const inicioEscaneo = Date.now();
+  const comunes = { jobId, inicio: inicioEscaneo, force, carpeta: folderPath, unArchivo: !!singleFile, capacidades: caps };
+
+  // Levantar caras, CLIP y movimiento puede tardar decenas de segundos en
+  // frio; sin este aviso parecia que el escaneo no habia arrancado.
+  broadcastProgress({ type: 'scan_start', ...comunes, fase: 'preparando', status: 'Cargando modelos...' });
 
   const scanner = getScanner();
   const faceSvc = getFaceService();
@@ -249,8 +375,9 @@ async function scanFolder(folderPath, opts = {}) {
 
   // Cargar embeddings del registry en el cache del faceService antes del
   // batch. Si falla (sin Python/InsightFace), seguimos sin reconocimiento.
+  // Apagado = ni se arranca: levantar InsightFace o SigLIP-2 ya ocupa VRAM.
   let facesEnabled = false;
-  try {
+  if (caps.caras) try {
     await faceSvc.init();
     if (faceSvc.getStatus().ready) {
       await faceSvc.loadAllEmbeddings(peopleRegistry.getState().avatarsBase);
@@ -268,7 +395,7 @@ async function scanFolder(folderPath, opts = {}) {
   // sigue vacio. Si warmup falla, seguimos SIN embeddings — el resto del
   // scan (descripcion VLM, caras) funciona igual y el aviso queda visible.
   let clipEnabled = false;
-  try {
+  if (caps.busquedaVisual) try {
     const warm = await clipSvc.warmup();
     if (warm.ok) {
       if (!clipIndex.isLoaded()) await clipIndex.load();
@@ -287,7 +414,7 @@ async function scanFolder(folderPath, opts = {}) {
   // que el VLM hace mal. Corre en CPU en paralelo a la GPU. Si no esta
   // disponible (sin Python), seguimos con el camera_movement del VLM.
   let motionEnabled = false;
-  try {
+  if (caps.movimiento) try {
     if (await motionSvc.init()) {
       motionEnabled = true;
       console.log('[scan] camera motion (optical-flow) listo');
@@ -307,6 +434,13 @@ async function scanFolder(folderPath, opts = {}) {
     total: 0,
     done: 0,
     errors: 0,
+    // Volcados que no se pudieron escribir. Se cuentan aparte de `errors`
+    // (fallos por archivo) porque significan otra cosa muy distinta: el
+    // trabajo se ha hecho y se esta PERDIENDO. Sale en scan_done con su causa.
+    escriturasFallidas: 0,
+    // Marca del registro de fallos al empezar, para poder contar solo los
+    // de ESTE job al cerrarlo.
+    marcaFallos: fallos.mark(),
     cancelRequested: false,
     startedAt: Date.now(),
     // Ventana movil de duraciones por archivo para estimar tiempo restante.
@@ -342,7 +476,20 @@ async function scanFolder(folderPath, opts = {}) {
   // "con exito" dejando un catalogo mudo: sin caras o sin busqueda visual.
   // Antes solo se sabia por un console.warn que nadie leia.
   const capabilities = { faces: facesEnabled, clip: clipEnabled, motion: motionEnabled };
-  const degraded = Object.entries(capabilities).filter(([, ok]) => !ok).map(([k]) => k);
+  // Degradado es lo que se PIDIO y no ha levantado. Lo apagado a proposito no
+  // es un fallo y no se avisa como tal.
+  const pedidoPorServicio = { faces: caps.caras, clip: caps.busquedaVisual, motion: caps.movimiento };
+  const degraded = Object.entries(capabilities).filter(([k, ok]) => pedidoPorServicio[k] && !ok).map(([k]) => k);
+  // Lo que este escaneo puede hacer de verdad: encendido y con servicio vivo.
+  const vivos = {
+    descripcion: caps.descripcion,
+    caras: facesEnabled,
+    busquedaVisual: clipEnabled,
+    movimiento: motionEnabled,
+  };
+  const apagadas = escaneoConfig.IDS.filter(id => !caps[id]);
+  job.capacidades = caps;
+  if (apagadas.length > 0) console.log(`[scan] apagado a proposito: ${apagadas.join(', ')}`);
   if (degraded.length > 0) {
     console.warn(`[scan] DEGRADADO — sin: ${degraded.join(', ')}. El catalogo saldra incompleto en esos campos.`);
   }
@@ -350,12 +497,14 @@ async function scanFolder(folderPath, opts = {}) {
   // Avisar inicio
   broadcastProgress({
     type: 'scan_start',
-    jobId,
+    ...comunes,
+    fase: 'buscando',
     folder: folderPath,
     status: 'Buscando imágenes...',
     percentage: 0,
     capabilities,
     degraded,
+    apagadas,
   });
 
   // 1) Listar imágenes. Si es escaneo de un único archivo, no recorremos el
@@ -375,7 +524,12 @@ async function scanFolder(folderPath, opts = {}) {
   }
 
   // 2) Cargar catálogos existentes por carpeta (cache local del job)
-  const catalogsByDir = new Map(); // dir → { catalog, source, dirty }
+  // dir → { catalog, source, pending }
+  //   catalog: copia leida al EMPEZAR el job. Solo sirve para decidir que
+  //     archivos saltar (paso 3) y como base si el fichero no existe en disco.
+  //   pending: basename → entry recien escaneada, aun sin volcar. El volcado
+  //     las aplica sobre lo que haya EN DISCO en ese momento (ver flushCatalogs).
+  const catalogsByDir = new Map();
   for (const img of allImages) {
     const dir = path.dirname(img);
     if (!catalogsByDir.has(dir)) {
@@ -388,33 +542,103 @@ async function scanFolder(folderPath, opts = {}) {
           photos: {},
         },
         source: existing.source || PENSADERO_CATALOG_FILENAME,
-        dirty: false,
+        pending: new Map(),
       });
     }
   }
 
-  // Volcado de los catálogos sucios. Se llama DURANTE el bucle (cada
-  // FLUSH_EVERY archivos y al cambiar de carpeta), no solo al terminar: lo ya
-  // descrito tiene que estar en disco aunque el proceso muera a mitad.
+  // Volcado de los catálogos con entradas pendientes. Se llama DURANTE el bucle
+  // (cada FLUSH_EVERY archivos y al cambiar de carpeta), no solo al terminar: lo
+  // ya descrito tiene que estar en disco aunque el proceso muera a mitad.
   const writtenDirs = new Set();
   async function flushCatalogs() {
     for (const [dir, c] of catalogsByDir.entries()) {
-      if (!c.dirty) continue;
+      if (c.pending.size === 0) continue;
       const targetFile = path.join(dir, PENSADERO_CATALOG_FILENAME);
       // Lock por path: serializa esta escritura con un re-id/promote de fondo
       // sobre la misma carpeta, para que no se intercalen dos escrituras del
       // mismo _pensadero.json.
       await withFileLock(normalizeLockKey(targetFile), async () => {
+        // RELEER dentro del lock, y aplicar SOLO las entradas de este job.
+        //
+        // Antes se volcaba `c.catalog`, la copia cargada al empezar el job —
+        // que en un escaneo largo tiene horas. El lock evitaba que dos
+        // escrituras se intercalaran, pero no que la nuestra estuviera obsoleta:
+        // todo lo que hubieran escrito mientras tanto el re-id, assign-face,
+        // promote o el borrado de una persona sobre ESTA carpeta desaparecia en
+        // el siguiente volcado, sin ruido. Etiquetar caras con un escaneo en
+        // marcha era tirar el trabajo a la basura.
+        //
+        // Ahora el ciclo leer -> mutar -> escribir vive entero dentro del lock,
+        // que es la misma disciplina que ya siguen el re-id, el promote y el
+        // assign-face. Las entradas ajenas se respetan; solo se pisan las que
+        // este job ha escaneado.
+        let base = null;
+        try {
+          base = JSON.parse(await fs.readFile(targetFile, 'utf-8'));
+        } catch (err) {
+          if (err.code !== 'ENOENT') {
+            console.warn(`[scan] no se pudo releer ${targetFile} (${err.message}); se parte de la copia en memoria`);
+          }
+        }
+        // Sin fichero en disco (primer escaneo, o venia de `_marina.json`):
+        // la copia inicial es la base correcta.
+        if (!base || typeof base !== 'object') base = c.catalog;
+        if (!base.photos) base.photos = {};
+
+        for (const [basename, entry] of c.pending) {
+          // La entry anterior se toma de lo REELEIDO, no de la copia en memoria:
+          // asi una cara asignada a mano mientras corria el escaneo tambien
+          // entra en la fusion de identidad, en vez de perderse.
+          const prevEntry = base.photos[basename]
+            || (base.clips && base.clips[basename])
+            || null;
+          const rutaEntrada = path.join(dir, basename);
+          const plan = planes.get(rutaEntrada);
+          if (plan) {
+            heredarYMarcar(entry, prevEntry, plan, isVideoExt(path.extname(basename).toLowerCase()));
+          }
+          if (prevEntry && prevEntry.identity) {
+            const merged = mergeIdentityOnRescan(prevEntry.identity, entry.identity, {
+              decodeEmbedding,
+              getDisplayName: peopleRegistry.getDisplayName,
+            });
+            entry.identity = merged.identity;
+            const { reancladas, conservadas, bloquePrevio } = merged.stats;
+            if (bloquePrevio) {
+              console.warn(`[scan] ${basename}: sin caras nuevas, se conserva el bloque facial anterior (${entry.identity.detections.length} detecciones)`);
+            } else if (reancladas > 0 || conservadas > 0) {
+              console.log(`[scan] ${basename}: identidad manual preservada (${reancladas} re-ancladas, ${conservadas} sin re-detectar)`);
+            }
+          }
+          // Clave canonica `photos` para las nuevas; si habia `clips`, se
+          // mantiene (no romper legacy).
+          base.photos[basename] = entry;
+        }
+        base.processed = new Date().toISOString();
+
         try {
           // Escritura atomica (tmp + rename): el _pensadero.json es la fuente de
           // verdad y guarda embeddings NO regenerables. Un crash a media
           // escritura no lo trunca.
-          await atomicWriteFile(targetFile, JSON.stringify(c.catalog, null, 2));
+          //
+          // backup: el rename atomico protege del truncado, no de escribir
+          // contenido valido pero equivocado. Este fichero guarda embeddings e
+          // identidad manual que no se recuperan solos, y era el unico de los
+          // no regenerables sin .bak (registry y embeddings.json ya lo tenian).
+          // Ojo: es UN .bak rotatorio, asi que durante un escaneo largo acaba
+          // siendo "el estado del volcado anterior", no el de antes de empezar.
+          await atomicWriteFile(targetFile, JSON.stringify(base, null, 2), { backup: true });
           catalogReader.invalidateCatalog(dir);
-          c.dirty = false;
+          c.catalog = base;     // la copia en memoria queda al dia
+          c.pending.clear();
           writtenDirs.add(dir);
         } catch (err) {
-          console.warn(`[scan] error escribiendo ${targetFile}: ${err.message}`);
+          // No se limpia `pending`: se reintenta en el proximo volcado.
+          // Y se APUNTA con su causa: un escaneo que no puede escribir esta
+          // quemando GPU para nada, y antes eso solo salia por console.warn.
+          fallos.record('escribir el catalogo', err, { path: targetFile });
+          job.escriturasFallidas++;
         }
       });
     }
@@ -431,17 +655,39 @@ async function scanFolder(folderPath, opts = {}) {
   }
 
   // 3) Filtrar las que ya están catalogadas (si !force)
+  // Ademas de lo nuevo, entra lo ya catalogado al que le falta algun trabajo
+  // encendido (se escaneo con las caras apagadas y ahora estan encendidas).
+  // Para esos se hace SOLO lo que falta: no se vuelve a describir nada.
   const toScan = [];
+  const planes = new Map(); // ruta -> { descripcion, caras, busquedaVisual, movimiento, frames }
+  const previas = new Map(); // ruta -> entrada al empezar el job (o null)
+  let completando = 0;
   for (const img of allImages) {
     const dir = path.dirname(img);
     const basename = path.basename(img);
     const c = catalogsByDir.get(dir);
     // Soportar tanto `photos` (default nuevo) como `clips` (legacy)
     const existingEntries = (c.catalog && (c.catalog.photos || c.catalog.clips)) || {};
-    if (!force && existingEntries[basename]) {
-      continue;
+    const previa = existingEntries[basename] || null;
+    const esVideo = isVideoExt(path.extname(basename).toLowerCase());
+    let hacer;
+    if (!force && previa) {
+      const faltan = trabajosPendientes(previa, vivos, esVideo);
+      if (faltan.length === 0) continue;
+      hacer = Object.fromEntries(TRABAJOS.map(cap => [cap, faltan.includes(cap)]));
+      completando++;
+    } else {
+      hacer = { ...vivos, movimiento: vivos.movimiento && esVideo };
+      // Nada que hacerle a un archivo nuevo: no se crea una entrada vacia.
+      if (!TRABAJOS.some(cap => hacer[cap])) continue;
     }
+    hacer.frames = esVideo && (hacer.descripcion || hacer.caras || hacer.busquedaVisual);
+    planes.set(img, hacer);
+    previas.set(img, previa);
     toScan.push(img);
+  }
+  if (completando > 0) {
+    console.log(`[scan] ${completando} archivo(s) ya catalogados vuelven para completar trabajos encendidos`);
   }
 
   // Cache de `_contexto.md` por directorio (raíz + cada subcarpeta).
@@ -453,7 +699,10 @@ async function scanFolder(folderPath, opts = {}) {
   job.total = toScan.length;
   broadcastProgress({
     type: 'scan_progress',
-    jobId,
+    ...comunes,
+    fase: 'describiendo',
+    hechos: 0,
+    yaHechos: allImages.length - toScan.length,
     total: job.total,
     done: 0,
     status: `Escaneando ${job.total} imágenes...`,
@@ -481,7 +730,40 @@ async function scanFolder(folderPath, opts = {}) {
   // La carpeta es la unidad atómica de significado: al terminar una, su
   // catálogo baja a disco antes de empezar la siguiente.
   let lastDir = null;
-  for (const filePath of toScan) {
+
+  // Adelanto de la fase CPU del siguiente video (ffprobe + sacar los frames)
+  // mientras la GPU describe el actual. Profundidad 1 a proposito: una sola
+  // llamada al VLM en vuelo —la VRAM no da para dos— y como mucho dos juegos
+  // de frames temporales vivos a la vez. Sin esto la GPU se pasaba la mitad
+  // del tiempo esperando al disco: medido el 15/09/2026, 51% de ocupacion y
+  // 9,1 s por archivo, con ~3 s de ffmpeg por delante de cada descripcion.
+  let adelanto = null; // { filePath, promesa } | null
+
+  // La promesa NUNCA rechaza: el fallo se guarda y se relanza cuando le llega
+  // el turno a ESE archivo, para que el error quede contado donde toca y no
+  // reviente el lote desde fuera del try.
+  const pedirAdelanto = (ruta) => {
+    if (!ruta || !isVideoExt(path.extname(ruta).toLowerCase())) return null;
+    const planSiguiente = planes.get(ruta);
+    if (planSiguiente && !planSiguiente.frames) return null;
+    return {
+      filePath: ruta,
+      promesa: scanner.prepararVideo(ruta).then(
+        (prep) => ({ prep }),
+        (error) => ({ error }),
+      ),
+    };
+  };
+
+  /** Tira una preparacion que ya no va a usar nadie, con sus temporales. */
+  const soltarAdelanto = async (pendiente) => {
+    if (!pendiente) return;
+    const r = await pendiente.promesa.catch(() => null);
+    if (r && r.prep && typeof r.prep.cleanup === 'function') await r.prep.cleanup();
+  };
+
+  for (let idx = 0; idx < toScan.length; idx++) {
+    const filePath = toScan[idx];
     if (job.cancelRequested) {
       job.status = 'cancelled';
       break;
@@ -496,6 +778,27 @@ async function scanFolder(folderPath, opts = {}) {
 
     const ext = path.extname(basename).toLowerCase();
     const isVideo = isVideoExt(ext);
+
+    // Recoger el adelanto si es de este archivo; si no (primer video del
+    // lote, o venia una foto), prepararlo ahora.
+    const hacer = planes.get(filePath) || { ...vivos, frames: isVideo };
+    const previaJob = previas.get(filePath) || null;
+    let preparadoPromesa = null;
+    let preparadoTomado = false;
+    if (isVideo && hacer.frames) {
+      if (adelanto && adelanto.filePath === filePath) {
+        preparadoPromesa = adelanto.promesa;
+      } else {
+        await soltarAdelanto(adelanto);
+        preparadoPromesa = pedirAdelanto(filePath).promesa;
+      }
+    } else {
+      await soltarAdelanto(adelanto);
+    }
+    // Y ya en marcha el siguiente, ANTES de bloquear en la GPU. Ese es todo
+    // el truco: el disco trabaja para el archivo N+1 mientras la GPU esta
+    // con el N.
+    adelanto = pedirAdelanto(toScan[idx + 1]);
 
     try {
       let entry;
@@ -521,12 +824,29 @@ async function scanFolder(folderPath, opts = {}) {
         // Optical-flow de camara en CPU, EN PARALELO a la llamada VLM (GPU). Se
         // lanza antes del await de scanVideo para solapar ambos y no sumar tiempo
         // de pared. Se resuelve mas abajo, tras la GPU.
-        const motionPromise = motionEnabled
+        const motionPromise = hacer.movimiento
           ? motionSvc.analyze(filePath).catch(() => null)
           : null;
 
-        const videoResult = await scanner.scanVideo(filePath, { folderContext: folderContextStr });
-        entry = videoResult.entry;
+        let videoResult = { entry: null, frames: [], cleanup: null, escalaFrames: 1, probe: null };
+        if (hacer.frames) {
+          // Normalmente ya esta resuelto: los frames se sacaron mientras la GPU
+          // describia el archivo anterior.
+          const preparado = await preparadoPromesa;
+          if (preparado.error) throw preparado.error;
+          preparadoTomado = true; // a partir de aqui limpia quien use los frames
+          if (hacer.descripcion) {
+            videoResult = await scanner.describirVideoPreparado(
+              preparado.prep,
+              { folderContext: folderContextStr },
+            );
+          } else {
+            // Caras o busqueda visual sin descripcion: los mismos frames, sin VLM.
+            const pr = preparado.prep;
+            videoResult = { entry: null, frames: pr.frames, cleanup: pr.cleanup, escalaFrames: pr.escalaFrames, probe: pr.probe };
+          }
+        }
+        entry = videoResult.entry || entradaSinDescripcion(previaJob, videoResult.probe);
         const videoFrames = Array.isArray(videoResult.frames) ? videoResult.frames : []; // [{ path, timestamp }]
 
         // camera_movement: el optical-flow (medicion real de dx/dy/escala) manda
@@ -535,6 +855,7 @@ async function scanFolder(folderPath, opts = {}) {
         // VLM. scene_changes (cortes) tambien lo aporta el flujo, mas fiable.
         if (motionPromise) {
           const motion = await motionPromise;
+          if (motion && !entry.composition) entry.composition = {};
           if (motion && entry.composition) {
             if (motion.confidence !== 'baja' && motion.movement) {
               entry.composition.camera_movement = motion.movement;
@@ -559,11 +880,20 @@ async function scanFolder(folderPath, opts = {}) {
           //    captura personas que solo aparecen en un tramo del clip). Cada
           //    deteccion se etiqueta con el timestamp de su frame (_frameTime)
           //    para que el visor dibuje el bbox solo cuando el video pasa por ahi.
-          if (facesEnabled && videoFrames.length > 0) {
+          if (hacer.caras && videoFrames.length > 0) {
+            // Los frames se extraen reducidos; el detector devuelve la bbox en ese
+            // espacio. Se devuelve al del fotograma original, que es donde la
+            // esperan el recorte de avatar y el overlay del visor.
+            const escala = (typeof videoResult.escalaFrames === 'number' && videoResult.escalaFrames > 0)
+              ? videoResult.escalaFrames
+              : 1;
             let maxCount = -1;
             for (const fr of videoFrames) {
               const dets = await faceSvc.detectFaces(fr.path).catch(() => []);
               for (const d of dets) {
+                if (escala !== 1 && Array.isArray(d.bbox)) {
+                  d.bbox = d.bbox.map(v => Math.round(v * escala));
+                }
                 d._frameTime = fr.timestamp;
                 faceDetections.push(d);
               }
@@ -588,7 +918,7 @@ async function scanFolder(folderPath, opts = {}) {
             } catch (cErr) {
               console.warn(`[scan-video] color analysis ${basename}: ${cErr.message}`);
             }
-            if (clipEnabled) {
+            if (hacer.busquedaVisual) {
               try {
                 const clipEmb = await clipSvc.embedImage(midFrame.path);
                 if (clipEmb) {
@@ -596,9 +926,9 @@ async function scanFolder(folderPath, opts = {}) {
                   clipIndex.upsert(fileIdFor(filePath), clipEmb);
                   // Place recognition: matchear contra centroides de espacios
                   const match = spacesRegistry.identifySpace(clipEmb);
+                  entry.identity = entry.identity || {};
+                  entry.identity.spaces = [];
                   if (match) {
-                    entry.identity = entry.identity || {};
-                    entry.identity.spaces = entry.identity.spaces || [];
                     entry.identity.spaces.push({
                       space_id: match.space_id,
                       display_name: spacesRegistry.getDisplayName(match.space_id),
@@ -623,12 +953,16 @@ async function scanFolder(folderPath, opts = {}) {
         // Pre-calentar el proxy de reproduccion (fire-and-forget, cola con
         // concurrencia limitada): si el formato no es web-nativo (.m2ts, .mov
         // 10-bit, etc.), al abrirlo en el front ya estara listo para reproducir.
-        videoProxyService.prewarm({ id: fileIdFor(filePath), fullPath: filePath, name: basename });
+        if (caps.proxies) {
+          videoProxyService.prewarm({ id: fileIdFor(filePath), fullPath: filePath, name: basename });
+        }
       } else {
         [entry, technical, faceDetections] = await Promise.all([
-          scanner.scanImage(filePath, { folderContext: folderContextStr }),
+          hacer.descripcion
+            ? scanner.scanImage(filePath, { folderContext: folderContextStr })
+            : Promise.resolve(entradaSinDescripcion(previaJob, null)),
           extractTechnical(filePath),
-          facesEnabled ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
+          hacer.caras ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
         ]);
         // Mezclar technical de sharp con lo que diga el VLM (sharp manda)
         entry.technical = { ...(entry.technical || {}), ...technical };
@@ -648,7 +982,7 @@ async function scanFolder(folderPath, opts = {}) {
           console.warn(`[scan-photo] color analysis ${basename}: ${cErr.message}`);
         }
         // CLIP embedding (place recognition + image search + text-to-image futuro)
-        if (clipEnabled) {
+        if (hacer.busquedaVisual) {
           try {
             const clipEmb = await clipSvc.embedImage(filePath);
             if (clipEmb) {
@@ -656,9 +990,9 @@ async function scanFolder(folderPath, opts = {}) {
               clipIndex.upsert(fileIdFor(filePath), clipEmb);
               // Place recognition: matchear contra centroides de espacios
               const match = spacesRegistry.identifySpace(clipEmb);
+              entry.identity = entry.identity || {};
+              entry.identity.spaces = [];
               if (match) {
-                entry.identity = entry.identity || {};
-                entry.identity.spaces = entry.identity.spaces || [];
                 entry.identity.spaces.push({
                   space_id: match.space_id,
                   display_name: spacesRegistry.getDisplayName(match.space_id),
@@ -674,7 +1008,7 @@ async function scanFolder(folderPath, opts = {}) {
 
       // Identidad: si tenemos detección de caras, sobrescribir lo que dijo
       // el VLM con datos reales de InsightFace.
-      if (facesEnabled) {
+      if (hacer.caras) {
         const identified = faceSvc.identifyFaces(faceDetections);
         const named = identified
           .filter(f => f.person_id)
@@ -762,7 +1096,9 @@ async function scanFolder(folderPath, opts = {}) {
       // del VLM al TAMAÑO de la persona (llama "plano_medio" a todo). Si no hay
       // caras, se conserva el shot_type del VLM (bueno en escena: general/
       // conjunto). plano_detalle siempre lo decide el VLM (es semantico).
-      if (entry.composition) {
+      // Solo si hay algo nuevo con que afinar: sin caras ni descripcion nuevas,
+      // recalcular pisaria un plano medido por caras con el del VLM.
+      if (entry.composition && (hacer.caras || hacer.descripcion)) {
         const st = computeShotType({
           detections: faceDetections,
           vlmShotType: entry.composition.shot_type,
@@ -812,19 +1148,20 @@ async function scanFolder(folderPath, opts = {}) {
         if (lt.source !== 'vlm') entry.atmosphere.lighting_source = lt.source;
       }
 
-      const c = catalogsByDir.get(dir);
-      // Usar siempre `photos` como clave canónica para nuevas entradas
-      if (!c.catalog.photos) c.catalog.photos = {};
-      // Si había `clips`, mantenerlo (no romper legacy), pero las nuevas
-      // van a `photos`.
-      c.catalog.photos[basename] = entry;
-      c.catalog.processed = new Date().toISOString();
-      c.dirty = true;
+      // Encolar, no escribir. La fusion de identidad y el volcado ocurren en
+      // flushCatalogs, DENTRO del lock del fichero y contra lo que haya en
+      // disco en ese momento — asi el escaneo no pisa lo que hayan escrito
+      // entretanto el re-id, assign-face o un promote sobre esta carpeta.
+      catalogsByDir.get(dir).pending.set(basename, entry);
       job.done++;
 
       broadcastProgress({
         type: 'scan_progress',
-        jobId,
+        ...comunes,
+        fase: 'describiendo',
+        hechos: job.done + job.errors,
+        errores: job.errors,
+        archivo: basename,
         total: job.total,
         done: job.done,
         errors: job.errors,
@@ -835,6 +1172,10 @@ async function scanFolder(folderPath, opts = {}) {
 
       if (job.done % FLUSH_EVERY === 0) {
         await flushCatalogs();
+        // Deja constancia de que el escaneo avanza. Si el proceso muere, esto
+        // es lo que permite distinguir al arrancar entre "iba bien, reanuda" y
+        // "se atasca siempre aqui, no insistas".
+        await scanState.anotarAvance(job.done);
         // Huella de memoria en el log: si el RSS sube sin techo a lo largo de
         // una tanda larga, aqui se ve. Es la instrumentacion que faltaba para
         // diagnosticar una caida silenciosa a mitad de escaneo.
@@ -846,18 +1187,39 @@ async function scanFolder(folderPath, opts = {}) {
       job.errors++;
       broadcastProgress({
         type: 'scan_error',
-        jobId,
+        ...comunes,
+        fase: 'describiendo',
+        hechos: job.done + job.errors,
+        errores: job.errors,
+        archivo: basename,
+        total: job.total,
         file: basename,
         error: err.message,
         done: job.done,
         errors: job.errors,
         ...timingFields(),
       });
+    } finally {
+      // Si el archivo se fue por un error antes de llegar a usar su
+      // preparacion, sus frames temporales siguen en disco.
+      if (preparadoPromesa && !preparadoTomado) {
+        const r = await preparadoPromesa.catch(() => null);
+        if (r && r.prep && typeof r.prep.cleanup === 'function') await r.prep.cleanup();
+      }
     }
   }
 
+  // Un adelanto sin dueño (cancelacion, o el lote se acabo) dejaria sus
+  // frames en el temporal del sistema.
+  await soltarAdelanto(adelanto);
+  adelanto = null;
+
   // 5) Volcado final: lo que quede sucio desde el ultimo flush del bucle.
   //    El grueso ya se escribio incrementalmente mientras se escaneaba.
+  broadcastProgress({
+    type: 'scan_progress', ...comunes, fase: 'guardando',
+    hechos: job.done + job.errors, total: job.total, errores: job.errors, percentage: 100,
+  });
   await flushCatalogs();
   const written = writtenDirs.size;
   if (clipEnabled) {
@@ -865,11 +1227,42 @@ async function scanFolder(folderPath, opts = {}) {
   }
 
   // 7) Cierre
-  job.status = job.cancelRequested ? 'cancelled' : 'done';
+  // Fallos ocurridos DURANTE este job, con su causa ya traducida.
+  const incidencias = fallos.summary({ since: job.marcaFallos });
+  // Un escaneo que no ha podido guardar NO esta "completado": ha tirado el
+  // trabajo. Se dice con esas palabras y con el motivo, porque el 09/09/2026
+  // se perdieron 9.378 volcados por un disco lleno y el resumen decia
+  // "Escaneo completado".
+  const noGuardado = job.escriturasFallidas > 0;
+  job.status = job.cancelRequested ? 'cancelled' : (noGuardado ? 'done_con_fallos' : 'done');
   job.finishedAt = Date.now();
+
+  let estadoTexto;
+  if (job.status === 'cancelled') {
+    estadoTexto = 'Escaneo cancelado';
+  } else if (noGuardado) {
+    const causa = incidencias.principal;
+    estadoTexto = `Escaneo TERMINADO SIN GUARDAR: ${job.escriturasFallidas} volcado(s) fallaron`
+      + (causa ? `. ${causa.reason}` : '');
+  } else if (degraded.length > 0) {
+    estadoTexto = `Escaneo completado SIN ${degraded.join(', ')}`;
+  } else {
+    estadoTexto = 'Escaneo completado';
+  }
+  if (noGuardado) {
+    console.error(`[scan] ${estadoTexto}`);
+    if (incidencias.principal && incidencias.principal.hint) {
+      console.error(`[scan] ${incidencias.principal.hint}`);
+    }
+  }
+
   broadcastProgress({
     type: 'scan_done',
-    jobId,
+    ...comunes,
+    duracionMs: Date.now() - inicioEscaneo,
+    estado: job.status,
+    hechos: job.done + job.errors,
+    errores: job.errors,
     total: job.total,
     done: job.done,
     errors: job.errors,
@@ -878,9 +1271,14 @@ async function scanFolder(folderPath, opts = {}) {
     // cuando en realidad ha ido sin caras o sin embeddings.
     capabilities,
     degraded,
-    status: job.status === 'cancelled'
-      ? 'Escaneo cancelado'
-      : (degraded.length > 0 ? `Escaneo completado SIN ${degraded.join(', ')}` : 'Escaneo completado'),
+    // Lo que no se ha podido guardar y POR QUE. La UI ya no depende de que
+    // alguien lea el log.
+    escriturasFallidas: job.escriturasFallidas,
+    incidencias: incidencias.items,
+    causaPrincipal: incidencias.principal
+      ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
+      : null,
+    status: estadoTexto,
     percentage: 100,
     elapsedMs: job.finishedAt - job.startedAt,
     // Media real del job completo (no la ventana movil): tiempo total / archivos
@@ -891,7 +1289,19 @@ async function scanFolder(folderPath, opts = {}) {
   // Conservar el job ~5 min para queries de status, luego liberar
   setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
 
-  return { jobId, total: job.total, done: job.done, errors: job.errors, written };
+  // El valor de retorno tambien lleva los fallos: quien llama por HTTP (no por
+  // WebSocket) tiene que poder decir "no pude" igual que la UI.
+  return {
+    jobId,
+    total: job.total,
+    done: job.done,
+    errors: job.errors,
+    written,
+    escriturasFallidas: job.escriturasFallidas,
+    causa: incidencias.principal
+      ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
+      : null,
+  };
 }
 
 function getJobStatus(jobId) {

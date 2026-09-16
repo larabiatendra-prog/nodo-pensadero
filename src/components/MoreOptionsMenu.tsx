@@ -9,7 +9,8 @@ import {
   Users,
   MapPin,
   Languages,
-  Sparkles,
+  Copy,
+  Lock,
   X
 } from 'lucide-react';
 
@@ -49,9 +50,10 @@ export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom'
     { id: 'synonyms',    icon: Languages,  label: 'Sinónimos',            description: 'Agrupar palabras parecidas para la búsqueda' },
     { id: 'persons',     icon: Users,      label: 'Personas',             description: 'Registrar caras y entrenar identidades' },
     { id: 'spaces',      icon: MapPin,     label: 'Espacios',             description: 'Lugares físicos identificables con CLIP' },
+    { id: 'duplicates',  icon: Copy,       label: 'Tomas gemelas',        description: 'Material casi idéntico agrupado para quedarte con una' },
     { id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
-    { id: 'atlas',       icon: Sparkles,   label: 'Atlas de recuerdos',   description: 'Mapa de sesiones conectadas por personas, lugares y tiempo' },
     { id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
+    { id: 'ocultos',     icon: Lock,       label: 'Material oculto',      description: 'Lo que está bajo candado. Pide la clave' },
   ];
 
   // Cerrar menú al hacer clic fuera

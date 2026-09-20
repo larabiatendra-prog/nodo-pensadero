@@ -94,21 +94,24 @@ const CATALOGO_RESERVA: CapacidadInfo[] = [
   { id: 'caras', nombre: 'Caras', detalle: 'Detecta caras y reconoce a las personas que ya conoces.', recurso: 'GPU', coste: 'medio' },
   { id: 'busquedaVisual', nombre: 'Búsqueda visual', detalle: 'Buscar por imagen, parecidos, tomas gemelas y espacios.', recurso: 'GPU', coste: 'bajo' },
   { id: 'movimiento', nombre: 'Movimiento de cámara', detalle: 'Paneos, zooms y cortes en los vídeos.', recurso: 'CPU', coste: 'medio', soloVideo: true },
-  { id: 'proxies', nombre: 'Vídeos listos para ver', detalle: 'Copias reproducibles de los vídeos que el navegador no abre.', recurso: 'GPU (NVENC) y disco', coste: 'medio', soloVideo: true },
+  { id: 'proxies', nombre: 'Vídeos listos para ver', detalle: 'Prepara al escanear una versión ligera de los vídeos que el navegador no abre. Apagado, se prepara al abrirlos.', recurso: 'GPU (NVENC) y disco', coste: 'medio', soloVideo: true },
 ];
 
-const PRESETS: Array<{ id: string; nombre: string; detalle: string; valores: Capacidades }> = [
+// Los ajustes rapidos solo tocan el analisis. Preparar videos es otra cosa
+// (espacio en disco), y un "Completo" no deberia encenderlo sin decirlo.
+const ANALISIS: CapacidadEscaneo[] = ['descripcion', 'caras', 'busquedaVisual', 'movimiento'];
+const PRESETS: Array<{ id: string; nombre: string; detalle: string; valores: Partial<Capacidades> }> = [
   {
-    id: 'completo', nombre: 'Completo', detalle: 'Todo encendido',
-    valores: { descripcion: true, caras: true, busquedaVisual: true, movimiento: true, proxies: true },
+    id: 'completo', nombre: 'Completo', detalle: 'Todo el análisis encendido',
+    valores: { descripcion: true, caras: true, busquedaVisual: true, movimiento: true },
   },
   {
     id: 'ligero', nombre: 'Ligero', detalle: 'Caras y búsqueda visual, sin describir',
-    valores: { descripcion: false, caras: true, busquedaVisual: true, movimiento: false, proxies: false },
+    valores: { descripcion: false, caras: true, busquedaVisual: true, movimiento: false },
   },
   {
     id: 'describir', nombre: 'Solo describir', detalle: 'Descripciones, nada más',
-    valores: { descripcion: true, caras: false, busquedaVisual: false, movimiento: false, proxies: false },
+    valores: { descripcion: true, caras: false, busquedaVisual: false, movimiento: false },
   },
 ];
 
@@ -354,7 +357,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
     }).catch(() => {
       // Backend sin interruptores: se pinta como siempre, todo encendido.
-      setCapsGlobal({ descripcion: true, caras: true, busquedaVisual: true, movimiento: true, proxies: true });
+      setCapsGlobal({ descripcion: true, caras: true, busquedaVisual: true, movimiento: true, proxies: false });
     });
     // Health del VLM al entrar: diagnostico si Ollama o el modelo no estan.
     api.scanHealth().then(r => {
@@ -782,7 +785,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const presetActivo = useMemo(() => {
     if (!capsGlobal) return null;
-    return PRESETS.find(pr => IDS.every(id => pr.valores[id] === capsGlobal[id]))?.id ?? null;
+    return PRESETS.find(pr => ANALISIS.every(id => pr.valores[id] === capsGlobal[id]))?.id ?? null;
   }, [capsGlobal]);
 
   // ── Derivados ───────────────────────────────────────────────────────────

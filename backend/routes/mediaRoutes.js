@@ -22,6 +22,32 @@ const favoritesManager = require('../favoritesManager');
 const pathsConfig = require('../config/paths');
 const videoProxyService = require('../services/videoProxyService');
 
+// Cuantos videos de la misma carpeta se preparan por delante al abrir uno.
+// Dos bastan para no alcanzar nunca a la cola pasando clips, y no convierten
+// abrir un video en una tarea de fondo interminable.
+const VECINOS_ADELANTADOS = 2;
+
+/**
+ * Prepara por detras los siguientes videos de la carpeta del que acabas de
+ * abrir. Pasar de un clip al siguiente es lo que mas se hace en una sesion de
+ * brutos, y es justo donde se notaba la espera.
+ */
+function adelantarVecinos(file, todos) {
+  try {
+    if (!file.fullPath) return;
+    const carpeta = path.dirname(file.fullPath);
+    const mismos = todos.filter(f => f.type === 'video' && f.fullPath && path.dirname(f.fullPath) === carpeta);
+    mismos.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { numeric: true }));
+    const i = mismos.findIndex(f => f.id === file.id);
+    if (i === -1) return;
+    for (const f of mismos.slice(i + 1, i + 1 + VECINOS_ADELANTADOS)) {
+      videoProxyService.prewarm({ id: f.id, fullPath: f.fullPath, name: f.name });
+    }
+  } catch {
+    // Adelantarse es un lujo: si falla, el video que has abierto va igual.
+  }
+}
+
 /**
  * Sirve un fichero con soporte para Range requests (HTTP 206) y guardas de
  * stream. Extraido de /stream/:id para reutilizarlo tambien al servir proxies.
@@ -184,6 +210,25 @@ module.exports = function createMediaRoutes(deps) {
     }
   });
 
+  // id -> fileData del cache persistente, construido perezosamente y rehecho
+  // si el cache cambia de tamaño. Solo se usa cuando la lista en memoria no
+  // tiene el archivo (arranque).
+  let _porIdCache = null;
+  let _tamCache = -1;
+  const archivoEnCache = (fileId) => {
+    const cache = typeof getFileCache === 'function' ? getFileCache() : null;
+    if (!cache || typeof cache.values !== 'function') return null;
+    if (!_porIdCache || _tamCache !== cache.size) {
+      _porIdCache = new Map();
+      for (const entrada of cache.values()) {
+        const fd = entrada && entrada.fileData;
+        if (fd && fd.id) _porIdCache.set(fd.id, fd);
+      }
+      _tamCache = cache.size;
+    }
+    return _porIdCache.get(fileId) || null;
+  };
+
   // Placeholder SVG inline (gris) cuando no hay thumbnail servible.
   const svgPlaceholderMarkup = (label, name, bg) => {
     const shortName = (name || '').length > 25 ? (name || '').substring(0, 22) + '...' : (name || '');
@@ -208,7 +253,9 @@ module.exports = function createMediaRoutes(deps) {
       res.status(200).send(svgPlaceholderMarkup(label, name, bg));
     };
     try {
-      const file = getMediaFiles().find(f => f.id === fileId);
+      // Durante la sincronizacion inicial la lista aun esta vacia, pero la
+      // portada ya pide miniaturas: se buscan tambien en el cache de disco.
+      const file = getMediaFiles().find(f => f.id === fileId) || archivoEnCache(fileId);
       if (!file || !file.fullPath) return sendPlaceholder('?', fileId, '%23999999');
 
       const newLoc = pathsConfig.resolveThumbnailLocation({ fullPath: file.fullPath, fileId, fileName: file.name });
@@ -644,14 +691,23 @@ module.exports = function createMediaRoutes(deps) {
    *  - ready     -> proxy listo (url = /api/media/:id/proxy)
    *  - generating-> proxy en cola/generandose (el front reconsulta)
    *  - error     -> no se pudo (el front ofrece descargar el original)
+   * ?forzar=1: preparar version ligera aunque parezca nativo (el navegador no
+   * pudo abrir el original).
+   * ?sinPreparar=1: devolver lo que haya ahora, sin encolar nada (la portada).
    */
   router.get('/media/:id/playable', async (req, res) => {
     const file = getMediaFiles().find(f => f.id === req.params.id);
     if (!file) return res.status(404).json({ success: false, message: 'Archivo no encontrado' });
     const fullPath = file.fullPath || path.join(CONTENT_DIR, file.path);
     try {
-      const data = await videoProxyService.getPlayable({ id: file.id, fullPath, name: file.name });
+      const sinPreparar = req.query.sinPreparar === '1';
+      const data = await videoProxyService.getPlayable(
+        { id: file.id, fullPath, name: file.name },
+        { forzar: req.query.forzar === '1', sinPreparar },
+      );
       res.json({ success: true, data });
+      // Quien pide "lo que haya" tampoco quiere que se preparen los vecinos.
+      if (!sinPreparar) adelantarVecinos({ ...file, fullPath }, getMediaFiles());
     } catch (err) {
       console.error('Error en /playable:', err.message);
       res.status(500).json({ success: false, message: err.message });

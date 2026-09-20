@@ -46,6 +46,17 @@ export interface MediaFile {
   createdAt: Date;
   tags: string[];
   extractedDate?: Date; // Date extracted from filename (e.g., YY-MM-DD format)
+  /**
+   * La fecha que manda, resuelta en el servidor (backend/utils/fechaArchivo.js):
+   * nombre > carpeta > camara > disco. `fechaDia` es AAAAMMDD, `fechaHora` el
+   * instante local en ms cuando la camara lo sabe, y `fechaFuente` de donde
+   * salio ('nombre' | 'carpeta' | 'camara' | 'disco').
+   */
+  fechaDia?: number | null;
+  fechaHora?: number | null;
+  /** Minutos desde medianoche: ordena dentro de un mismo dia. */
+  fechaMinuto?: number | null;
+  fechaFuente?: 'nombre' | 'carpeta' | 'camara' | 'disco' | 'ninguna';
   description?: string;
   duration?: number; // for video/audio
   dimensions?: { width: number; height: number }; // for images/videos

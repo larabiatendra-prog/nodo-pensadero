@@ -27,6 +27,7 @@ import { api } from '../services/api';
 import { config } from '../config';
 import { slugifyPersonId } from '../utils/persons';
 import { resolvePlayable, PlayableInfo } from '../utils/playable';
+import { AvisoTope } from './ProxiesPanel';
 
 interface MediaModalProps {
   file: MediaFile | null;
@@ -631,8 +632,24 @@ export default function MediaModal({
                 </div>
               ) : playable.status === 'error' ? (
                 <div className="flex flex-col items-center justify-center bg-noche text-niebla px-6 py-16 min-w-[280px] gap-3">
-                  <p className="text-sm">No se pudo preparar este vídeo para reproducir.</p>
-                  {playable.error && <p className="text-xs text-humo">{playable.error}</p>}
+                  {playable.motivo === 'tope' && playable.raiz ? (
+                    // El disco llego a su tope: se decide aqui, no en otra pantalla.
+                    <AvisoTope
+                      raiz={playable.raiz}
+                      topeGB={playable.topeGB}
+                      onResuelto={() => {
+                        const id = file.id;
+                        setPlayable({ status: 'generating' });
+                        resolvePlayable(id, { onUpdate: (info) => setPlayable(info) })
+                          .catch(() => setPlayable({ status: 'error', error: 'no se pudo preparar el vídeo' }));
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <p className="text-sm">No se pudo preparar este vídeo para reproducir.</p>
+                      {playable.error && <p className="text-xs text-humo">{playable.error}</p>}
+                    </>
+                  )}
                   <button
                     onClick={(e) => { e.stopPropagation(); onDownload(file); }}
                     className="mt-2 px-3 py-1.5 bg-grafito hover:bg-pizarra text-marfil text-xs rounded-lg transition-colors"
@@ -660,6 +677,15 @@ export default function MediaModal({
                     }
                   }}
                   onVolumeChange={(e) => guardarVolumen(e.currentTarget.volume, e.currentTarget.muted)}
+                  onError={() => {
+                    // Parecia compatible y el navegador no ha podido: version
+                    // ligera. Solo una vez por archivo (si falla el proxy, error).
+                    if (playable.status !== 'native') return;
+                    const id = file.id;
+                    setPlayable({ status: 'generating' });
+                    resolvePlayable(id, { forzarProxy: true, onUpdate: (info) => setPlayable(info) })
+                      .catch(() => setPlayable({ status: 'error', error: 'no se pudo preparar el vídeo' }));
+                  }}
                   onEnded={() => { if (encadenarClips) irAlSiguienteClip(); }}
                   onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
                   onSeeked={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}

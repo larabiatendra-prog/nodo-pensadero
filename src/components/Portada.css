@@ -1,0 +1,152 @@
+/* ============================================
+   Portada — el pensadero
+   Recuerdos que flotan en un remolino lento, hilos de luz que los unen.
+   Prefijo pt- para no colisionar con Tailwind.
+   ============================================ */
+
+.pt-raiz {
+  position: fixed; inset: 0; z-index: 150; overflow: hidden;
+  background:
+    radial-gradient(ellipse 60% 55% at 50% 50%, rgba(124,107,178,.16), transparent 70%),
+    radial-gradient(ellipse 120% 90% at 50% 55%, #141726 0%, #0F111A 62%, #0a0c13 100%);
+  color: #F5F1FF;
+  font-family: 'Geist', Inter, system-ui, sans-serif;
+  transition: opacity .9s ease;
+  touch-action: manipulation;
+}
+.pt-raiz--saliendo { opacity: 0; pointer-events: none; }
+
+/* La pila: ondas concentricas muy tenues que giran despacio */
+.pt-ondas { position: absolute; inset: 0; pointer-events: none; }
+.pt-onda {
+  position: absolute; left: 50%; top: 50%; border-radius: 50%;
+  border: 1px dashed rgba(200,182,255,.07);
+  transform: translate(-50%,-50%) rotate(0deg);
+  animation: pt-girar linear infinite;
+}
+.pt-onda:nth-child(1) { width: 44vmin; height: 30vmin; animation-duration: 140s; }
+.pt-onda:nth-child(2) { width: 78vmin; height: 52vmin; animation-duration: 220s; animation-direction: reverse; border-color: rgba(200,182,255,.05); }
+.pt-onda:nth-child(3) { width: 122vmin; height: 80vmin; animation-duration: 320s; border-style: solid; border-color: rgba(245,241,255,.03); }
+@keyframes pt-girar { to { transform: translate(-50%,-50%) rotate(360deg); } }
+
+.pt-motas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.pt-hilos { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+
+/* ---- Recuerdos ---- */
+.pt-recuerdo {
+  position: absolute; left: 0; top: 0;
+  border-radius: 14px; overflow: hidden;
+  background: #1C2033;
+  cursor: pointer;
+  will-change: transform, opacity, filter;
+  transition: opacity 1.6s ease, filter 1.2s ease, box-shadow 1.2s ease;
+  box-shadow: 0 10px 40px rgba(0,0,0,.45);
+}
+.pt-recuerdo img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 6s ease; pointer-events: none; }
+.pt-recuerdo__vivo {
+  /* El video que respira: entra sobre su propia miniatura, sin saltos. */
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block; pointer-events: none;
+  animation: pt-aparecer 1.1s ease both;
+}
+.pt-recuerdo::after {
+  /* velo de agua: los recuerdos lejanos se ven a traves de la superficie */
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(160deg, rgba(200,182,255,.10), transparent 40%, rgba(15,17,26,.35));
+  transition: opacity 1.2s ease;
+}
+.pt-recuerdo--p0 { filter: grayscale(.55) brightness(.72) blur(1.6px); }
+.pt-recuerdo--p1 { filter: grayscale(.4) brightness(.82) blur(.5px); }
+.pt-recuerdo--p2 { filter: grayscale(.25) brightness(.9); }
+.pt-recuerdo--encendido {
+  filter: none !important;
+  box-shadow: 0 0 0 1px rgba(245,241,255,.35), 0 0 38px 4px var(--pt-brillo, rgba(200,182,255,.35)), 0 16px 50px rgba(0,0,0,.55);
+}
+.pt-recuerdo--encendido::after { opacity: .15; }
+.pt-recuerdo--encendido img { transform: scale(1.06); }
+.pt-recuerdo--oculto { opacity: 0 !important; }
+.pt-recuerdo:focus-visible { outline: 2px solid #C8B6FF; outline-offset: 3px; }
+
+/* Orbe: recuerdo sin imagen (archivo vacio o casi) */
+.pt-orbe {
+  position: absolute; left: 0; top: 0; border-radius: 50%;
+  background: radial-gradient(circle, rgba(245,241,255,.9) 0%, rgba(200,182,255,.45) 35%, transparent 70%);
+  will-change: transform, opacity; transition: opacity 1.6s ease;
+}
+
+/* ---- Etiquetas que viajan por el hilo ---- */
+.pt-etiqueta {
+  position: absolute; left: 0; top: 0; pointer-events: none;
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 11px 5px 6px; border-radius: 999px;
+  background: rgba(15,17,26,.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(245,241,255,.12);
+  white-space: nowrap; will-change: transform, opacity;
+  transition: opacity .6s ease;
+}
+.pt-etiqueta__punto { width: 7px; height: 7px; border-radius: 50%; margin-left: 4px; box-shadow: 0 0 10px currentColor; background: currentColor; }
+.pt-etiqueta__cara { width: 20px; height: 20px; border-radius: 50%; overflow: hidden; background: #252A42; flex: none; position: relative; }
+.pt-etiqueta__cara img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pt-etiqueta__texto { font-size: 13px; color: #F5F1FF; letter-spacing: .01em; }
+.pt-etiqueta__detalle { font: 400 10px 'IBM Plex Mono', monospace; color: #9a9db3; letter-spacing: .04em; }
+.pt-etiqueta--asomo { padding: 3px 9px 3px 4px; opacity: .8; }
+.pt-etiqueta--asomo .pt-etiqueta__texto { font-size: 11px; }
+
+/* ---- Centro ---- */
+.pt-centro {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  pointer-events: none; z-index: 5; width: min(92vw, 520px);
+}
+.pt-centro > * { pointer-events: auto; }
+.pt-halo {
+  position: absolute; left: 50%; top: 42%; width: 520px; height: 260px; transform: translate(-50%,-50%);
+  background: radial-gradient(ellipse, rgba(15,17,26,.82) 0%, rgba(15,17,26,.55) 45%, transparent 72%);
+  pointer-events: none !important; z-index: -1;
+}
+.pt-marca {
+  font-weight: 300; font-size: clamp(2.6rem, 7vw, 4.6rem); letter-spacing: .01em; line-height: 1;
+  background: linear-gradient(180deg, #F5F1FF 0%, #DACDFF 55%, #9c90c4 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: pt-aparecer 2.4s cubic-bezier(.2,.7,.2,1) both;
+  pointer-events: none !important;
+}
+.pt-lema {
+  margin-top: 14px; font: 400 11px 'IBM Plex Mono', monospace; letter-spacing: .28em; text-transform: uppercase; color: #a49dc4;
+  animation: pt-aparecer 2.4s .5s cubic-bezier(.2,.7,.2,1) both;
+  pointer-events: none !important;
+}
+.pt-estado { margin-top: 38px; min-height: 64px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.pt-progreso { font: 400 11px 'IBM Plex Mono', monospace; letter-spacing: .08em; color: #7D8197; }
+.pt-barra { width: 180px; height: 2px; border-radius: 2px; background: rgba(245,241,255,.08); overflow: hidden; }
+.pt-barra > i { display: block; height: 100%; background: linear-gradient(90deg, rgba(200,182,255,.3), #C8B6FF); transition: width .5s ease; }
+.pt-barra--viva > i { width: 30% !important; animation: pt-deslizar 2.2s ease-in-out infinite; }
+@keyframes pt-deslizar { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+
+.pt-entrar {
+  position: relative; padding: 12px 34px; border-radius: 999px;
+  font-size: 15px; letter-spacing: .06em; color: #F5F1FF;
+  background: rgba(28,32,51,.55); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(200,182,255,.38);
+  box-shadow: 0 0 0 0 rgba(200,182,255,.0), 0 8px 30px rgba(0,0,0,.4);
+  cursor: pointer;
+  transition: background .4s ease, border-color .4s ease, box-shadow .6s ease, transform .3s ease;
+  animation: pt-aparecer 1.2s cubic-bezier(.2,.7,.2,1) both, pt-latir 4s 1.2s ease-in-out infinite;
+}
+.pt-entrar:hover, .pt-entrar:focus-visible {
+  background: rgba(200,182,255,.16); border-color: rgba(200,182,255,.75); outline: none;
+  box-shadow: 0 0 34px 2px rgba(200,182,255,.28), 0 8px 30px rgba(0,0,0,.4);
+  transform: translateY(-1px);
+}
+@keyframes pt-latir { 0%,100% { box-shadow: 0 0 0 0 rgba(200,182,255,0), 0 8px 30px rgba(0,0,0,.4); } 50% { box-shadow: 0 0 26px 0 rgba(200,182,255,.2), 0 8px 30px rgba(0,0,0,.4); } }
+.pt-pista { font-size: 11px; color: #8b90a8; animation: pt-aparecer 1.2s .4s both; }
+.pt-sin-esperar { font-size: 11px; color: #6A6E84; text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; cursor: pointer; animation: pt-aparecer 1.2s both; }
+.pt-sin-esperar:hover { color: #B8B3C9; }
+
+@keyframes pt-aparecer { from { opacity: 0; transform: translateY(8px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+
+.pt-raiz--saliendo .pt-centro { transition: opacity .6s ease, transform .9s ease; opacity: 0; transform: translate(-50%,-50%) scale(1.06); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pt-onda, .pt-marca, .pt-lema, .pt-entrar, .pt-barra--viva > i { animation: none !important; }
+}

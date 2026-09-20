@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import GraphView from './GraphView';
+import ProxiesPanel from './ProxiesPanel';
 import Avatar from './Avatar';
 import { MediaFile } from '../types';
 import { getFileSortDate } from '../utils/filenameParser';
@@ -571,6 +572,9 @@ export default function Statistics({
                 })}
               </div>
             </section>
+
+            {/* ── Vídeos preparados (proxies) ─────────────────────────────── */}
+            <ProxiesPanel />
 
             {/* ── Quién sale ──────────────────────────────────────────────── */}
             {resumen.gente.length > 0 && (

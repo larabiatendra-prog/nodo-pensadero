@@ -49,13 +49,21 @@ const createColorSearchRoutes = require('./routes/colorSearchRoutes');
 const createAliasRoutes = require('./routes/aliasRoutes');
 const createNotesRoutes = require('./routes/notesRoutes');
 const createOcultosRoutes = require('./routes/ocultosRoutes');
+const createProxiesRoutes = require('./routes/proxiesRoutes');
+const createPersonaArchivosRoutes = require('./routes/personaArchivosRoutes');
 const ocultosManager = require('./ocultosManager');
+const portada = require('./services/portada');
+
+// La primera sincronizacion tras arrancar ya termino: hasta entonces la lista
+// de archivos esta vacia o a medias y la portada no ofrece "Entrar".
+let arranqueListo = false;
 const aliasTable = require('./aliasTable');
 const folderNames = require('./folderNames');
 const mediaIdentity = require('./utils/mediaIdentity');
 const clipIndex = require('./clipIndex');
 const fallos = require('./utils/failureReason');
 const { esCarpetaExcluida, esArchivoBasura } = require('./utils/carpetasExcluidas');
+const fechaArchivo = require('./utils/fechaArchivo');
 const spacesRegistry = require('./spacesRegistry');
 const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
 
@@ -1014,6 +1022,12 @@ async function performSync() {
     // persona. No se persiste: se recalcula en cada sync.
     allFiles = folderNames.applyFolderInheritance(allFiles, { smartTags: extractSmartTags });
 
+    // UNA sola fecha por archivo, decidida aqui y usada en todas partes
+    // (ver utils/fechaArchivo.js): nombre > carpeta > camara > disco. Antes la
+    // galeria, los filtros y las estadisticas la calculaban cada uno a su
+    // manera, y los filtros por año/mes dejaban fuera a 639 archivos.
+    allFiles = fechaArchivo.aplicar(allFiles);
+
     // Aplicar favoritos
     mediaFiles = favoritesManager.applyFavoritesToFiles(allFiles);
 
@@ -1027,6 +1041,10 @@ async function performSync() {
 
     // Recalcular agregado de personas tras cada sync (memoización)
     recomputePersonsAggregate();
+
+    // La portada de la proxima apertura se prepara ahora, con la lista recien
+    // hecha. Sin await: no retrasa el aviso de sincronizacion completada.
+    portada.regenerar(mediaFiles, { clipIndex });
 
     broadcastProgress({
       type: 'sync_complete',
@@ -1206,6 +1224,9 @@ async function refreshFilesInDir(dirPath) {
   // applyCatalog parte del base sin esta capa, asi que hay que volver a ponerla.
   folderNames.applyFolderNames(touched, { smartTags: extractSmartTags });
   folderNames.applyFolderInheritance(touched, { smartTags: extractSmartTags });
+  // Misma fecha que en el sync completo: refrescar una carpeta no puede dejar
+  // sus archivos con otra fecha que el resto del catalogo.
+  fechaArchivo.aplicar(touched);
   // Recalcular el agregado de personas: si el refresco cambio las caras de un
   // archivo (re-id, assign-face, promote), los conteos/bubbles del home deben
   // reflejarlo. Sin esto, el mediaFile se actualizaba pero personsAggregate no.
@@ -1327,6 +1348,14 @@ const personsManageRoutes = createPersonsManageRoutes({
 });
 app.use('/api', personsManageRoutes);
 
+// === ARCHIVOS DE UNA PERSONA (ocultar / papelera) y PAPELERA ===
+app.use('/api', createPersonaArchivosRoutes({
+  getMediaFiles: () => mediaFiles,
+  getScanPaths: loadScanPaths,
+  syncFiles,
+  broadcastProgress,
+}));
+
 // Registry de espacios + training del centroide CLIP por espacio.
 const spacesManageRoutes = createSpacesManageRoutes({
   broadcastProgress,
@@ -1352,12 +1381,46 @@ app.use('/api', aliasRoutes);
 const notesRoutes = createNotesRoutes();
 app.use('/api', notesRoutes);
 
+// === ARRANQUE Y PORTADA ===
+// Estado del arranque para la pantalla de inicio: si la primera sincronizacion
+// ha terminado y, si no, por donde va.
+app.get('/api/arranque', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      listo: arranqueListo,
+      indexando: !!indexado,
+      progreso: indexado ? camposIndexado({ fase: indexado.bibliotecaN === 0 ? 'contando' : 'indexando' }) : null,
+      archivos: arranqueListo ? mediaFilesVisibles().length : null,
+    },
+  });
+});
+
+// Recuerdos e hilos de la portada. Sale de la ultima portada preparada (en
+// disco), asi que responde desde el primer segundo aunque aun se este
+// indexando. Si nunca se preparo ninguna y ya hay lista, se prepara al vuelo.
+app.get('/api/portada', async (req, res) => {
+  try {
+    let p = portada.leer();
+    if (!p && arranqueListo && mediaFiles.length > 0) {
+      p = await portada.regenerar(mediaFiles, { clipIndex });
+    }
+    res.json({ success: true, data: portada.servir(p, f => ocultosManager.estaOculto(f)) });
+  } catch (err) {
+    const causa = fallos.record('servir la portada', err, {});
+    res.status(500).json({ success: false, error: causa.reason });
+  }
+});
+
 // === MATERIAL OCULTO (candado con clave) ===
 const ocultosRoutes = createOcultosRoutes({
   getMediaFiles: () => mediaFiles,
   broadcastProgress,
 });
 app.use('/api', ocultosRoutes);
+
+// === VIDEOS PREPARADOS (estado y tope por disco) ===
+app.use('/api', createProxiesRoutes({ getMediaFiles: () => mediaFiles }));
 
 // === PERSONS (registry + agregado memoizado) ===
 
@@ -1541,6 +1604,7 @@ async function initialize() {
 
   syncFiles()
     .then(() => {
+      arranqueListo = true;
       console.log(`✅ Sync inicial completado: ${fileCache.size} archivos`);
       setTimeout(() => cleanOrphanedThumbnails(), 5000);
       watchFileSystem();
@@ -1555,6 +1619,9 @@ async function initialize() {
       }
     })
     .catch(err => {
+      // Tambien "listo": con la sync rota la aplicacion debe poder abrirse
+      // para ver que ha pasado, no quedarse en la portada para siempre.
+      arranqueListo = true;
       console.error('❌ Error en sync inicial:', err);
     });
 }

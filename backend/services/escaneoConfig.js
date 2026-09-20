@@ -58,17 +58,20 @@ const CAPACIDADES = [
   {
     id: 'proxies',
     nombre: 'Vídeos listos para ver',
-    detalle: 'Prepara una copia reproducible de los vídeos que el navegador no abre (MTS, MOV de 10 bits…).',
+    detalle: 'Prepara al escanear una versión ligera de los vídeos que el navegador no abre (.m2ts, HEVC, 10 bits). Apagado, se prepara al abrirlos.',
     recurso: 'GPU (NVENC) y disco',
     coste: 'medio',
     soloVideo: true,
+    // Apagado de fabrica: prepararlos al escanear llenaba discos con videos que
+    // nadie abria. Al abrir uno se prepara igual, solo ese.
+    deFabrica: false,
   },
 ];
 
 const IDS = CAPACIDADES.map(c => c.id);
 
-/** Todo encendido: el comportamiento de siempre. */
-const DE_FABRICA = Object.freeze(Object.fromEntries(IDS.map(id => [id, true])));
+/** De fabrica: todo encendido salvo lo que diga lo contrario. */
+const DE_FABRICA = Object.freeze(Object.fromEntries(CAPACIDADES.map(c => [c.id, c.deFabrica !== false])));
 
 /** Deja solo claves conocidas con valor booleano. */
 function limpiar(obj) {

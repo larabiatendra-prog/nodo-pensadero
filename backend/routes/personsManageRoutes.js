@@ -6,7 +6,9 @@
  * Rutas:
  *  - GET    /api/persons/registry            — lista completa de personas registradas
  *  - POST   /api/persons/registry            — crea/actualiza una persona
- *  - DELETE /api/persons/registry/:id        — elimina una persona y sus fotos
+ *  - DELETE /api/persons/registry/:id        — elimina una persona y sus fotos de referencia
+ *                                              (?olvidar=1: ademas guarda su huella para
+ *                                              que el descubrimiento no la vuelva a proponer)
  *  - GET    /api/persons/registry/:id/photos — lista de fotos de referencia de una persona
  *  - POST   /api/persons/registry/:id/photos — sube una foto (multipart, field 'photo')
  *  - DELETE /api/persons/registry/:id/photos/:filename — borra una foto concreta
@@ -37,6 +39,7 @@ const fallos = require('../utils/failureReason');
 const { getInstance: getFaceService, decodeEmbedding } = require('../services/faceService');
 const faceReidentifier = require('../services/faceReidentifier');
 const faceClusterer = require('../services/faceClusterer');
+const olvidados = require('../services/olvidados');
 const sharp = require('sharp');
 const { spawn } = require('child_process');
 const os = require('os');
@@ -248,6 +251,33 @@ module.exports = function createPersonsManageRoutes(deps) {
     }
     const personId = req.params.id;
     const dir = getPersonDir(personId);
+    const olvidar = req.query.olvidar === '1';
+
+    // Olvidar = ademas de borrarla, que el descubrimiento de caras no la vuelva
+    // a proponer como "desconocida frecuente". Se guarda su huella ANTES de
+    // borrar la carpeta, que es donde vive su centroide.
+    let olvidada = false;
+    if (olvidar) {
+      let centroide = null;
+      const enCache = getFaceService().embeddingsCache.get(personId);
+      if (enCache && enCache.centroid) centroide = enCache.centroid;
+      if (!centroide && dir) {
+        try {
+          const datos = JSON.parse(await fsp.readFile(path.join(dir, 'embeddings.json'), 'utf-8'));
+          if (Array.isArray(datos.centroid) && datos.centroid.length === 512) centroide = datos.centroid;
+        } catch { /* nunca se entreno: no hay huella que guardar */ }
+      }
+      if (centroide) {
+        try {
+          olvidada = await olvidados.agregar(centroide);
+        } catch (err) {
+          // Sin huella, olvidar no seria olvidar: mejor no borrar nada y decirlo.
+          const causa = fallos.record('guardar la huella de una persona olvidada', err, {});
+          return res.status(500).json({ success: false, error: causa.reason });
+        }
+      }
+    }
+
     // deletePerson lanza si no consigue persistir el registry (y deshace el
     // cambio en memoria). Sin este try, el throw dejaba la peticion colgada.
     let existed;
@@ -296,7 +326,23 @@ module.exports = function createPersonsManageRoutes(deps) {
       }
     });
 
-    res.json({ success: true, deleted: true });
+    res.json({ success: true, deleted: true, olvidada });
+  });
+
+  // GET/DELETE — caras olvidadas: cuantas hay y "volver a proponerlas"
+  router.get('/persons/olvidadas', (req, res) => {
+    res.json({ success: true, data: { total: olvidados.total() } });
+  });
+
+  router.delete('/persons/olvidadas', async (req, res) => {
+    try {
+      const vaciadas = await olvidados.vaciar();
+      faceClusterer.invalidateCache();
+      res.json({ success: true, data: { vaciadas } });
+    } catch (err) {
+      const causa = fallos.record('volver a proponer las caras olvidadas', err, {});
+      res.status(500).json({ success: false, error: causa.reason });
+    }
   });
 
   // GET — fotos de referencia

@@ -6,6 +6,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { slugifyPersonId } from '../utils/persons';
 import Avatar from './Avatar';
 import Loader from './Loader';
+import PersonaAcciones from './PersonaAcciones';
 
 interface Person {
   person_id: string;
@@ -85,6 +86,10 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   const [guardandoAvatar, setGuardandoAvatar] = useState<string | null>(null);
   // Fusionar persona<->persona (M5a): absorber otra persona en selectedPerson.
   const [mergePersonOpen, setMergePersonOpen] = useState(false);
+  /** Persona sobre la que se decide que hacer (olvidar / ocultar / borrar sus archivos). */
+  const [accionesDe, setAccionesDe] = useState<Person | null>(null);
+  /** Caras olvidadas: el descubrimiento no las propone. Se pueden volver a proponer. */
+  const [olvidadas, setOlvidadas] = useState(0);
   const [mergeLoserId, setMergeLoserId] = useState<string | null>(null);
   const [mergeQuery, setMergeQuery] = useState('');
   const [mergingPersons, setMergingPersons] = useState(false);
@@ -320,6 +325,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   useEffect(() => {
     loadPersons();
     loadFaceStatus();
+    api.getOlvidadas().then(r => setOlvidadas(r.data?.total ?? 0)).catch(() => {});
   }, []);
 
   // Cargar clusters automáticamente cuando el servicio está listo, para que la
@@ -802,14 +808,19 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     }
   }
 
-  async function handleDelete(person: Person) {
-    if (!confirm(`¿Eliminar a ${person.display_name} y todas sus fotos? Esta acción no se puede deshacer.`)) return;
+  // Antes era un confirm "¿Eliminar a X y todas sus fotos?", que se podia leer
+  // como que borraba sus fotos del archivo (solo borraba las de referencia).
+  // Ahora abre el panel que separa olvidar, ocultar sus archivos y borrarlos.
+  function handleDelete(person: Person) {
+    setAccionesDe(person);
+  }
+
+  async function volverAProponer() {
     try {
-      await api.deletePerson(person.person_id);
-      if (selectedPerson?.person_id === person.person_id) setSelectedPerson(null);
-      await loadPersons();
+      await api.vaciarOlvidadas();
+      setOlvidadas(0);
     } catch (err: any) {
-      setError(err.message || 'Error eliminando');
+      setError(err.message || 'No se pudieron volver a proponer');
     }
   }
 
@@ -1446,6 +1457,12 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                     <p className="mb-3 text-sm text-lavanda-archivo">
                       {clusters.length} {clusters.length === 1 ? 'persona desconocida frecuente' : 'personas desconocidas frecuentes'} en tu archivo.
                       Pulsa una para asignarle un nombre y añadirla al registry.
+                      {olvidadas > 0 && (
+                        <span className="block mt-1 text-humo">
+                          {olvidadas === 1 ? 'Hay 1 persona olvidada que no se te propone.' : `Hay ${olvidadas} personas olvidadas que no se te proponen.`}{' '}
+                          <button onClick={volverAProponer} className="underline underline-offset-2 hover:text-niebla">Volver a proponerlas</button>
+                        </span>
+                      )}
                     </p>
                     <div className="mb-4 flex items-center gap-2 text-sm flex-wrap">
                       <span className="text-lavanda-archivo">Ordenar por:</span>
@@ -1712,6 +1729,19 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       )}
 
       {/* Modal: fusionar otra persona en selectedPerson (M5a) — z por encima del detalle */}
+      {accionesDe && (
+        <PersonaAcciones
+          persona={accionesDe}
+          onCerrar={() => setAccionesDe(null)}
+          onOlvidada={async () => {
+            if (selectedPerson?.person_id === accionesDe.person_id) setSelectedPerson(null);
+            setAccionesDe(null);
+            api.getOlvidadas().then(r => setOlvidadas(r.data?.total ?? 0)).catch(() => {});
+            await loadPersons();
+          }}
+        />
+      )}
+
       {mergePersonOpen && selectedPerson && (
         <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
@@ -2190,7 +2220,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                 )}
                 <button
                   onClick={() => handleDelete(p)}
-                  title="Eliminar persona"
+                  title="Olvidarla, u ocultar o borrar sus archivos"
                   style={glassSoft}
                   className="inline-flex items-center justify-center w-9 h-9 rounded-full text-estado-error hover:bg-estado-error/10"
                 >

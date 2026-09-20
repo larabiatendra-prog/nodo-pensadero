@@ -11,6 +11,8 @@ import {
   Languages,
   Copy,
   Lock,
+  Trash2,
+  Sparkles,
   X
 } from 'lucide-react';
 
@@ -45,6 +47,7 @@ export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom'
   // limpieza la hace el onViewChange del call-site, igual que para el resto.
   const menuItems = [
     { id: 'home',        icon: Home,       label: 'Inicio',               description: 'Volver a la galería principal' },
+    { id: 'portada',     icon: Sparkles,   label: 'Portada',              description: 'Los recuerdos flotando y lo que los une' },
     { id: 'collections', icon: FolderOpen, label: 'Colecciones',          description: 'Colecciones manuales y Smart Folders con reglas' },
     { id: 'tags',        icon: Tag,        label: 'Gestión de Etiquetas', description: 'Administrar etiquetas del sistema' },
     { id: 'synonyms',    icon: Languages,  label: 'Sinónimos',            description: 'Agrupar palabras parecidas para la búsqueda' },
@@ -54,6 +57,7 @@ export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom'
     { id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
     { id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
     { id: 'ocultos',     icon: Lock,       label: 'Material oculto',      description: 'Lo que está bajo candado. Pide la clave' },
+    { id: 'papelera',    icon: Trash2,     label: 'Papelera',             description: 'Lo que has sacado del archivo. Se puede restaurar' },
   ];
 
   // Cerrar menú al hacer clic fuera

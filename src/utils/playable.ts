@@ -14,7 +14,23 @@ export interface PlayableInfo {
   status: 'native' | 'ready' | 'generating' | 'error';
   /** URL absoluta lista para usar en <video> (ya prefijada con el origen). */
   url?: string;
-  kind?: 'remux' | 'transcode';
+  kind?: 'native' | 'transcode';
+  /**
+   * Por qué no se pudo preparar, cuando `status` es 'error':
+   *  - 'tope'    el disco llegó al tope de vídeos preparados y espera decisión
+   *  - 'espacio' no queda sitio en ningún disco donde escribirlo
+   */
+  motivo?: 'tope' | 'espacio';
+  /** Disco al que afecta el aviso ("F:\\"). Solo con motivo 'tope'. */
+  raiz?: string;
+  topeGB?: number;
+  /**
+   * Se está sirviendo el original (se puede ver ya) mientras por detrás se
+   * prepara su versión ligera para la próxima vez. No hay nada que esperar.
+   */
+  preparando?: boolean;
+  /** El disco está en su tope, así que no se preparará: se ve el original. */
+  enSuTope?: boolean;
   /** true si el proxy se reescaló por debajo de la resolución original. */
   downscaled?: boolean;
   srcW?: number;
@@ -31,9 +47,9 @@ function absolutize(url?: string): string | undefined {
   return `${API_CONFIG.baseUrl}${url}`;
 }
 
-export async function fetchPlayable(fileId: string): Promise<PlayableInfo> {
+export async function fetchPlayable(fileId: string, forzar = false): Promise<PlayableInfo> {
   try {
-    const res = await fetch(API_CONFIG.endpoints.playable(fileId));
+    const res = await fetch(API_CONFIG.endpoints.playable(fileId) + (forzar ? '?forzar=1' : ''));
     if (!res.ok) return { status: 'error', error: `HTTP ${res.status}` };
     const json = await res.json();
     const data: PlayableInfo = (json && json.data) || { status: 'error', error: 'respuesta inválida' };
@@ -55,12 +71,17 @@ export async function resolvePlayable(
     onUpdate?: (info: PlayableInfo) => void;
     intervalMs?: number;
     maxWaitMs?: number;
+    /**
+     * El navegador no pudo abrir el original aunque parecia compatible: pedir
+     * la version ligera. Es la red de seguridad de la clasificacion.
+     */
+    forzarProxy?: boolean;
   } = {}
 ): Promise<PlayableInfo> {
-  const { signal, onUpdate, intervalMs = 2000, maxWaitMs = 30 * 60 * 1000 } = opts;
+  const { signal, onUpdate, intervalMs = 2000, maxWaitMs = 30 * 60 * 1000, forzarProxy = false } = opts;
   const started = Date.now();
 
-  let info = await fetchPlayable(fileId);
+  let info = await fetchPlayable(fileId, forzarProxy);
   onUpdate?.(info);
 
   while (info.status === 'generating') {

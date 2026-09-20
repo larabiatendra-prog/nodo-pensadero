@@ -38,6 +38,8 @@ import PersonLife from './components/PersonLife';
 import DuplicatesView from './components/DuplicatesView';
 import Carta from './components/Carta';
 import OcultosView from './components/OcultosView';
+import PapeleraView from './components/PapeleraView';
+import Portada, { type OpcionesEntrar } from './components/Portada';
 
 import { CoverImageSelector } from './components/CoverImageSelector';
 import { EditCollectionModal } from './components/EditCollectionModal';
@@ -57,6 +59,7 @@ const VIEW_TO_PATH: Record<string, string> = {
   tags: '/etiquetas', synonyms: '/sinonimos', imageSearch: '/busqueda-imagen',
   duplicates: '/gemelas',
   ocultos: '/ocultos',
+  papelera: '/papelera',
   admin: '/admin',
 };
 
@@ -73,6 +76,7 @@ function viewFromPath(pathname: string): string {
   if (pathname.startsWith('/espacios')) return 'spaces';
   if (pathname.startsWith('/gemelas')) return 'duplicates';
   if (pathname.startsWith('/ocultos')) return 'ocultos';
+  if (pathname.startsWith('/papelera')) return 'papelera';
   if (pathname === '/colecciones') return 'collections';
   if (pathname.startsWith('/colecciones/')) return 'home';   // home con coleccion abierta
   if (pathname.startsWith('/estadisticas')) return 'statistics';
@@ -340,6 +344,21 @@ function App() {
   const progresoSilenciadoRef = useRef(false);
 
   /**
+   * Portada: se ve al abrir la aplicacion y hace de pantalla de carga mientras
+   * se indexa. Una vez por pestaña: recargar trabajando no la devuelve. Solo
+   * en la raiz: un enlace directo a un archivo o a Rutas va a lo suyo. Desde el
+   * menu se puede volver a abrir cuando se quiera.
+   */
+  const [portada, setPortada] = useState<null | { desdeMenu: boolean }>(() => {
+    try {
+      if (window.location.pathname !== '/') return null;
+      return sessionStorage.getItem('pensadero.portadaVista') ? null : { desdeMenu: false };
+    } catch {
+      return { desdeMenu: false };
+    }
+  });
+
+  /**
    * Parada del overlay de progreso.
    *
    * Intenta cancelar un escaneo de verdad (el de vision local, que si es
@@ -576,6 +595,7 @@ function App() {
       home: 'Pensadero', paths: 'Rutas · Pensadero', persons: 'Personas · Pensadero',
       spaces: 'Espacios · Pensadero', collections: 'Colecciones · Pensadero',
       duplicates: 'Tomas gemelas · Pensadero', ocultos: 'Material oculto · Pensadero',
+      papelera: 'Papelera · Pensadero',
       personLife: 'Línea de vida · Pensadero',
       statistics: 'Estadísticas · Pensadero',
       tags: 'Etiquetas · Pensadero', synonyms: 'Sinónimos · Pensadero',
@@ -1664,6 +1684,11 @@ function App() {
               const dateB = getFileSortDate(b);
               if (dateA !== dateB) {
                 return dateB - dateA; // Descending (newest first)
+              }
+
+              // Mismo dia: por hora de la camara (ver el orden de la galeria).
+              if (a.fechaMinuto != null && b.fechaMinuto != null && a.fechaMinuto !== b.fechaMinuto) {
+                return a.fechaMinuto - b.fechaMinuto;
               }
 
               // Secondary: Natural name comparison for files with same date
@@ -2794,6 +2819,13 @@ function App() {
           return b.date - a.date;
         }
 
+        // Dentro del mismo dia, la HORA de la camara: sin esto, dos camaras en
+        // el mismo evento salian en dos bloques (todas las IMG_ y luego todas
+        // las P...) en vez de intercaladas como ocurrio.
+        const ha = a.file.fechaMinuto;
+        const hb = b.file.fechaMinuto;
+        if (ha != null && hb != null && ha !== hb) return ha - hb;
+
         // Secondary: Optimized name comparison for same dates
         const nameCompare = optimizedNameCompare(a.file.name, b.file.name);
         if (nameCompare !== 0) {
@@ -3172,6 +3204,9 @@ function App() {
 
         case 'ocultos':
           return <OcultosView onBack={() => navigate('/')} />;
+
+        case 'papelera':
+          return <PapeleraView onBack={() => navigate('/')} />;
 
         case 'duplicates':
           return (
@@ -3842,7 +3877,27 @@ function App() {
     <div className="min-h-screen bg-noche">
       {/* Estado del backend. Sin esto, una caida se veia como una pantalla
           congelada indistinguible de "esta trabajando". */}
-      <ConnectionBanner isConnected={isConnected} />
+      {portada && (
+        <Portada
+          desdeMenu={portada.desdeMenu}
+          archivosCargados={!isLoading && mediaFiles.length > 0}
+          onEntrar={(opciones: OpcionesEntrar) => {
+            try { sessionStorage.setItem('pensadero.portadaVista', '1'); } catch { /* modo privado */ }
+            // Entrar sin esperar: el indexado sigue, pero su pantalla de
+            // progreso no debe aparecer justo despues de haber decidido no esperar.
+            if (opciones.sinEsperar) progresoSilenciadoRef.current = true;
+            setPortada(null);
+            if (opciones.destino === 'rutas') { navigate('/rutas'); return; }
+            if (opciones.fileId) {
+              const f = mediaFilesRef.current.find(x => x.id === opciones.fileId);
+              if (f) openFile(f);
+            }
+          }}
+        />
+      )}
+      {/* La portada ya dice si el servidor esta despertando: el aviso rojo
+          sobre ella solo asustaria. */}
+      {!portada && <ConnectionBanner isConnected={isConnected} />}
 
       {/* Overlay de drag & drop: visible cuando el usuario arrastra una
           imagen sobre Pensadero estando en la vista home. pointer-events-none
@@ -4077,7 +4132,7 @@ function App() {
       />
 
       {/* Overlay de progreso (bloqueante) para escaneo / sincronización */}
-      {showProgress && (
+      {showProgress && !portada && (
         <Loader
           fullscreen
           variant={vistaProgreso?.terminado ? 'listo' : (vistaProgreso?.tipo ?? 'sync')}
@@ -4159,6 +4214,7 @@ function App() {
               // "Inicio" promete "galería principal": limpiar tambien el filtro
               // de persona pegajoso (/persona/:id) y el resto de filtros activos,
               // o la home apareceria filtrada pese a la etiqueta.
+              if (view === 'portada') { setPortada({ desdeMenu: true }); return; }
               if (view === 'home') clearAllFilters();
               setActiveView(view);
             }}

@@ -46,6 +46,9 @@ export interface SessionFileRef {
   displayName?: string | null;
   mediaKey?: string | null;
   fullPath?: string | null;
+  /** Fecha resuelta por el servidor (ver backend/utils/fechaArchivo.js). */
+  fechaDia?: number | null;
+  fechaFuente?: string | null;
 }
 
 /**
@@ -122,6 +125,11 @@ function dateFromText(texto: string): number {
  * con fecha en el nombre se colocaban DELANTE por viejas que fuesen.
  */
 export function getFileSortDate(file: SessionFileRef & { createdAt?: Date | string; modifiedAt?: Date | string }): number {
+  // La fecha la decide el servidor en un unico sitio (nombre > carpeta >
+  // camara > disco). Lo de abajo solo actua si el archivo viene de una version
+  // anterior del backend, para no quedarse sin orden.
+  if (file.fechaDia) return file.fechaDia;
+
   const porNombre = dateFromText((file.displayName && file.displayName.trim()) || file.name || '');
   if (porNombre) return porNombre;
 
@@ -162,9 +170,48 @@ export function getFileSortDate(file: SessionFileRef & { createdAt?: Date | stri
 export function getFileSessionKey(file: SessionFileRef): string | null {
   const dn = file.displayName && file.displayName.trim();
   if (dn) return stripFolderIndex(dn);
+  // Carpeta sin fecha y sin nombre puesto por el usuario (el vertedero del
+  // movil: "1", "2", "3"): cada dia es su propia sesion. Si no, 140 fotos de
+  // tres semanas se colapsan en una sola tarjeta llamada "3" y esos dias
+  // desaparecen de la linea del tiempo.
+  if (esSuelto(file) && file.fechaDia) {
+    return `${getFolderSessionKey(file) || 'sueltos'}#${file.fechaDia}`;
+  }
   const porNombre = getSessionKey(file.name);
   if (porNombre) return porNombre;
   return getFolderSessionKey(file);
+}
+
+/**
+ * ¿Este archivo esta suelto? Ni su nombre ni su carpeta dicen de cuando es: su
+ * fecha sale de la camara o del disco. Son los que se agrupan por dia.
+ */
+export function esSuelto(file: SessionFileRef): boolean {
+  return file.fechaFuente === 'camara' || file.fechaFuente === 'disco';
+}
+
+/** "20241127" -> "27 nov 2024". */
+export function etiquetaDeDia(dia: number): string {
+  const y = Math.floor(dia / 10000);
+  const m = Math.floor(dia / 100) % 100;
+  const d = dia % 100;
+  if (m < 1 || m > 12) return String(dia);
+  return `${d} ${MONTHS_ES[m - 1]} ${y}`;
+}
+
+/**
+ * Etiqueta de una sesion troceada por dia: arriba la fecha y debajo de donde
+ * viene, porque "3" a secas no dice nada. Si la carpeta se llama con un numero
+ * se usa la de encima ("- Móvil/3" -> "Móvil").
+ */
+export function etiquetaDeSesionSuelta(clave: string, file: SessionFileRef): { line1: string; line2: string } {
+  const dia = Number(clave.split('#').pop() || 0);
+  const segs = String(file.fullPath || '').split(/[\\/]/).filter(Boolean);
+  const carpeta = segs[segs.length - 2] || '';
+  const padre = segs[segs.length - 3] || '';
+  const limpia = (s: string) => s.replace(/^[-\s]+/, '').trim();
+  const nombre = /^\d+$/.test(carpeta) ? limpia(padre) : limpia(carpeta);
+  return { line1: dia ? etiquetaDeDia(dia) : (nombre || 'sin fecha'), line2: dia ? nombre : '' };
 }
 
 /** String del que derivar etiqueta/fecha. Sigue la misma prioridad que la clave. */

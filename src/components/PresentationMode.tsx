@@ -61,6 +61,19 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
     return () => ctrl.abort();
   }, [isOpen, indiceActual, nextIndex]);
 
+  // Un original que parecia compatible y no abre: se pide la version ligera
+  // y se sustituye su URL. Solo una vez por archivo.
+  const forzados = useRef(new Set<string>());
+  const alFallar = (fileId: string | undefined) => {
+    if (!fileId || forzados.current.has(fileId)) return;
+    forzados.current.add(fileId);
+    resolvePlayable(fileId, { forzarProxy: true })
+      .then(info => {
+        if (info.status === 'ready' && info.url) setResolvedUrls(prev => ({ ...prev, [fileId]: info.url! }));
+      })
+      .catch(() => {});
+  };
+
   const activeUrl = resolvedUrls[videoFiles[indiceActual]?.id] ?? '';
   const inactiveUrl = resolvedUrls[videoFiles[nextIndex]?.id] ?? '';
 
@@ -226,6 +239,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         className={`absolute inset-0 w-full h-full object-contain ${isActiveA ? 'z-10' : 'z-0'}`}
         style={{ opacity: isActiveA ? 1 : 0, pointerEvents: 'none' }}
         onEnded={isActiveA ? advance : undefined}
+        onError={() => alFallar((isActiveA ? videoFiles[indiceActual] : videoFiles[nextIndex])?.id)}
         onCanPlayThrough={!isActiveA ? () => setIsPreloaded(true) : undefined}
         playsInline
       />
@@ -236,6 +250,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         className={`absolute inset-0 w-full h-full object-contain ${!isActiveA ? 'z-10' : 'z-0'}`}
         style={{ opacity: !isActiveA ? 1 : 0, pointerEvents: 'none' }}
         onEnded={!isActiveA ? advance : undefined}
+        onError={() => alFallar((!isActiveA ? videoFiles[indiceActual] : videoFiles[nextIndex])?.id)}
         onCanPlayThrough={isActiveA ? () => setIsPreloaded(true) : undefined}
         playsInline
       />

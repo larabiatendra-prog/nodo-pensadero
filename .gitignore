@@ -47,6 +47,8 @@ backend/descartes_persistent.json
 backend/cartas_persistent.json
 # Material bajo candado: lleva los nombres de lo que el usuario oculta.
 backend/ocultos_persistent.json
+# Portada de inicio preparada en la ultima sincronizacion (regenerable).
+backend/portada_cache.json
 backend/scan_paths.json
 backend/embeddings_index.json
 backend/visual_search_data/

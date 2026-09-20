@@ -25,6 +25,7 @@ const fsSync = require('fs');
 const path = require('path');
 const { getInstance: getFaceService, decodeEmbedding, encodeEmbedding } = require('./faceService');
 const peopleRegistry = require('../peopleRegistry');
+const olvidados = require('./olvidados');
 
 const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
@@ -253,10 +254,13 @@ async function clusterAll(opts = {}) {
 
         // Solo agrupar caras que ahora mismo no se identifican con nadie
         if (!isUnknown(det, faceSvc)) continue;
-        job.unknown++;
 
         const emb = decodeEmbedding(det.embedding_b64);
         if (!emb || emb.length !== 512) continue;
+        // Alguien a quien el usuario olvido: no se le vuelve a proponer, ni con
+        // este material ni con el que se escanee despues.
+        if (olvidados.esOlvidada(emb)) { job.olvidadas = (job.olvidadas || 0) + 1; continue; }
+        job.unknown++;
 
         // Buscar el cluster mas cercano
         let bestIdx = -1;

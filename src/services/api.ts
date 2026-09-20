@@ -10,6 +10,103 @@ export interface ApiResponse<T> {
   count?: number;
 }
 
+// Vídeos preparados (proxies). El tope es por disco: 40 GB en el disco del
+// sistema es mucho y en una LaCie de 8 TB no es nada. topeGB 0 = sin tope.
+// Lo que se puede hacer con todo el material de una persona (vista previa).
+export interface ArchivosPersona {
+  persona: { id: string; nombre: string };
+  alcance: 'todos' | 'sin_otros';
+  total: number;
+  bytes: number;
+  porTipo: { video: number; image: number; audio: number };
+  /** En cuantos no sale nadie mas identificado. */
+  soloElla: number;
+  /** En cuantos del alcance sale tambien otra persona identificada. */
+  conOtros: number;
+  otros: Array<{ id: string; nombre: string; n: number }>;
+  carpetas: Array<{ nombre: string; n: number }>;
+  discos: Array<{ raiz: string; n: number; bytes: number; conectado: boolean }>;
+  ocultos: number;
+  muestra: string[];
+}
+
+export interface LotePapelera {
+  id: string;
+  motivo: string;
+  fecha: string;
+  estado: string;
+  archivos: number;
+  /** Los que siguen de verdad en la papelera (en disco). */
+  presentes: number;
+  bytes: number;
+  conectado: boolean;
+  muestra: string[];
+}
+
+export interface ProxiesAjustes {
+  topeGB: number;
+  porDisco: Record<string, number>;
+  /** Al llegar al tope: preguntar (no borra nada) o liberar los menos vistos. */
+  alLlegar: 'preguntar' | 'liberar';
+}
+
+export interface ProxiesDisco {
+  raiz: string;
+  n: number;
+  bytes: number;
+  /** Última vez que se vio alguno de sus proxies (epoch ms). */
+  visto: number;
+  topeGB: number;
+  /** true si este disco tiene tope propio, false si sigue al general. */
+  propio: boolean;
+  libreGB: number | null;
+  aviso: { desde: number; esperando: number; ultimo?: string } | null;
+}
+
+/** Cuántos vídeos de un disco ganarían fluidez con una versión ligera. */
+export interface ProxiesFluidez {
+  raiz: string;
+  /** Los que ganarían y aún no la tienen. */
+  n: number;
+  /** Vídeos del disco en total, para dar proporción. */
+  total: number;
+  /** Lo que ocuparían sus versiones ligeras (estimado por duración). */
+  bytes: number;
+  /** De los que ganarían, cuántos no tienen duración conocida (sin escanear). */
+  sinMedir: number;
+}
+
+/** Preparación en lote en marcha (o la última que hubo). */
+export interface ProxiesLote {
+  total: number;
+  hechos: number;
+  saltados: number;
+  fallos: number;
+  bytes: number;
+  procesados: number;
+  desde: number;
+  terminado: boolean;
+  cancelado: boolean;
+  actual: string | null;
+  /** Por qué paró antes de tiempo: 'tope' | 'espacio' | 'cancelado'. */
+  motivo: string | null;
+  raiz: string | null;
+  restanteSeg: number | null;
+}
+
+export interface ProxiesEstado {
+  ajustes: ProxiesAjustes;
+  minLibreGB: number;
+  discos: ProxiesDisco[];
+  fluidez: ProxiesFluidez[];
+  lote: ProxiesLote | null;
+  totales: {
+    listos: number; bytes: number; pendientes: number; errores: number; nativos: number; forzados: number;
+    /** Preparados con la regla vieja: no se pueden medir ni cuentan para el tope. */
+    antiguos: number;
+  };
+}
+
 // Entrada del catalogo VLM que devuelve GET /scan/models. tier:
 // produccion | experimento | legacy | otro. installed=false → "pendiente de descarga".
 export interface VlmModel {
@@ -254,6 +351,47 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/statistics`);
   }
 
+  // Vídeos preparados (proxies): cuánto ocupan por disco y contra qué tope.
+  async getProxiesEstado() {
+    return this.fetchWithErrorHandling<ApiResponse<ProxiesEstado>>(`${API_BASE_URL}/proxies/estado`);
+  }
+
+  /** `porDisco: { "F:\\": null }` devuelve ese disco al tope general; `0` = sin tope. */
+  async setProxiesAjustes(parcial: {
+    topeGB?: number;
+    alLlegar?: 'preguntar' | 'liberar';
+    porDisco?: Record<string, number | null>;
+  }) {
+    return this.fetchWithErrorHandling<ApiResponse<{ ajustes: ProxiesAjustes; estado: ProxiesEstado }>>(
+      `${API_BASE_URL}/proxies/ajustes`,
+      { method: 'PATCH', body: JSON.stringify(parcial) },
+    );
+  }
+
+  /** Prepara de una vez todos los que ganarían fluidez en ese disco. */
+  async prepararProxies(raiz?: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ total: number; estado: ProxiesEstado }>>(
+      `${API_BASE_URL}/proxies/preparar`,
+      { method: 'POST', body: JSON.stringify({ raiz }) },
+    );
+  }
+
+  /** Para la preparación en marcha. Lo ya preparado se queda. */
+  async cancelarPreparacion() {
+    return this.fetchWithErrorHandling<ApiResponse<{ estado: ProxiesEstado }>>(
+      `${API_BASE_URL}/proxies/preparar/cancelar`,
+      { method: 'POST' },
+    );
+  }
+
+  /** Borra los menos vistos de ese disco hasta bajar de su tope. Regenerables. */
+  async liberarProxies(raiz: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ liberados: number; estado: ProxiesEstado }>>(
+      `${API_BASE_URL}/proxies/liberar`,
+      { method: 'POST', body: JSON.stringify({ raiz }) },
+    );
+  }
+
   // La carta de la semana: prosa corta que el archivo escribe sobre si mismo.
   // Todas las cartas guardadas, de la mas nueva a la mas vieja.
   async getCartas() {
@@ -303,6 +441,56 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify({ ids }),
     });
+  }
+
+  // ── Los archivos de una persona ────────────────────────────────────────
+  async getArchivosPersona(personId: string, alcance: 'todos' | 'sin_otros') {
+    return this.fetchWithErrorHandling<ApiResponse<ArchivosPersona>>(
+      `${API_BASE_URL}/personas/${encodeURIComponent(personId)}/archivos?alcance=${alcance}`,
+    );
+  }
+
+  async ocultarArchivosPersona(personId: string, alcance: 'todos' | 'sin_otros') {
+    return this.fetchWithErrorHandling<ApiResponse<{ ocultados: number; yaEstaban: number; deshacer: string | null }>>(
+      `${API_BASE_URL}/personas/${encodeURIComponent(personId)}/ocultar`,
+      { method: 'POST', body: JSON.stringify({ alcance }) },
+    );
+  }
+
+  /** Mueve sus archivos a la papelera de Pensadero. `confirmacion`: su nombre, escrito. */
+  async papeleraArchivosPersona(personId: string, alcance: 'todos' | 'sin_otros', confirmacion: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ lote: string | null; movidos: number; bytes: number; fallidos: Array<{ ruta: string; motivo: string }> }>>(
+      `${API_BASE_URL}/personas/${encodeURIComponent(personId)}/papelera`,
+      { method: 'POST', body: JSON.stringify({ alcance, confirmacion }) },
+    );
+  }
+
+  async getOlvidadas() {
+    return this.fetchWithErrorHandling<ApiResponse<{ total: number }>>(`${API_BASE_URL}/persons/olvidadas`);
+  }
+
+  /** Las caras olvidadas vuelven a proponerse como desconocidas. */
+  async vaciarOlvidadas() {
+    return this.fetchWithErrorHandling<ApiResponse<{ vaciadas: number }>>(`${API_BASE_URL}/persons/olvidadas`, { method: 'DELETE' });
+  }
+
+  // ── Papelera ───────────────────────────────────────────────────────────
+  async getPapelera() {
+    return this.fetchWithErrorHandling<ApiResponse<LotePapelera[]>>(`${API_BASE_URL}/papelera`);
+  }
+
+  async restaurarLote(lote: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ restaurados: number; pendientes: number; conflictos: string[] }>>(
+      `${API_BASE_URL}/papelera/${encodeURIComponent(lote)}/restaurar`, { method: 'POST' },
+    );
+  }
+
+  /** Borra de verdad. `confirmacion`: la palabra «vaciar», escrita. */
+  async vaciarLote(lote: string, confirmacion: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ borrados: number; bytes: number; quedan: number }>>(
+      `${API_BASE_URL}/papelera/${encodeURIComponent(lote)}/vaciar`,
+      { method: 'POST', body: JSON.stringify({ confirmacion }) },
+    );
   }
 
   async deshacerOcultado(token: string) {
@@ -826,8 +1014,12 @@ class ApiService {
     });
   }
 
-  async deletePerson(personId: string) {
-    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}`, {
+  /**
+   * olvidar: ademas de borrar la ficha, guarda su huella para que el
+   * descubrimiento de caras no la vuelva a proponer como desconocida.
+   */
+  async deletePerson(personId: string, olvidar = false) {
+    return this.fetchWithErrorHandling<ApiResponse<any> & { olvidada?: boolean }>(`${API_BASE_URL}/persons/registry/${encodeURIComponent(personId)}${olvidar ? '?olvidar=1' : ''}`, {
       method: 'DELETE',
     });
   }

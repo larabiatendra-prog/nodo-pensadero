@@ -1,6 +1,12 @@
 import { useMemo } from 'react';
 import { MediaFile } from '../types';
-import { getFileSessionKey, getSessionLabelSource, parseSmartLabel } from '../utils/filenameParser';
+import { etiquetaDeSesionSuelta, getFileSessionKey, getSessionLabelSource, parseSmartLabel } from '../utils/filenameParser';
+
+/** Etiqueta de una sesion: la de siempre, o fecha + origen si es un dia suelto. */
+function etiquetaDe(key: string, files: MediaFile[]): { line1: string; line2: string } {
+  if (key.includes('#')) return etiquetaDeSesionSuelta(key, files[0]);
+  return parseSmartLabel(getSessionLabelSource(files[0]));
+}
 
 export const MIN_GROUP_SIZE = 5;
 export const EXPANDED_PREVIEW = 12;
@@ -107,12 +113,12 @@ export function useSessionGroups(
         }
       } else if (!expandedGroups.has(key!)) {
         // Grupo colapsado — 1 slot (tarjeta mosaico)
-        const label = parseSmartLabel(getSessionLabelSource(files[0]));
+        const label = etiquetaDe(key!, files);
         items.push({ type: 'session-card', key: key!, files, label, dimmed: anyExpanded });
         slotsUsed++;
       } else {
         // Grupo expandido: tarjeta de inicio + archivos + (show-more | tarjeta de fin)
-        const label = parseSmartLabel(getSessionLabelSource(files[0]));
+        const label = etiquetaDe(key!, files);
         items.push({ type: 'session-start', key: key!, firstFile: files[0], label });
         slotsUsed++;
         if (slotsUsed >= visibleSlotCount) break;

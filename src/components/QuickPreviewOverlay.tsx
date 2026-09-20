@@ -61,6 +61,14 @@ export function QuickPreviewOverlay({ file, onClose }: QuickPreviewOverlayProps)
                 autoPlay
                 muted
                 playsInline
+                onError={() => {
+                  // El original no abre: version ligera (una sola vez).
+                  if (videoSrc && videoSrc.includes('/proxy')) return;
+                  setVideoSrc(null);
+                  resolvePlayable(file.id, { forzarProxy: true })
+                    .then(info => { if (info.status === 'ready') setVideoSrc(info.url || null); })
+                    .catch(() => {});
+                }}
                 className="max-w-[85vw] max-h-[75vh] object-contain"
               />
             ) : (

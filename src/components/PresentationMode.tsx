@@ -2,6 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { X, Play, Pause, SkipForward, SkipBack, Volume2, VolumeX } from 'lucide-react';
 import { MediaFile } from '../types';
 import { resolvePlayable } from '../utils/playable';
+import { guardarVolumen, leerVolumen, tiempoCorto } from '../utils/volumen';
+
+/** Lo que salta un Shift + flecha dentro del clip. */
+const SALTO_S = 10;
 
 interface PresentationModeProps {
   videos: MediaFile[];
@@ -12,7 +16,14 @@ interface PresentationModeProps {
 export default function PresentationMode({ videos, isOpen, onClose }: PresentationModeProps) {
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
-  const [isMuted, setIsMuted] = useState(false);
+  // Volumen y silencio salen de donde los dejo el otro reproductor.
+  const [isMuted, setIsMuted] = useState(() => leerVolumen().muted);
+  const [volumen, setVolumen] = useState(() => leerVolumen().volume);
+  // Donde va el clip y cuanto dura: sin esto no habia forma de saber si
+  // quedaban diez segundos o tres minutos, ni de moverse dentro.
+  const [tiempo, setTiempo] = useState(0);
+  const [duracion, setDuracion] = useState(0);
+  const [arrastrando, setArrastrando] = useState(false);
   const [showControls, setShowControls] = useState(true);
   // Doble buffer: que player ('A'/'B') muestra el video activo
   const [activePlayer, setActivePlayer] = useState<'A' | 'B'>('A');
@@ -23,6 +34,10 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   const videoRefB = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const barraRef = useRef<HTMLDivElement>(null);
+  // El atajo de teclado se registra una vez y viviria con un activePlayer
+  // viejo: por eso el player activo tambien va en una ref.
+  const activePlayerRef = useRef<'A' | 'B'>('A');
 
   // Solo videos
   const videoFiles = videos.filter(file => file.type === 'video');
@@ -30,6 +45,9 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
 
   const getActiveVideoRef = () => (activePlayer === 'A' ? videoRefA : videoRefB);
   const getInactiveVideoRef = () => (activePlayer === 'A' ? videoRefB : videoRefA);
+  /** El <video> que se esta viendo, valido tambien dentro de los atajos. */
+  const videoActivo = () => (activePlayerRef.current === 'A' ? videoRefA.current : videoRefB.current);
+  activePlayerRef.current = activePlayer;
 
   // El indice vive en estado, pero la LISTA puede cambiar debajo: abrir el pase
   // de una sesion corta despues de uno largo, un filtro, el randomizador o una
@@ -92,7 +110,36 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   };
 
   const togglePlayPause = () => setIsPlaying(p => !p);
-  const toggleMute = () => setIsMuted(m => !m);
+  const toggleMute = () => setIsMuted(m => { guardarVolumen(volumen, !m); return !m; });
+
+  /** Mueve el volumen y lo recuerda para los dos reproductores. */
+  const cambiarVolumen = (v: number) => {
+    const limpio = Math.min(1, Math.max(0, v));
+    setVolumen(limpio);
+    // Subir el volumen con el sonido quitado es querer oirlo.
+    const silencio = limpio === 0 ? true : (limpio > 0 && isMuted ? false : isMuted);
+    setIsMuted(silencio);
+    guardarVolumen(limpio, silencio);
+  };
+
+  /** Salta dentro del clip (segundos, con signo). */
+  const saltar = (segundos: number) => {
+    const v = videoActivo();
+    if (!v || !isFinite(v.duration)) return;
+    v.currentTime = Math.min(v.duration, Math.max(0, v.currentTime + segundos));
+    setTiempo(v.currentTime);
+  };
+
+  /** Lleva el clip al punto que se ha tocado en la barra. */
+  const buscarEn = (clientX: number) => {
+    const barra = barraRef.current;
+    const v = videoActivo();
+    if (!barra || !v || !isFinite(v.duration) || v.duration <= 0) return;
+    const caja = barra.getBoundingClientRect();
+    const parte = Math.min(1, Math.max(0, (clientX - caja.left) / caja.width));
+    v.currentTime = parte * v.duration;
+    setTiempo(v.currentTime);
+  };
 
   // Reset al abrir
   useEffect(() => {
@@ -150,11 +197,20 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
           break;
         case 'ArrowRight':
           event.preventDefault();
-          advance();
+          // Con Shift no se cambia de clip: se avanza dentro de este.
+          if (event.shiftKey) saltar(SALTO_S); else advance();
           break;
         case 'ArrowLeft':
           event.preventDefault();
-          goPrev();
+          if (event.shiftKey) saltar(-SALTO_S); else goPrev();
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          setVolumen(v => { const n = Math.round(Math.min(1, v + 0.05) * 100) / 100; guardarVolumen(n, false); setIsMuted(false); return n; });
+          break;
+        case 'ArrowDown':
+          event.preventDefault();
+          setVolumen(v => { const n = Math.round(Math.max(0, v - 0.05) * 100) / 100; guardarVolumen(n, n === 0); if (n === 0) setIsMuted(true); return n; });
           break;
         case 'm':
         case 'M':
@@ -175,12 +231,14 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   // Auto-ocultar controles
   useEffect(() => {
     if (!showControls) return;
+    // Arrastrando la barra los controles no pueden desaparecer debajo del dedo.
+    if (arrastrando) return;
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     controlsTimeoutRef.current = setTimeout(() => setShowControls(false), 3000);
     return () => {
       if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
-  }, [showControls]);
+  }, [showControls, arrastrando]);
 
   // Control unico de reproduccion: reacciona al swap/indice/play/mute.
   // El activo reproduce segun isPlaying; el inactivo queda pausado y silenciado
@@ -191,6 +249,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
     const inactive = getInactiveVideoRef().current;
     if (active) {
       active.muted = isMuted;
+      active.volume = volumen;
       if (isPlaying) {
         active.play().catch(error => console.warn('Error reproduciendo video:', error));
       } else {
@@ -206,7 +265,18 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
     // Sin esto el play() se lanza en vacio y el pase se queda parado en el
     // primer clip hasta que le das al play a mano.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, indiceActual, activePlayer, isPlaying, isMuted, activeUrl]);
+  }, [isOpen, indiceActual, activePlayer, isPlaying, isMuted, volumen, activeUrl]);
+
+  // Al cambiar de clip o de buffer se lee el que se ve: si venia precargado,
+  // su onLoadedMetadata salto hace rato y no volvera a saltar. Aqui se pone la
+  // duracion Y se reinicia el tiempo; hacerlo en otro efecto aparte borraba la
+  // duracion recien leida y la barra se quedaba en 0:00.
+  useEffect(() => {
+    const v = getActiveVideoRef().current;
+    setDuracion(v && isFinite(v.duration) ? v.duration : 0);
+    setTiempo(v ? v.currentTime || 0 : 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlayer, indiceActual, activeUrl]);
 
   // Resetear indicador de precarga al cambiar de video
   useEffect(() => {
@@ -241,6 +311,9 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         onEnded={isActiveA ? advance : undefined}
         onError={() => alFallar((isActiveA ? videoFiles[indiceActual] : videoFiles[nextIndex])?.id)}
         onCanPlayThrough={!isActiveA ? () => setIsPreloaded(true) : undefined}
+        onTimeUpdate={isActiveA ? (e) => { if (!arrastrando) setTiempo(e.currentTarget.currentTime); } : undefined}
+        onLoadedMetadata={isActiveA ? (e) => setDuracion(isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0) : undefined}
+        onDurationChange={isActiveA ? (e) => setDuracion(isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0) : undefined}
         playsInline
       />
       <video
@@ -252,6 +325,9 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         onEnded={!isActiveA ? advance : undefined}
         onError={() => alFallar((!isActiveA ? videoFiles[indiceActual] : videoFiles[nextIndex])?.id)}
         onCanPlayThrough={isActiveA ? () => setIsPreloaded(true) : undefined}
+        onTimeUpdate={!isActiveA ? (e) => { if (!arrastrando) setTiempo(e.currentTarget.currentTime); } : undefined}
+        onLoadedMetadata={!isActiveA ? (e) => setDuracion(isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0) : undefined}
+        onDurationChange={!isActiveA ? (e) => setDuracion(isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0) : undefined}
         playsInline
       />
 
@@ -340,52 +416,87 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         </div>
 
         {/* Controles inferiores */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-6 pb-5 pt-10">
+          {/* La barra del CLIP (antes solo estaba la de la lista, y por eso no
+              habia forma de ver cuanto quedaba ni de moverse dentro). */}
+          <div className="flex items-center gap-3">
+            <span className="text-white/80 text-xs tabular-nums w-14 text-right">{tiempoCorto(tiempo)}</span>
+            <div
+              ref={barraRef}
+              className="relative flex-1 py-2 cursor-pointer group"
+              onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); setArrastrando(true); buscarEn(e.clientX); }}
+              onPointerMove={(e) => { if (arrastrando) buscarEn(e.clientX); }}
+              onPointerUp={(e) => { e.currentTarget.releasePointerCapture(e.pointerId); setArrastrando(false); }}
+              onPointerCancel={() => setArrastrando(false)}
+              role="slider"
+              aria-label="Punto del clip"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(duracion) || 0}
+              aria-valuenow={Math.round(tiempo)}
+              tabIndex={0}
+            >
+              <div className="h-1 rounded-full bg-white/25 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-lavanda"
+                  style={{ width: `${duracion > 0 ? (tiempo / duracion) * 100 : 0}%` }}
+                />
+              </div>
+              <span
+                className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-lavanda shadow transition-opacity ${arrastrando ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                style={{ left: `${duracion > 0 ? (tiempo / duracion) * 100 : 0}%` }}
+              />
+            </div>
+            <span className="text-white/60 text-xs tabular-nums w-14">{tiempoCorto(duracion)}</span>
+          </div>
+
+          <div className="mt-1.5 flex items-end justify-between gap-6 flex-wrap">
+            {/* Volumen de verdad, no solo silencio; y el mismo del otro reproductor */}
+            <div className="flex items-center gap-2.5">
               <button
                 onClick={toggleMute}
+                title={isMuted ? 'Quitar el silencio (M)' : 'Silenciar (M)'}
                 className="text-white/80 hover:text-white transition-colors p-2 rounded-full hover:bg-tinta/20"
               >
-                {isMuted ? (
+                {isMuted || volumen === 0 ? (
                   <VolumeX className="w-5 h-5" />
                 ) : (
                   <Volume2 className="w-5 h-5" />
                 )}
               </button>
-              <span className="text-white/80 text-sm">
-                {isMuted ? 'Silenciado' : 'Con audio'}
-              </span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={isMuted ? 0 : volumen}
+                onChange={(e) => cambiarVolumen(parseFloat(e.target.value))}
+                className="w-28 accent-lavanda cursor-pointer"
+                aria-label="Volumen"
+              />
+              <span className="text-white/60 text-xs tabular-nums w-10">{Math.round((isMuted ? 0 : volumen) * 100)}%</span>
             </div>
 
-            <div className="text-white/80 text-sm">
-              <div className="flex items-center space-x-4">
-                <span>Modo Presentación</span>
-                <span className="text-white/60">|</span>
-                <span>ESC para salir</span>
-                <span className="text-white/60">|</span>
-                <span>Espacio: Play/Pausa</span>
-                <span className="text-white/60">|</span>
-                <span>← → Cambiar video</span>
-              </div>
+            <div className="text-white/60 text-xs flex items-center gap-2.5 flex-wrap justify-end">
+              <span className="text-white/80">Vídeo {indiceActual + 1} de {total}</span>
+              <span className="text-white/25">|</span>
+              <span>Espacio: pausa</span>
+              <span className="text-white/25">|</span>
+              <span>← → clip</span>
+              <span className="text-white/25">|</span>
+              <span>Shift + ← → {SALTO_S}s</span>
+              <span className="text-white/25">|</span>
+              <span>↑ ↓ volumen</span>
+              <span className="text-white/25">|</span>
+              <span>ESC salir</span>
             </div>
           </div>
 
-          {/* Indicador de progreso de la lista */}
-          <div className="mt-4">
-            <div className="w-full bg-tinta/20 rounded-full h-1">
-              <div
-                className="bg-tinta rounded-full h-1 transition-all duration-300"
-                style={{
-                  width: `${((indiceActual + 1) / total) * 100}%`
-                }}
-              />
-            </div>
-            <div className="flex justify-between mt-2 text-xs text-white/60">
-              <span>Inicio de la lista</span>
-              <span>Reproducción en bucle activa</span>
-              <span>Final de la lista</span>
-            </div>
+          {/* Por donde va la lista */}
+          <div className="mt-3 w-full bg-white/15 rounded-full h-[3px]">
+            <div
+              className="bg-white/45 rounded-full h-[3px] transition-all duration-300"
+              style={{ width: `${((indiceActual + 1) / total) * 100}%` }}
+            />
           </div>
         </div>
       </div>

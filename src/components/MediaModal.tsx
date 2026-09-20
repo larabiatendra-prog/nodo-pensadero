@@ -27,6 +27,8 @@ import { api } from '../services/api';
 import { config } from '../config';
 import { slugifyPersonId } from '../utils/persons';
 import { resolvePlayable, PlayableInfo } from '../utils/playable';
+// El volumen es comun a los dos reproductores (ver utils/volumen.ts).
+import { guardarVolumen, leerVolumen } from '../utils/volumen';
 import { AvisoTope } from './ProxiesPanel';
 
 interface MediaModalProps {
@@ -61,30 +63,6 @@ const CLASES_MEDIA = 'block max-h-[max(58vh,calc(90vh-300px))] w-auto max-w-full
 
 /** Preferencias de visionado que se recuerdan entre sesiones. */
 const CLAVE_ENCADENAR = 'pensadero.encadenarClips';
-const CLAVE_VOLUMEN = 'pensadero.volumenVideo';
-
-/** Volumen con el que se dejo el reproductor. Sin nada guardado, al maximo. */
-function leerVolumen(): { volume: number; muted: boolean } {
-  try {
-    const crudo = localStorage.getItem(CLAVE_VOLUMEN);
-    if (!crudo) return { volume: 1, muted: false };
-    const dato = JSON.parse(crudo);
-    const volume = typeof dato.volume === 'number' && dato.volume >= 0 && dato.volume <= 1
-      ? dato.volume
-      : 1;
-    return { volume, muted: !!dato.muted };
-  } catch {
-    return { volume: 1, muted: false };
-  }
-}
-
-function guardarVolumen(volume: number, muted: boolean) {
-  try {
-    localStorage.setItem(CLAVE_VOLUMEN, JSON.stringify({ volume, muted }));
-  } catch {
-    // Navegacion privada o almacenamiento lleno: no es critico, se pierde la preferencia.
-  }
-}
 
 /** Archivos relacionados por pagina: una sola fila en la tarjeta. */
 const RELACIONADOS_POR_PAGINA = 8;

@@ -44,9 +44,10 @@ export interface GrupoPersonas {
   id: string;
   nombre: string;
   miembros: string[];
-  /** Cuantos tienen que salir. null = el de fabrica (70%, hacia arriba). */
+  /** Cuantos tienen que salir. null = el de fabrica (todos los miembros). */
   minimo: number | null;
-  /** 'archivo' (de fabrica): en la misma foto o video. 'dia': a lo largo del dia. */
+  /** 'archivo' (de fabrica): en la misma foto o video. 'dia' solo persiste en grupos
+   * antiguos que lo tenian asi; ya no se puede elegir desde la UI. */
   modo: 'dia' | 'archivo';
   creado: string;
 }

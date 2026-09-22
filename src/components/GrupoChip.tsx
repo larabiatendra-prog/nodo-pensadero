@@ -2,17 +2,14 @@
  * Un grupo activo en la barra de busqueda — Pensadero
  *
  * El chip dice como se esta buscando ("Familia · 3 de 4") y, al pulsarlo,
- * abre las dos perillas del grupo con lo que saldria en cada caso:
- *
- *   ¿Cuantos tienen que salir?   1 · 2 · 3 · 4, cada uno con sus resultados
- *   ¿Donde?                      ese dia  /  en la misma toma
- *
- * La tolerancia se ve en archivos y no en un porcentaje abstracto. Lo que se
- * elige se guarda con el grupo: la proxima @familia sale igual.
+ * abre una barra: ¿cuantos tienen que salir en el mismo archivo? Empieza a
+ * tope (todos) y se puede bajar para admitir mas resultados. La tolerancia
+ * se ve en archivos y no en un porcentaje abstracto. Lo que se elige se
+ * guarda con el grupo: la proxima @familia sale igual.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Users, X } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import config from '../config';
 import type { GrupoPersonas, Person } from '../types';
@@ -70,6 +67,19 @@ function cifra(n: number): string {
   return n.toLocaleString('es-ES');
 }
 
+/**
+ * Fondo de la barra, mismo lenguaje visual que el "parecido" de tomas
+ * gemelas: el tramo recorrido se enciende de lavanda apagado a lavanda
+ * pleno segun avanza hacia el minimo (a tope = pleno del todo).
+ */
+function fondoBarra(valor: number, min: number, max: number): string {
+  const t = max > min ? Math.max(0, Math.min(1, (valor - min) / (max - min))) : 1;
+  const pct = (t * 100).toFixed(1);
+  const alfaIzq = (0.35 + 0.25 * t).toFixed(2);
+  const alfaDer = (0.55 + 0.45 * t).toFixed(2);
+  return `linear-gradient(90deg, rgba(124,107,178,${alfaIzq}) 0%, rgba(200,182,255,${alfaDer}) ${pct}%, rgba(37,42,66,0.55) ${pct}%, rgba(37,42,66,0.55) 100%)`;
+}
+
 export default function GrupoChip({ grupo, persons, contar, onRemove }: {
   grupo: GrupoPersonas;
   persons: Person[];
@@ -81,6 +91,10 @@ export default function GrupoChip({ grupo, persons, contar, onRemove }: {
   const cajaRef = useRef<HTMLSpanElement>(null);
   const total = grupo.miembros.length;
   const minimo = minimoDe(grupo);
+  // Valor en pantalla mientras se arrastra: se confirma (y se guarda) al
+  // soltar, para no disparar un guardado por cada paso del arrastre.
+  const [minimoUI, setMinimoUI] = useState(minimo);
+  useEffect(() => { setMinimoUI(minimo); }, [minimo]);
 
   // Recontar al abrir y cada vez que cambia el grupo (tolerancia, miembros).
   useEffect(() => {
@@ -111,8 +125,8 @@ export default function GrupoChip({ grupo, persons, contar, onRemove }: {
     };
   }, [abierto]);
 
-  const cambiar = (parcial: { minimo?: number; modo?: GrupoPersonas['modo'] }) => {
-    actualizarGrupo(grupo.id, parcial).catch((err: Error) => toast.error(err.message || 'No se ha podido guardar'));
+  const cambiar = (minimoNuevo: number) => {
+    actualizarGrupo(grupo.id, { minimo: minimoNuevo }).catch((err: Error) => toast.error(err.message || 'No se ha podido guardar'));
   };
 
   const porNivel = niveles ? niveles[grupo.modo] : null;
@@ -154,79 +168,27 @@ export default function GrupoChip({ grupo, persons, contar, onRemove }: {
           </div>
 
           <p className="font-mono text-[10px] tracking-wider uppercase text-humo mb-2">¿Cuántos tienen que salir?</p>
-          {total <= 8 ? (
-            <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${total}, minmax(0, 1fr))` }}>
-              {Array.from({ length: total }, (_, i) => i + 1).map(k => {
-                const activo = k === minimo;
-                const n = porNivel ? porNivel[k - 1] : null;
-                return (
-                  <button
-                    key={k}
-                    onClick={() => cambiar({ minimo: k })}
-                    className={`rounded-xl py-1.5 flex flex-col items-center transition-colors ${
-                      activo ? 'bg-lavanda text-noche' : 'bg-pizarra text-niebla hover:text-marfil'
-                    } ${n === 0 && !activo ? 'opacity-50' : ''}`}
-                    title={k === 1 ? 'Basta con que salga uno' : k === total ? 'Tienen que salir todos' : `Al menos ${k} de ${total}`}
-                  >
-                    <span className="text-sm font-semibold tabular-nums">{k}</span>
-                    <span className={`text-[10px] tabular-nums ${activo ? 'text-noche/70' : 'text-humo'}`}>
-                      {n === null ? '·' : cifra(n)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div>
-              <input
-                type="range"
-                min={1}
-                max={total}
-                step={1}
-                value={minimo}
-                onChange={(e) => cambiar({ minimo: parseInt(e.target.value, 10) })}
-                className="w-full accent-lavanda cursor-pointer"
-                aria-label="Cuántos tienen que salir"
-              />
-              <p className="text-xs text-niebla tabular-nums">
-                Al menos {minimo} de {total}
-                {porNivel ? ` · ${cifra(porNivel[minimo - 1])} archivos` : ''}
-              </p>
-            </div>
-          )}
-          <div className="flex justify-between text-[10px] text-humo mt-1 px-0.5">
+          <input
+            type="range"
+            min={1}
+            max={total}
+            step={1}
+            value={minimoUI}
+            onChange={(e) => setMinimoUI(parseInt(e.target.value, 10))}
+            onPointerUp={() => cambiar(minimoUI)}
+            onKeyUp={() => cambiar(minimoUI)}
+            aria-label="Cuántos tienen que salir"
+            className="umbral w-full"
+            style={{ background: fondoBarra(minimoUI, 1, total) }}
+          />
+          <p className="text-xs text-niebla tabular-nums mt-1">
+            {minimoUI === total ? (total === 1 ? '1' : 'Todos') : `Al menos ${minimoUI} de ${total}`}
+            {porNivel ? ` · ${cifra(porNivel[minimoUI - 1])} archivos` : ''}
+          </p>
+          <div className="flex justify-between text-[10px] text-humo mt-0.5 px-0.5">
             <span>cualquiera</span>
             <span>todos</span>
           </div>
-
-          <p className="font-mono text-[10px] tracking-wider uppercase text-humo mt-4 mb-2">¿Juntos dónde?</p>
-          <div className="grid grid-cols-2 gap-1.5">
-            {([['archivo', 'En el mismo archivo'], ['dia', 'El mismo día']] as const).map(([modo, etiqueta]) => {
-              const activo = grupo.modo === modo;
-              const n = niveles ? niveles[modo][minimo - 1] : null;
-              return (
-                <button
-                  key={modo}
-                  onClick={() => cambiar({ modo })}
-                  className={`rounded-xl px-2 py-1.5 text-xs font-medium transition-colors ${
-                    activo ? 'bg-lavanda text-noche' : 'bg-pizarra text-niebla hover:text-marfil'
-                  }`}
-                >
-                  {etiqueta}
-                  {n !== null && <span className={`ml-1 tabular-nums ${activo ? 'text-noche/60' : 'text-humo'}`}>{cifra(n)}</span>}
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-humo leading-relaxed mt-2">
-            {grupo.modo === 'dia'
-              ? `Vale con que salgan ${minimo === total ? 'todos' : `${minimo}`} a lo largo del día, cada uno en su foto o vídeo. Por eso verás archivos en los que sale uno solo: son de un día en el que coincidieron.`
-              : `Solo fotos y vídeos en los que salen ${minimo === total ? 'todos' : `al menos ${minimo}`} a la vez.`}
-          </p>
-          <p className="text-[10px] text-humo/80 mt-3 flex items-center gap-1">
-            <Users className="w-3 h-3" />
-            Se recuerda para la próxima vez. El grupo se edita en Personas.
-          </p>
         </div>
       )}
     </span>

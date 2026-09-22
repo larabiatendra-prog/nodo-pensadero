@@ -1,16 +1,18 @@
 /**
  * Grupos de personas: cuando un archivo "es de la Familia" — Pensadero
  *
- * Un grupo se busca con una tolerancia, no con un todos-o-nada: en una comida
- * familiar casi ninguna foto pilla a todos, y quien graba no sale nunca. Dos
- * perillas, que se guardan con el grupo:
+ * Un grupo se busca con una tolerancia, no necesariamente con un todos-o-nada:
+ * en una comida familiar casi ninguna foto pilla a todos, y quien graba no
+ * sale nunca. Una perilla, que se guarda con el grupo:
  *
- *   minimo  cuantos de ellos tienen que salir. De fabrica, el 70% redondeado
- *           hacia arriba (3 de 4, 2 de 2, 7 de 10).
- *   modo    'archivo' (de fabrica): tienen que salir en la misma foto o video.
- *           'dia': se cuenta quien sale a lo largo de ese dia, y se ensenan
- *           los archivos de ese dia en los que sale alguno de ellos (aunque
- *           en ese archivo concreto salga uno solo).
+ *   minimo  cuantos de ellos tienen que salir en el mismo archivo. De
+ *           fabrica, todos: el usuario la baja el mismo desde el chip si
+ *           quiere mas resultados, viendo cuantos da cada nivel.
+ *
+ * `modo` sigue en el tipo por compatibilidad con grupos antiguos que lo
+ * guardaron en 'dia' (cuenta quien sale a lo largo del dia, no solo en el
+ * mismo archivo), pero ya no se ofrece cambiarlo desde la UI: confundia mas
+ * de lo que ayudaba.
  *
  * Todo es local y en memoria: sin llamadas al servidor.
  */
@@ -18,11 +20,9 @@
 import type { GrupoPersonas, MediaFile } from '../types';
 import { normalizeText } from './smartTags';
 
-/** Lo que el grupo pide por defecto: el 70% de sus miembros, hacia arriba. */
-export const PARTE_POR_DEFECTO = 0.7;
-
+/** Lo que el grupo pide por defecto si nadie lo ha tocado: todos los miembros. */
 export function minimoPorDefecto(miembros: number): number {
-  return Math.max(1, Math.ceil(miembros * PARTE_POR_DEFECTO - 1e-9));
+  return Math.max(1, miembros);
 }
 
 /** Cuantos tienen que salir, siempre entre 1 y el tamano del grupo. */

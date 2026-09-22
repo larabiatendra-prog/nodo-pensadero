@@ -7,6 +7,12 @@ import { slugifyPersonId } from '../utils/persons';
 import Avatar from './Avatar';
 import Loader from './Loader';
 import PersonaAcciones from './PersonaAcciones';
+import GrupoEditor from './GrupoEditor';
+import { GrupoAvatares } from './GrupoChip';
+import { actualizarGrupo, useGrupos } from '../hooks/useGrupos';
+import { cumple, filtroDe, minimoDe, presenciaPorDia } from '../utils/grupos';
+import type { GrupoPersonas } from '../types';
+import toast from 'react-hot-toast';
 
 interface Person {
   person_id: string;
@@ -30,6 +36,8 @@ interface PersonsManagerProps {
   onFilterByPerson?: (personId: string) => void;
   /** Abre la linea de vida de la persona (/persona/:id/vida). */
   onVerLineaDeVida?: (personId: string) => void;
+  /** Lleva a la home filtrada por el grupo. */
+  onVerGrupo?: (grupoId: string) => void;
 }
 
 /**
@@ -43,7 +51,11 @@ interface PersonsManagerProps {
  * NO hace reconocimiento facial automático — eso entra en una segunda
  * iteración con InsightFace u otro modelo de embeddings faciales.
  */
-export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFilterByPerson, onVerLineaDeVida }: PersonsManagerProps) {
+export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFilterByPerson, onVerLineaDeVida, onVerGrupo }: PersonsManagerProps) {
+  // Grupos ("Familia"...). editandoGrupo: null = cerrado; 'nuevo' = crear uno.
+  const grupos = useGrupos();
+  const [editandoGrupo, setEditandoGrupo] = useState<GrupoPersonas | 'nuevo' | null>(null);
+  const [gruposIniciales, setGruposIniciales] = useState<string[]>([]);
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
@@ -253,6 +265,30 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
     };
     return base.sort(criterio[orden]);
   }, [persons, query, personFilter, orden, filesPerPerson, personStats]);
+
+  const archivosPorGrupo = useMemo(() => {
+    const cuenta = new Map<string, number>();
+    if (!mediaFiles || grupos.length === 0) return cuenta;
+    const presencia = presenciaPorDia(mediaFiles);
+    for (const g of grupos) {
+      const filtro = filtroDe(g);
+      let n = 0;
+      for (const f of mediaFiles) if (cumple(f, filtro, presencia)) n++;
+      cuenta.set(g.id, n);
+    }
+    return cuenta;
+  }, [grupos, mediaFiles]);
+
+  /** Mete o saca a alguien de un grupo desde su ficha. */
+  const alternarEnGrupo = (grupo: GrupoPersonas, personId: string) => {
+    const dentro = grupo.miembros.includes(personId);
+    if (dentro && grupo.miembros.length <= 2) {
+      toast.error(`«${grupo.nombre}» se quedaría con una sola persona. Si ya no lo quieres, bórralo desde Grupos → Editar.`);
+      return;
+    }
+    const miembros = dentro ? grupo.miembros.filter(m => m !== personId) : [...grupo.miembros, personId];
+    actualizarGrupo(grupo.id, { miembros }).catch((err: Error) => toast.error(err.message || 'No se ha podido cambiar el grupo'));
+  };
 
   const unidentifiedCount = useMemo(
     () => (clusters || []).reduce((a, c) => a + (c.face_count || 0), 0),
@@ -1100,6 +1136,15 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               <Plus className="w-4 h-4" />
               Añadir persona
             </button>
+            <button
+              onClick={() => { setGruposIniciales([]); setEditandoGrupo('nuevo'); }}
+              style={glassSoft}
+              className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-[13px] font-medium text-niebla hover:text-marfil transition-colors"
+              title="Juntar varias personas con un nombre (Familia, Rodaje…) para buscarlas con @nombre"
+            >
+              <Users className="w-4 h-4" />
+              Nuevo grupo
+            </button>
             {faceStatus?.ready && faceStatus.trainedPersons > 0 && (
               <button
                 onClick={handleReidentify}
@@ -1120,7 +1165,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                 title="Gestión avanzada de caras sin identificar (orden por similitud, fusión múltiple)"
               >
                 <Users className="w-4 h-4" />
-                Gestionar grupos
+                Caras sin nombre
               </button>
             )}
           </>
@@ -1833,6 +1878,73 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             <span className="font-mono text-[11px] tracking-wide text-humo">{filteredPersons.length} de {persons.length}</span>
           </div>
 
+          {/* Grupos: varias personas con un nombre, para buscarlas juntas. */}
+          {personFilter !== 'vacias' && (
+            <section className="mb-9">
+              <div className="flex items-baseline gap-3 mb-3.5 flex-wrap">
+                <span className="font-mono text-[11px] tracking-wider uppercase text-humo">Grupos</span>
+                <span className="text-xs text-lavanda-archivo">
+                  Varias personas con un nombre. Se buscan juntas con <span className="font-mono">@nombre</span>.
+                </span>
+              </div>
+              {grupos.length === 0 ? (
+                <div className="rounded-xl px-5 py-4 flex items-center gap-4 flex-wrap" style={glassSoft}>
+                  <Users className="w-5 h-5 text-lavanda shrink-0" />
+                  <p className="text-[13px] text-niebla flex-1 min-w-[240px] leading-relaxed">
+                    Junta a la familia, al equipo de rodaje o a los del pueblo y búscalos de una vez
+                    con <span className="font-mono text-lavanda-archivo">@familia</span>. También puedes
+                    elegir varias caras en la home y guardarlas como grupo.
+                  </p>
+                  <button
+                    onClick={() => { setGruposIniciales([]); setEditandoGrupo('nuevo'); }}
+                    className="h-9 px-4 rounded-full bg-lavanda text-noche text-[13px] font-semibold hover:bg-lavanda-claro"
+                  >
+                    Crear el primero
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-3.5 flex-wrap">
+                  {grupos.map(g => {
+                    const total = g.miembros.length;
+                    const minimo = minimoDe(g);
+                    const n = archivosPorGrupo.get(g.id) ?? 0;
+                    return (
+                      <div key={g.id} className="w-[230px] rounded-xl p-4 flex flex-col gap-3" style={glassSoft}>
+                        <GrupoAvatares grupo={g} persons={persons} tam={40} max={4} borde="border-grafito" />
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-marfil truncate">{g.nombre}</p>
+                          <p className="text-[11px] text-humo mt-0.5 truncate" title={g.miembros.map(id => persons.find(p => p.person_id === id)?.display_name || id).join(', ')}>
+                            {total} {total === 1 ? 'persona' : 'personas'} · {minimo === total ? 'todos' : `${minimo} de ${total}`} {g.modo === 'dia' ? 'el mismo día' : 'en el mismo archivo'}
+                          </p>
+                          <p className="text-[11px] text-lavanda-archivo mt-0.5">
+                            {total < 2 ? 'Le falta gente: edítalo o bórralo' : `${n.toLocaleString('es-ES')} ${n === 1 ? 'archivo' : 'archivos'}`}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          {onVerGrupo && total > 0 && (
+                            <button
+                              onClick={() => onVerGrupo(g.id)}
+                              className="flex-1 h-8 rounded-full bg-lavanda text-noche text-[12px] font-semibold hover:bg-lavanda-claro"
+                            >
+                              Ver
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setEditandoGrupo(g)}
+                            className="flex-1 h-8 rounded-full text-[12px] font-medium text-niebla hover:text-marfil"
+                            style={glassSoft}
+                          >
+                            Editar
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
           {/* Sin identificar (preview de clusters) */}
           {faceStatus?.ready && clusters && clusters.length > 0 && (
             <section className="mb-9">
@@ -2242,6 +2354,36 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   <AliasesEditor initialAliases={p.aliases} onSave={(aliases) => handleUpdateAliases(p, aliases)} />
                 </div>
 
+                <div>
+                  <p className="mb-1.5 font-mono text-[10px] tracking-wider uppercase text-humo">Grupos</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {grupos.map(g => {
+                      const dentro = g.miembros.includes(p.person_id);
+                      return (
+                        <button
+                          key={g.id}
+                          onClick={() => alternarEnGrupo(g, p.person_id)}
+                          title={dentro ? `Sacar de «${g.nombre}»` : `Meter en «${g.nombre}»`}
+                          className={`inline-flex items-center gap-1 h-7 px-3 rounded-full text-[12px] font-medium transition-colors ${
+                            dentro ? 'bg-lavanda text-noche' : 'text-humo hover:text-marfil'
+                          }`}
+                          style={dentro ? undefined : glassSoft}
+                        >
+                          {dentro ? <Check className="w-3 h-3" /> : <Plus className="w-3 h-3" />}
+                          {g.nombre}
+                        </button>
+                      );
+                    })}
+                    <button
+                      onClick={() => { setGruposIniciales([p.person_id]); setEditandoGrupo('nuevo'); }}
+                      className="inline-flex items-center gap-1 h-7 px-3 rounded-full text-[12px] text-lavanda hover:text-lavanda-claro"
+                    >
+                      <Users className="w-3 h-3" />
+                      Nuevo grupo con {p.display_name.split(' ')[0]}
+                    </button>
+                  </div>
+                </div>
+
                 {appearances.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-2.5">
@@ -2320,6 +2462,16 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           </div>
         );
       })()}
+
+      {editandoGrupo && (
+        <GrupoEditor
+          grupo={editandoGrupo === 'nuevo' ? null : editandoGrupo}
+          persons={persons}
+          apariciones={filesPerPerson}
+          iniciales={gruposIniciales}
+          onClose={() => setEditandoGrupo(null)}
+        />
+      )}
     </div>
   );
 }

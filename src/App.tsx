@@ -8,6 +8,8 @@ import { calcularEcos, type Eco } from './utils/ecos';
 import { MediaFile, SearchFilters, Collection } from './types';
 import { addFilesToCollection, api, createCollection, deleteCollection, deleteFromCollection, getCollectionsByUser, getFavouritesByUser, handleSupabaseFavourite, updateCoverCollection, updateNameCollection } from './services/api';
 import { useWebSocket } from './hooks/useWebSocket';
+import { actualizarGrupo, useGrupos } from './hooks/useGrupos';
+import { cumple, filtroDe, minimoDe, niveles, presenciaPorDia, type FiltroGrupo } from './utils/grupos';
 import { useSessionGroups, computeTotalSlots } from './hooks/useSessionGroups';
 import { config } from './config';
 import { cacheService } from './services/cacheService';
@@ -220,6 +222,19 @@ function App() {
 
   // Person filter state - supports multiple selection (filtra por person_id detectado)
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
+  // Grupos de personas activos (@familia). Como decide cada grupo que archivos
+  // son suyos (cuantos tienen que salir, en la toma o en el dia) vive con el
+  // grupo, no aqui: ver utils/grupos.ts.
+  const [gruposActivos, setGruposActivos] = useState<string[]>([]);
+  const grupos = useGrupos();
+  const presenciaDia = React.useMemo(() => presenciaPorDia(mediaFiles), [mediaFiles]);
+  const filtrosGrupo = React.useMemo<FiltroGrupo[]>(
+    () => gruposActivos
+      .map(id => grupos.find(g => g.id === id))
+      .filter((g): g is NonNullable<typeof g> => !!g)
+      .map(filtroDe),
+    [gruposActivos, grupos],
+  );
   // Filtro de color de la rueda HSL. Mantenemos los fileIds que matchearon
   // contra el endpoint /api/search/by-color y el hex objetivo para mostrarlo en UI.
   const [colorFilterFileIds, setColorFilterFileIds] = useState<Set<string> | null>(null);
@@ -682,6 +697,7 @@ function App() {
       skipDedup?: boolean;
       colorFileIds?: Set<string> | null;
       imageSearchIds?: string[] | null;
+      grupos?: FiltroGrupo[];
     } = {}
   ) => {
     let filtered = [...baseFiles];
@@ -691,7 +707,7 @@ function App() {
     if (descartadas.size > 0) {
       filtered = filtered.filter(f => !descartadas.has(f.id));
     }
-    const { searchQuery, searchTerms = currentSearchTerms, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds } = options;
+    const { searchQuery, searchTerms = currentSearchTerms, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds, grupos: gruposFiltro = filtrosGrupo } = options;
 
     // Coincidencia de texto (substring, sin acentos) sobre nombre, nombre de
     // presentacion, CARPETA contenedora y tags. La carpeta es lo que hace
@@ -793,6 +809,12 @@ function App() {
       });
     }
 
+    // 5-bis. Grupos (@familia): cada grupo con su propia tolerancia. Varios
+    // grupos a la vez se suman como todo lo demas (AND).
+    if (gruposFiltro && gruposFiltro.length > 0) {
+      filtered = filtered.filter(file => gruposFiltro.every(g => cumple(file, g, presenciaDia)));
+    }
+
     // 5b. Filtro por color — fileIds devueltos por /api/search/by-color
     if (colorFileIds && colorFileIds.size > 0) {
       filtered = filtered.filter(file => colorFileIds.has(file.id));
@@ -883,7 +905,7 @@ function App() {
       resetInfiniteScroll();
       console.log(`📜 Scroll reseteado por cambio de filtros: ${currentCount} -> ${newCount} archivos`);
     }
-  }, [mediaFiles, selectedPersonIds, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, ecoActivo, descartadas]);
+  }, [mediaFiles, selectedPersonIds, filtrosGrupo, presenciaDia, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, ecoActivo, descartadas]);
 
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
@@ -931,6 +953,13 @@ function App() {
     return () => clearInterval(cacheInterval);
   }, []);
 
+  // Señal para que PersonBubbles vuelva a pedir /api/persons cuando el
+  // catalogo se recarga (sync_complete, persons_refresh...). Al abrir
+  // Pensadero el backend ya escucha pero el agregado de personas todavia
+  // esta vacio (se calcula al terminar el sync inicial); sin esto la barra
+  // se quedaba en "sin personas" hasta refrescar la pagina a mano.
+  const [personsRefreshKey, setPersonsRefreshKey] = useState(0);
+
   // Función auxiliar para recargar archivos después de sincronización
   const reloadFilesAfterSync = async () => {
     try {
@@ -958,6 +987,7 @@ function App() {
         });
         setFilteredFiles(filtered);
         setLastSync(new Date());
+        setPersonsRefreshKey(k => k + 1);
         console.log(`✅ ${files.length} archivos cargados después de sincronización`);
       }
     } catch (error) {
@@ -2612,6 +2642,7 @@ function App() {
     setExcludedTags([]);
     setSelectedTypes([]);
     setSelectedPersonIds([]);
+    setGruposActivos([]);
     setShowFavoritesOnly(false);
     setNaturalSearchIds(null);
     setColorFilterFileIds(null);
@@ -2950,6 +2981,26 @@ function App() {
     }
   };
 
+  /**
+   * Cuantos archivos saldrian con cada minimo del grupo (y en los dos modos),
+   * con todos los demas filtros puestos. Lo pinta el selector del chip.
+   */
+  const contarGrupo = (id: string) => {
+    const grupo = grupos.find(g => g.id === id);
+    if (!grupo) return null;
+    const base = applyAllFilters(mediaFiles, {
+      searchQuery: currentSearchQuery,
+      searchFilters: currentSearchFilters || undefined,
+      tags: includedTags,
+      excludeTags: excludedTags,
+      types: selectedTypes,
+      personIds: selectedPersonIds,
+      favoritesOnly: showFavoritesOnly,
+      grupos: filtrosGrupo.filter(f => f.id !== id),
+    });
+    return { ...niveles(base, grupo.miembros, presenciaDia), minimo: minimoDe(grupo) };
+  };
+
   // ── Smart Empty State: "remove-one" diagnostic ─────────────────────────
   const computeFilterDiagnostic = () => {
     // Determine unfiltered base
@@ -2996,6 +3047,26 @@ function App() {
     for (const pid of selectedPersonIds) {
       const count = applyAllFilters(baseFiles, { ...opts, personIds: selectedPersonIds.filter(o => o !== pid) }).length;
       if (count > 0) candidates.push({ label: 'Quitar filtro', chipText: pid, count, onRemove: () => setSelectedPersonIds(prev => prev.filter(o => o !== pid)) });
+    }
+    // Grupos: primero lo menos drastico, pedir menos gente; si ni con uno
+    // sale nada, quitar el grupo.
+    for (const f of filtrosGrupo) {
+      const grupo = grupos.find(g => g.id === f.id);
+      if (!grupo) continue;
+      const otros = filtrosGrupo.filter(o => o.id !== f.id);
+      const sinEl = applyAllFilters(baseFiles, { ...opts, grupos: otros });
+      const porNivel = niveles(sinEl, f.miembros, presenciaDia)[f.modo];
+      let menos = -1;
+      for (let k = f.minimo - 1; k >= 1; k--) if (porNivel[k - 1] > 0) { menos = k; break; }
+      if (menos > 0) {
+        const n = menos;
+        candidates.push({
+          label: 'Pedir menos gente', chipText: `${grupo.nombre}: ${n} de ${f.miembros.length}`, count: porNivel[n - 1],
+          onRemove: () => { actualizarGrupo(grupo.id, { minimo: n }).catch(() => {}); },
+        });
+      } else if (sinEl.length > 0) {
+        candidates.push({ label: 'Quitar grupo', chipText: grupo.nombre, count: sinEl.length, onRemove: () => setGruposActivos(prev => prev.filter(o => o !== f.id)) });
+      }
     }
     // Favorites
     if (showFavoritesOnly) {
@@ -3283,6 +3354,12 @@ function App() {
               onSelectFile={openFile}
               onFilterByPerson={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
               onVerLineaDeVida={(personId) => navigate('/persona/' + encodeURIComponent(personId) + '/vida')}
+              onVerGrupo={(grupoId) => {
+                // Como "ver a esta persona": el grupo solo, sin caras sueltas.
+                setSelectedPersonIds([]);
+                setGruposActivos([grupoId]);
+                navigate('/');
+              }}
             />
           );
 
@@ -3389,6 +3466,11 @@ function App() {
                         onRemovePerson={(pid) => {
                           setSelectedPersonIds(prev => prev.filter(id => id !== pid));
                         }}
+                        grupos={grupos}
+                        gruposActivos={gruposActivos}
+                        onAddGroup={(id) => setGruposActivos(prev => prev.includes(id) ? prev : [...prev, id])}
+                        onRemoveGroup={(id) => setGruposActivos(prev => prev.filter(o => o !== id))}
+                        contarGrupo={contarGrupo}
                         onNaturalSearch={(fileIds, _intent, primaryCount) => {
                           setNaturalSearchIds(fileIds);
                           setNaturalSearchPrimaryCount(typeof primaryCount === 'number' ? primaryCount : (fileIds?.length ?? 0));
@@ -3493,7 +3575,11 @@ function App() {
                   <PersonBubbles
                     selectedPersonIds={selectedPersonIds}
                     onSelectionChange={setSelectedPersonIds}
+                    grupos={grupos}
+                    gruposActivos={gruposActivos}
+                    onGruposChange={setGruposActivos}
                     onVerLineaDeVida={(pid) => navigate('/persona/' + encodeURIComponent(pid) + '/vida')}
+                    refreshKey={personsRefreshKey}
                   />
                 </div>
               )}
@@ -3862,6 +3948,7 @@ function App() {
     excludedTags.length > 0 ||
     selectedTypes.length > 0 ||
     selectedPersonIds.length > 0 ||
+    gruposActivos.length > 0 ||
     naturalSearchIds !== null ||
     showFavoritesOnly ||
     colorFilterHex !== null ||

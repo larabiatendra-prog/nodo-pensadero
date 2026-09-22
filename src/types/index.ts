@@ -36,6 +36,21 @@ export interface Person {
   avatar_url: string | null;
 }
 
+/**
+ * Varias personas con un nombre ("Familia"), para buscarlas juntas con
+ * @familia. Como se decide si un archivo es "del grupo": src/utils/grupos.ts.
+ */
+export interface GrupoPersonas {
+  id: string;
+  nombre: string;
+  miembros: string[];
+  /** Cuantos tienen que salir. null = el de fabrica (70%, hacia arriba). */
+  minimo: number | null;
+  /** 'archivo' (de fabrica): en la misma foto o video. 'dia': a lo largo del dia. */
+  modo: 'dia' | 'archivo';
+  creado: string;
+}
+
 export interface MediaFile {
   id: string;
   name: string;

@@ -40,6 +40,7 @@ const { getInstance: getFaceService, decodeEmbedding } = require('../services/fa
 const faceReidentifier = require('../services/faceReidentifier');
 const faceClusterer = require('../services/faceClusterer');
 const olvidados = require('../services/olvidados');
+const grupos = require('../services/grupos');
 const sharp = require('sharp');
 const { spawn } = require('child_process');
 const os = require('os');
@@ -304,6 +305,10 @@ module.exports = function createPersonsManageRoutes(deps) {
 
     // Las caras del borrado vuelven a ser "desconocidas": invalidar discovery.
     faceClusterer.invalidateCache();
+
+    // Y de los grupos en los que estaba. Si falla no se deshace el borrado: la
+    // lista de grupos ya esconde a quien no existe (ver gruposRoutes).
+    grupos.quitarMiembro(personId).catch(err => console.warn('[persons-delete] grupos:', err.message));
 
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
 
@@ -709,6 +714,9 @@ module.exports = function createPersonsManageRoutes(deps) {
     await faceSvc.loadAllEmbeddings(state.avatarsBase).catch(() => {});
     faceClusterer.invalidateCache();
     if (typeof recomputePersonsAggregate === 'function') recomputePersonsAggregate();
+
+    // 4b) En los grupos donde estaba la perdedora pasa a estar la superviviente.
+    await grupos.renombrarMiembro(loser_id, survivor_id).catch(err => console.warn('[person-merge] grupos:', err.message));
 
     // 5) Background: reasignar caras del perdedor en catalogos + retrain + sync.
     setImmediate(async () => {

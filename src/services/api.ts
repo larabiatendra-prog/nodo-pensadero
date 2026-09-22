@@ -1,5 +1,5 @@
 import { config } from '../config';
-import type { MediaFile } from '../types';
+import type { GrupoPersonas, MediaFile } from '../types';
 
 const API_BASE_URL = config.apiBaseUrl;
 
@@ -1011,6 +1011,31 @@ class ApiService {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/persons/registry`, {
       method: 'POST',
       body: JSON.stringify(person),
+    });
+  }
+
+  // ── Grupos de personas ("Familia"...) ────────────────────────────────────
+  async getGrupos() {
+    return this.fetchWithErrorHandling<ApiResponse<GrupoPersonas[]>>(`${API_BASE_URL}/grupos`);
+  }
+
+  async crearGrupo(datos: { nombre: string; miembros: string[] }) {
+    return this.fetchWithErrorHandling<ApiResponse<GrupoPersonas>>(`${API_BASE_URL}/grupos`, {
+      method: 'POST',
+      body: JSON.stringify(datos),
+    });
+  }
+
+  async actualizarGrupo(id: string, parcial: Partial<Pick<GrupoPersonas, 'nombre' | 'miembros' | 'minimo' | 'modo'>>) {
+    return this.fetchWithErrorHandling<ApiResponse<GrupoPersonas>>(`${API_BASE_URL}/grupos/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(parcial),
+    });
+  }
+
+  async borrarGrupo(id: string) {
+    return this.fetchWithErrorHandling<ApiResponse<unknown>>(`${API_BASE_URL}/grupos/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     });
   }
 

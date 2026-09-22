@@ -51,6 +51,7 @@ const createNotesRoutes = require('./routes/notesRoutes');
 const createOcultosRoutes = require('./routes/ocultosRoutes');
 const createProxiesRoutes = require('./routes/proxiesRoutes');
 const createPersonaArchivosRoutes = require('./routes/personaArchivosRoutes');
+const createGruposRoutes = require('./routes/gruposRoutes');
 const ocultosManager = require('./ocultosManager');
 const portada = require('./services/portada');
 
@@ -1355,6 +1356,9 @@ app.use('/api', createPersonaArchivosRoutes({
   syncFiles,
   broadcastProgress,
 }));
+
+// === GRUPOS DE PERSONAS ("Familia", "Rodaje"...: se buscan con @nombre) ===
+app.use('/api', createGruposRoutes());
 
 // Registry de espacios + training del centroide CLIP por espacio.
 const spacesManageRoutes = createSpacesManageRoutes({

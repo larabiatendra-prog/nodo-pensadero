@@ -1,13 +1,27 @@
-import React, { useEffect, useState } from 'react';
-import { GitCommitVertical } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { GitCommitVertical, Users, X } from 'lucide-react';
+import toast from 'react-hot-toast';
 import config from '../config';
-import type { Person } from '../types';
+import type { GrupoPersonas, Person } from '../types';
+import { GrupoAvatares } from './GrupoChip';
+import { crearGrupo } from '../hooks/useGrupos';
+import { minimoDe } from '../utils/grupos';
 
 interface PersonBubblesProps {
   selectedPersonIds: string[];
   onSelectionChange: (personIds: string[]) => void;
+  /** Grupos ("Familia"...): van delante de las caras y se activan igual. */
+  grupos?: GrupoPersonas[];
+  gruposActivos?: string[];
+  onGruposChange?: (ids: string[]) => void;
   /** Abre la linea de vida de una persona (solo se ofrece con una sola activa). */
   onVerLineaDeVida?: (personId: string) => void;
+  /** Cambia (incrementa) cuando el catalogo se recarga tras un sync o un
+   * cambio de registry: repite la carga de /api/persons. Al abrir Pensadero
+   * el agregado del backend puede seguir vacio (se calcula al terminar el
+   * sync inicial); sin esto la barra se quedaba en "sin personas" hasta
+   * refrescar la pagina a mano. */
+  refreshKey?: number;
 }
 
 // Hash estable de un string a un entero no negativo (para derivar color)
@@ -44,7 +58,36 @@ function avatarFullUrl(relativePath: string): string {
 const MIN_BUBBLES = 10;
 const MAX_BUBBLES = 28;
 
-export default function PersonBubbles({ selectedPersonIds, onSelectionChange, onVerLineaDeVida }: PersonBubblesProps) {
+export default function PersonBubbles({ selectedPersonIds, onSelectionChange, grupos = [], gruposActivos = [], onGruposChange, onVerLineaDeVida, refreshKey }: PersonBubblesProps) {
+  // "Guardar como grupo" con varias caras elegidas: el nombre se escribe aqui mismo.
+  const [nombrando, setNombrando] = useState(false);
+  const [nombreGrupo, setNombreGrupo] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const nombreRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (nombrando) nombreRef.current?.focus(); }, [nombrando]);
+  useEffect(() => { if (selectedPersonIds.length < 2) setNombrando(false); }, [selectedPersonIds.length]);
+
+  const guardarGrupo = async () => {
+    const nombre = nombreGrupo.trim();
+    if (!nombre || guardando) return;
+    setGuardando(true);
+    try {
+      const grupo = await crearGrupo(nombre, selectedPersonIds);
+      toast.success(`Grupo «${grupo.nombre}» guardado. Búscalo con @${grupo.nombre.toLowerCase()}`);
+      setNombrando(false);
+      setNombreGrupo('');
+    } catch (err) {
+      toast.error((err as Error).message || 'No se ha podido guardar el grupo');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const alternarGrupo = (id: string) => {
+    if (!onGruposChange) return;
+    onGruposChange(gruposActivos.includes(id) ? gruposActivos.filter(g => g !== id) : [...gruposActivos, id]);
+  };
+  const gruposVisibles = grupos.filter(g => g.miembros.length > 0);
   const [persons, setPersons] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -56,6 +99,7 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, on
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(false);
     fetch(`${config.apiBaseUrl}/persons`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -77,18 +121,18 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, on
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshKey]);
 
   // ESC limpia la selección
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && selectedPersonIds.length > 0) {
-        onSelectionChange([]);
-      }
+      if (e.key !== 'Escape' || nombrando) return;
+      if (selectedPersonIds.length > 0) onSelectionChange([]);
+      if (gruposActivos.length > 0) onGruposChange?.([]);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedPersonIds, onSelectionChange]);
+  }, [selectedPersonIds, onSelectionChange, gruposActivos, onGruposChange, nombrando]);
 
   const togglePerson = (personId: string) => {
     if (selectedPersonIds.includes(personId)) {
@@ -144,6 +188,37 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, on
 
   return (
     <div className="flex flex-wrap gap-3 items-center">
+      {onGruposChange && gruposVisibles.map(grupo => {
+        const activo = gruposActivos.includes(grupo.id);
+        const total = grupo.miembros.length;
+        const minimo = minimoDe(grupo);
+        const nombres = grupo.miembros.map(id => persons.find(p => p.person_id === id)?.display_name || id).join(', ');
+        return (
+          <button
+            key={`grupo-${grupo.id}`}
+            onClick={() => alternarGrupo(grupo.id)}
+            title={`${grupo.nombre}: ${nombres}`}
+            className={`group inline-flex items-center gap-2 h-12 pl-1.5 pr-4 rounded-full transition-all duration-200 ${
+              activo
+                ? 'bg-lavanda text-noche ring-2 ring-lavanda ring-offset-2 ring-offset-noche'
+                : 'bg-pizarra text-niebla hover:text-marfil hover:bg-grafito'
+            }`}
+          >
+            <span className={activo ? '' : 'grayscale group-hover:grayscale-0 transition-[filter]'}>
+              <GrupoAvatares grupo={grupo} persons={persons} tam={30} borde={activo ? 'border-lavanda' : 'border-pizarra'} />
+            </span>
+            <span className="text-left leading-tight">
+              <span className="block text-[13px] font-semibold max-w-[120px] truncate">{grupo.nombre}</span>
+              <span className={`block text-[10px] tabular-nums ${activo ? 'text-noche/60' : 'text-humo'}`}>
+                {minimo === total ? `los ${total}` : `${minimo} de ${total}`}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+      {onGruposChange && gruposVisibles.length > 0 && (
+        <span aria-hidden className="w-px h-8 bg-borde-sutil mx-0.5" />
+      )}
       {visiblePersons.map(person => {
         const isSelected = selectedPersonIds.includes(person.person_id);
         const showFallback = !person.avatar_url || brokenAvatars.has(person.person_id);
@@ -217,6 +292,50 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, on
           </button>
         );
       })()}
+      {/* Varias caras elegidas: se pueden guardar como grupo para no tener
+          que volver a elegirlas una a una. */}
+      {onGruposChange && selectedPersonIds.length >= 2 && !nombrando && (
+        <button
+          onClick={() => setNombrando(true)}
+          title="Guardar a estas personas como un grupo (Familia, Rodaje…)"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-pizarra text-lavanda hover:bg-lavanda hover:text-noche transition-colors"
+        >
+          <Users className="w-3.5 h-3.5" />
+          Guardar como grupo
+        </button>
+      )}
+      {nombrando && (
+        <form
+          onSubmit={(e) => { e.preventDefault(); guardarGrupo(); }}
+          className="flex items-center gap-1.5 pl-3 pr-1 h-9 rounded-full bg-pizarra border border-lavanda/50"
+        >
+          <Users className="w-3.5 h-3.5 text-lavanda flex-shrink-0" />
+          <input
+            ref={nombreRef}
+            value={nombreGrupo}
+            onChange={(e) => setNombreGrupo(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setNombrando(false); } }}
+            placeholder={`Nombre para estas ${selectedPersonIds.length}`}
+            maxLength={40}
+            className="w-44 bg-transparent outline-none text-sm text-marfil placeholder:text-humo"
+          />
+          <button
+            type="submit"
+            disabled={!nombreGrupo.trim() || guardando}
+            className="h-7 px-3 rounded-full text-xs font-semibold bg-lavanda text-noche disabled:opacity-40"
+          >
+            {guardando ? 'Guardando…' : 'Guardar'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setNombrando(false)}
+            className="h-7 w-7 rounded-full flex items-center justify-center text-humo hover:text-marfil"
+            title="Cancelar"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </form>
+      )}
       {hiddenBeyondMaxCount > 0 && (
         <span className="text-xs text-humo italic ml-1">
           +{hiddenBeyondMaxCount} mas · busca con <span className="font-mono text-lavanda-archivo not-italic">@nombre</span>

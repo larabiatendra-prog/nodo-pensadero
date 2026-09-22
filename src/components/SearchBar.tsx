@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
-import { X, Tag, Calendar, MinusCircle, Sparkles, Loader2, AtSign, User, Search } from 'lucide-react';
+import { X, Tag, Calendar, MinusCircle, Sparkles, Loader2, AtSign, User, Users, Search } from 'lucide-react';
 import { MentionsInput, Mention } from 'react-mentions';
-import { SearchFilters, Person } from '../types';
+import { SearchFilters, Person, GrupoPersonas } from '../types';
+import GrupoChip, { GrupoAvatares, type NivelesGrupo } from './GrupoChip';
+import { minimoDe } from '../utils/grupos';
 import { buildApiUrl, API_CONFIG } from '../config';
 import { api } from '../services/api';
 import config from '../config';
@@ -55,7 +57,16 @@ interface SearchBarProps {
   selectedPersonIds?: string[];
   onAddPerson?: (personId: string) => void;
   onRemovePerson?: (personId: string) => void;
+  // Grupos (@familia): salen en la misma @ que las personas, delante.
+  grupos?: GrupoPersonas[];
+  gruposActivos?: string[];
+  onAddGroup?: (grupoId: string) => void;
+  onRemoveGroup?: (grupoId: string) => void;
+  contarGrupo?: (grupoId: string) => NivelesGrupo | null;
 }
+
+/** Prefijo con el que un grupo viaja dentro del texto del modo natural. */
+const PREFIJO_GRUPO = 'grupo:';
 
 type SearchMode = 'tags' | 'natural';
 
@@ -66,7 +77,7 @@ export interface SearchBarHandle {
   reset: () => void;
 }
 
-const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson }, ref) {
+const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson, grupos = [], gruposActivos = [], onAddGroup, onRemoveGroup, contarGrupo }, ref) {
   const [query, setQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -178,6 +189,13 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
   const isPersonMention = !isNatural && query.startsWith('@');
   const personMentionQuery = isPersonMention ? query.slice(1).trim() : '';
 
+  const grupoSuggestions: GrupoPersonas[] = isPersonMention && onAddGroup
+    ? grupos
+        .filter(g => !gruposActivos.includes(g.id) && g.miembros.length > 0)
+        .filter(g => !personMentionQuery || normalizeString(g.nombre).includes(normalizeString(personMentionQuery)))
+        .slice(0, 4)
+    : [];
+
   const personSuggestions: Person[] = isPersonMention
     ? persons
         .filter(p => !selectedPersonIds.includes(p.person_id))
@@ -192,14 +210,19 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
   // Datos para el MentionsInput (modo natural). El campo `display` es lo
   // que la lib filtra y muestra; `avatar_url` y `count` los usamos en
   // renderSuggestion. Excluimos las ya seleccionadas para no duplicar.
-  const personsMentionsData = persons
-    .filter(p => !selectedPersonIds.includes(p.person_id))
-    .map(p => ({
-      id: p.person_id,
-      display: p.display_name,
-      avatar_url: p.avatar_url,
-      count: p.count,
-    }));
+  const personsMentionsData = [
+    ...grupos
+      .filter(g => !gruposActivos.includes(g.id) && g.miembros.length > 0)
+      .map(g => ({ id: PREFIJO_GRUPO + g.id, display: g.nombre, grupo: g })),
+    ...persons
+      .filter(p => !selectedPersonIds.includes(p.person_id))
+      .map(p => ({
+        id: p.person_id,
+        display: p.display_name,
+        avatar_url: p.avatar_url,
+        count: p.count,
+      })),
+  ];
 
   // Filter suggestions based on query from real backend data (accent-insensitive)
   const suggestions = isPersonMention ? [] : (tagsData?.allTags || []).filter(tag =>
@@ -306,6 +329,12 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     // y mantiene coherencia con el modo tags.
     const newIds: string[] = [];
     for (const m of naturalMentions) {
+      if (m.id.startsWith(PREFIJO_GRUPO)) {
+        // Un grupo no es una persona para el buscador: se queda como chip y
+        // filtra encima de lo que devuelva, con su propia tolerancia.
+        onAddGroup?.(m.id.slice(PREFIJO_GRUPO.length));
+        continue;
+      }
       if (!selectedPersonIds.includes(m.id) && !newIds.includes(m.id)) {
         newIds.push(m.id);
         onAddPerson?.(m.id);
@@ -441,11 +470,13 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
       e.preventDefault();
       // Modo @persona (tags): Enter selecciona la sugerencia resaltada o
       // la primera y promueve a chip.
-      if (isPersonMention && showSuggestions && personSuggestions.length > 0) {
-        const idx = selectedSuggestionIndex >= 0 && selectedSuggestionIndex < personSuggestions.length
+      const totalMencion = grupoSuggestions.length + personSuggestions.length;
+      if (isPersonMention && showSuggestions && totalMencion > 0) {
+        const idx = selectedSuggestionIndex >= 0 && selectedSuggestionIndex < totalMencion
           ? selectedSuggestionIndex
           : 0;
-        addPerson(personSuggestions[idx].person_id);
+        if (idx < grupoSuggestions.length) addGroup(grupoSuggestions[idx].id);
+        else addPerson(personSuggestions[idx - grupoSuggestions.length].person_id);
         return;
       }
       // Smart Tag Matching: si hay una sugerencia de sinónimo resaltada con
@@ -484,7 +515,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const list = isPersonMention ? personSuggestions : (showSmartSuggestions ? smartSuggestions : suggestions);
+      const list = isPersonMention ? [...grupoSuggestions, ...personSuggestions] : (showSmartSuggestions ? smartSuggestions : suggestions);
       if (list.length > 0) {
         setSelectedSuggestionIndex(prev =>
           prev < list.length - 1 ? prev + 1 : 0
@@ -492,7 +523,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const list = isPersonMention ? personSuggestions : (showSmartSuggestions ? smartSuggestions : suggestions);
+      const list = isPersonMention ? [...grupoSuggestions, ...personSuggestions] : (showSmartSuggestions ? smartSuggestions : suggestions);
       if (list.length > 0) {
         setSelectedSuggestionIndex(prev =>
           prev > 0 ? prev - 1 : list.length - 1
@@ -511,6 +542,15 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
   const addPerson = (personId: string) => {
     if (!onAddPerson) return;
     onAddPerson(personId);
+    setQuery('');
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
+    setTimeout(() => { inputRef.current?.focus(); }, 50);
+  };
+
+  const addGroup = (grupoId: string) => {
+    if (!onAddGroup) return;
+    onAddGroup(grupoId);
     setQuery('');
     setShowSuggestions(false);
     setSelectedSuggestionIndex(-1);
@@ -667,6 +707,22 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
               Siempre visibles, también en modo Natural: las tags activas siguen
               filtrando AND sobre los resultados aunque la búsqueda sea LLM. */}
           <div className="flex flex-wrap items-center gap-2 flex-1">
+            {/* Grupos activos: el chip dice cuantos tienen que salir y, al
+                pulsarlo, deja cambiarlo viendo lo que saldria. */}
+            {gruposActivos.map(id => {
+              const grupo = grupos.find(g => g.id === id);
+              if (!grupo) return null;
+              return (
+                <GrupoChip
+                  key={`grupo-${id}`}
+                  grupo={grupo}
+                  persons={persons}
+                  contar={contarGrupo}
+                  onRemove={() => onRemoveGroup?.(id)}
+                />
+              );
+            })}
+
             {/* Personas activas — chips con avatar. Permiten quitar con la X. */}
             {selectedPersonIds.map(pid => {
               const person = persons.find(p => p.person_id === pid);
@@ -785,7 +841,19 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                   displayTransform={(_id: string, display: string) => `@${display}`}
                   markup="@[__display__](__id__)"
                   style={mentionPillStyle as any}
-                  renderSuggestion={(suggestion: any, _search: string, highlightedDisplay: React.ReactNode, _index: number, focused: boolean) => (
+                  renderSuggestion={(suggestion: any, _search: string, highlightedDisplay: React.ReactNode, _index: number, focused: boolean) => suggestion.grupo ? (
+                    <div className="flex items-center gap-2 px-2 py-1">
+                      <GrupoAvatares grupo={suggestion.grupo} persons={persons} tam={24} borde="border-tinta" />
+                      <div className="flex-1 min-w-0">
+                        <div className={`truncate ${focused ? 'text-noche font-medium' : 'text-marfil'}`}>
+                          {highlightedDisplay}
+                        </div>
+                        <div className={`text-xs ${focused ? 'text-noche/70' : 'text-bruma'}`}>
+                          Grupo · {suggestion.grupo.miembros.length} personas
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
                     <div className="flex items-center gap-2 px-2 py-1">
                       <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
                         {suggestion.avatar_url ? (
@@ -1002,16 +1070,44 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
           <div className="p-2">
             <div className="text-sm text-humo px-3 py-2 flex items-center gap-1">
               <AtSign className="w-3.5 h-3.5" />
-              Personas {personMentionQuery && <span className="text-bruma">· filtrando por "{personMentionQuery}"</span>}
+              {grupos.length > 0 ? 'Grupos y personas' : 'Personas'} {personMentionQuery && <span className="text-bruma">· filtrando por "{personMentionQuery}"</span>}
             </div>
-            {personSuggestions.length === 0 ? (
+            {grupoSuggestions.map((grupo, index) => {
+              const minimo = minimoDe(grupo);
+              const total = grupo.miembros.length;
+              const activo = index === selectedSuggestionIndex;
+              return (
+                <button
+                  key={`g-${grupo.id}`}
+                  onClick={() => addGroup(grupo.id)}
+                  className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
+                    activo ? 'bg-lavanda text-white' : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                  }`}
+                >
+                  <GrupoAvatares grupo={grupo} persons={persons} tam={28} borde={activo ? 'border-lavanda' : 'border-tinta'} />
+                  <div className="flex-1 min-w-0">
+                    <span className={`block truncate ${activo ? 'text-noche font-medium' : 'text-marfil'}`}>
+                      {grupo.nombre}
+                    </span>
+                    <span className={`text-xs ${activo ? 'text-noche/70' : 'text-bruma'}`}>
+                      Grupo · {minimo === total ? `los ${total}` : `al menos ${minimo} de ${total}`}
+                      {grupo.modo === 'dia' ? ', el mismo día' : ', en el mismo archivo'}
+                    </span>
+                  </div>
+                  <Users className={`w-4 h-4 flex-shrink-0 ${activo ? 'text-noche/70' : 'text-humo'}`} />
+                </button>
+              );
+            })}
+            {personSuggestions.length === 0 && grupoSuggestions.length === 0 ? (
               <div className="px-3 py-2 text-sm text-bruma">
                 {persons.length === 0
                   ? 'No hay personas entrenadas todavia'
-                  : 'Ninguna persona coincide con esa busqueda'}
+                  : 'Ninguna persona ni grupo coincide con esa busqueda'}
               </div>
             ) : (
-              personSuggestions.map((person, index) => (
+              personSuggestions.map((person, i) => {
+                const index = i + grupoSuggestions.length;
+                return (
                 <button
                   key={person.person_id}
                   onClick={() => addPerson(person.person_id)}
@@ -1046,7 +1142,15 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                     </span>
                   </div>
                 </button>
-              ))
+                );
+              })
+            )}
+            {/* Sin grupos todavia: decir que existen, que si no nadie los encuentra. */}
+            {grupos.length === 0 && persons.length >= 2 && (
+              <p className="px-3 pt-2 pb-1 text-[11px] text-humo border-t border-borde-sutil mt-1">
+                Puedes juntar personas en un grupo (Familia, Rodaje…) desde Personas o
+                eligiendo varias caras, y buscarlas juntas con @familia.
+              </p>
             )}
           </div>
         </div>

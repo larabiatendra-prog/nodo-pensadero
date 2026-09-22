@@ -19,7 +19,6 @@ const crypto = require('crypto');
 
 // Analizador de colores (stateless - se importa directamente)
 const colorAnalyzer = require('../colorAnalyzer');
-const { atomicWriteFile, quarantineCorrupt } = require('../utils/jsonStore');
 const mediaIdentity = require('../utils/mediaIdentity');
 // Piezas que /api/health interroga. Singletons: importarlas aqui no arranca
 // nada (CLIP y caras son de inicio perezoso).
@@ -29,84 +28,133 @@ const { getInstance: getFaceService } = require('../services/faceService');
 const runtime = require('../config/runtime');
 const fallos = require('../utils/failureReason');
 const escaneoConfig = require('../services/escaneoConfig');
+const scanOrchestrator = require('../services/scanOrchestrator');
+const volumen = require('../utils/volumen');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
  * @param {Object} deps - Dependencias del servidor principal
  * @param {Function} deps.getMediaFiles - Obtiene la lista de archivos
- * @param {Function} deps.setMediaFiles - Establece la lista de archivos
  * @param {Function} deps.getCollections - Obtiene las colecciones
- * @param {Function} deps.broadcastProgress - Broadcast WebSocket
- * @param {Function} deps.saveCache - Guarda el cache de archivos
- * @param {Function} deps.scanDirectory - Escanea un directorio
- * @param {Function} deps.countMediaFiles - Cuenta archivos multimedia
- * @param {Function} deps.generateThumbnail - Genera thumbnail de archivos multimedia
+ * @param {Function} deps.broadcastProgress - Progreso por WebSocket
+ * @param {Function} deps.loadScanPaths - Lee scan_paths.json (la version UNICA, de server.js)
+ * @param {Function} deps.saveScanPaths - Lo guarda; LANZA si no puede
+ * @param {Function} deps.syncFiles - Sincroniza ({ soloIds } para unas rutas)
+ * @param {Function} deps.remapearBiblioteca - Lleva cache, miniaturas e identidades a la ruta nueva
  * @param {string} deps.CONTENT_DIR - Directorio de contenido principal
+ * @param {Function} [deps.alCambiarRutas] - Tras editar una ruta (p. ej. marcarla como copia de seguridad)
  */
 module.exports = function createSystemRoutes(deps) {
   const {
     getMediaFiles,
-    setMediaFiles,
     getCollections,
     broadcastProgress,
-    saveCache,
-    scanDirectory,
-    countMediaFiles,
-    generateThumbnail,
-    CONTENT_DIR
+    loadScanPaths,
+    saveScanPaths,
+    syncFiles,
+    remapearBiblioteca,
+    CONTENT_DIR,
+    alCambiarRutas,
   } = deps;
-
-  // Archivo para persistir configuración de rutas
-  const PATHS_CONFIG_FILE = path.join(__dirname, '..', 'scan_paths.json');
 
   // ============================================
   // FUNCIONES AUXILIARES PARA SCAN-PATHS
   // ============================================
+  // Leer y guardar las rutas es cosa de server.js: aqui habia una copia propia
+  // que se habia separado de la de la sincronizacion (una migraba el esquema y
+  // la otra no; una tragaba los fallos al guardar y la otra tambien).
 
   /**
-   * Cargar configuración de rutas
+   * Las rutas para enseñar. Sin ninguna configurada, la carpeta por defecto
+   * (CONTENT_DIR) si existe: es la que sincroniza el servidor en ese caso.
    */
-  async function loadScanPaths() {
-    const exists = await fs.access(PATHS_CONFIG_FILE).then(() => true).catch(() => false);
-    if (exists) {
-      const data = await fs.readFile(PATHS_CONFIG_FILE, 'utf-8').catch(() => null);
-      if (data !== null) {
-        try {
-          // Migracion in-memory al esquema portable (reutiliza el `id` existente
-          // como libraryId, rellena displayName/role si faltan). No reescribe el
-          // archivo aqui: se persiste en el proximo saveScanPaths (sync/toggle).
-          return mediaIdentity.migrateScanPaths(JSON.parse(data));
-        } catch (error) {
-          // Corrupto y NO regenerable: cuarentena en vez de devolver el default
-          // (que un saveScanPaths posterior persistiría, borrando las bibliotecas).
-          console.error(`❌ scan_paths.json corrupto: ${error.message}`);
-          await quarantineCorrupt(PATHS_CONFIG_FILE);
-        }
-      }
-    }
-
-    // Configuración por defecto
-    const mediaFiles = getMediaFiles();
+  async function rutasParaMostrar() {
+    const paths = await loadScanPaths();
+    if (paths.length > 0 || !CONTENT_DIR) return paths;
+    const existe = await fs.access(CONTENT_DIR).then(() => true).catch(() => false);
+    if (!existe) return [];
     return [mediaIdentity.ensureScanPathSchema({
       id: 'default',
       path: CONTENT_DIR,
       isActive: true,
-      lastScan: new Date().toISOString(),
-      fileCount: mediaFiles.length,
-      status: 'connected'
+      lastScan: null,
+      fileCount: getMediaFiles().length,
+      status: 'connected',
     })];
   }
 
+  /** Respuesta de error con la causa en cristiano (utils/failureReason). */
+  function responderFallo(res, operacion, err) {
+    const exp = fallos.explainFailure(err, { operacion });
+    return res.status(500).json({
+      success: false,
+      error: `No se pudo ${operacion}. ${exp.reason}${exp.hint ? ` ${exp.hint}` : ''}`,
+      causa: { reason: exp.reason, hint: exp.hint, code: exp.code },
+    });
+  }
+
+  /** Sincroniza unas rutas en segundo plano (no se espera: puede tardar minutos). */
+  function sincronizarLuego(ids) {
+    if (typeof syncFiles !== 'function') return;
+    syncFiles({ soloIds: ids }).catch(err => fallos.record('sincronizar tras cambiar las rutas', err));
+  }
+
+  const normRaiz = (p) => mediaIdentity.normalizeLibraryRoot(p);
+
   /**
-   * Guardar configuración de rutas (escritura atómica: tmp + rename)
+   * Valida una carpeta candidata a biblioteca. Devuelve { ruta } normalizada o
+   * { error, status, extra }.
+   * @param {Array} paths - las rutas configuradas
+   * @param {string|null} idPropio - la biblioteca que se esta editando (se ignora a si misma)
    */
-  async function saveScanPaths(paths) {
-    try {
-      await atomicWriteFile(PATHS_CONFIG_FILE, JSON.stringify(paths, null, 2));
-      console.log(`💾 Configuración de rutas guardada`);
-    } catch (error) {
-      console.error('❌ Error guardando rutas:', error.message);
+  async function validarCarpeta(entrada, paths, idPropio = null) {
+    if (typeof entrada !== 'string' || !entrada.trim()) {
+      return { status: 400, error: 'La ruta es requerida' };
     }
+    // Absoluta y sin barra final (salvo la raiz de una unidad): "d:\fotos\" y
+    // "D:\Fotos" eran dos bibliotecas distintas para la comprobacion de repetidas.
+    let ruta = path.resolve(entrada.trim().replace(/^"(.*)"$/, '$1'));
+    if (!/^[a-z]:\\$/i.test(ruta)) ruta = ruta.replace(/[\\/]+$/, '');
+    if (/^[a-z]:\\/i.test(ruta)) ruta = ruta[0].toUpperCase() + ruta.slice(1);
+
+    const st = await fs.stat(ruta).catch(() => null);
+    if (!st) return { status: 400, error: 'La ruta no existe o no es accesible' };
+    if (!st.isDirectory()) return { status: 400, error: 'Eso es un archivo, no una carpeta' };
+
+    const n = normRaiz(ruta);
+    for (const p of paths) {
+      if (!p || p.id === idPropio || !p.path) continue;
+      const o = normRaiz(p.path);
+      const nombre = p.displayName || p.path;
+      if (o === n) return { status: 400, error: `Esa carpeta ya es la biblioteca «${nombre}»` };
+      // Una biblioteca dentro de otra indexaba dos veces lo mismo, con dos
+      // identidades distintas (el 22/09/2026 se añadio D:\ con D:\(1) WORKS dentro).
+      if (n.startsWith(o + '\\') || (o.endsWith(':') && n.startsWith(o))) {
+        return { status: 400, error: `Esa carpeta ya está dentro de la biblioteca «${nombre}» (${p.path}), así que ya se sincroniza.` };
+      }
+      if (o.startsWith(n + '\\') || (n.endsWith(':') && o.startsWith(n))) {
+        return { status: 400, error: `Esa carpeta contiene la biblioteca «${nombre}» (${p.path}). Se indexaría dos veces: quita esa antes o elige otra carpeta.` };
+      }
+    }
+
+    // ¿Es el disco de una biblioteca que ya existe, con otra letra? Es lo que
+    // paso con E:\(1) WORKS el 22/09/2026: se añadio como nueva y lo de ese
+    // disco (favoritos, notas, colecciones) se quedo colgando de la vieja.
+    const serie = await volumen.serialDe(ruta);
+    if (serie) {
+      const resto = ruta.slice(2).toLowerCase();
+      const suya = paths.find(p => p && p.id !== idPropio && p.volumen === serie
+        && String(p.path || '').slice(2).toLowerCase() === resto
+        && normRaiz(p.path) !== n);
+      if (suya) {
+        return {
+          status: 409,
+          error: `Este disco ya está añadido como «${suya.displayName || suya.path}» (${suya.path}). Cambia su ubicación en vez de añadirlo otra vez, y no se pierde nada de lo suyo.`,
+          extra: { mismoDisco: { id: suya.id, nombre: suya.displayName || suya.path, ruta: suya.path, nuevaRuta: ruta } },
+        };
+      }
+    }
+    return { ruta, serie };
   }
 
   // ============================================
@@ -234,7 +282,7 @@ module.exports = function createSystemRoutes(deps) {
     // --- Bibliotecas: accesibles de verdad, comprobado ahora, no el estado
     // guardado de la ultima sincronizacion.
     try {
-      const paths = await loadScanPaths();
+      const paths = await rutasParaMostrar();
       const rutas = [];
       for (const p of paths) {
         let accesible = false;
@@ -242,9 +290,10 @@ module.exports = function createSystemRoutes(deps) {
           await fs.access(p.path);
           accesible = true;
         } catch { /* no accesible */ }
-        rutas.push({ path: p.path, displayName: p.displayName || null, isActive: p.isActive !== false, accesible });
+        // otroDisco: en esa letra hay un disco que no es el de la biblioteca.
+        rutas.push({ path: p.path, displayName: p.displayName || null, isActive: p.isActive !== false, accesible, otroDisco: p.status === 'otro_disco' });
       }
-      const rotas = rutas.filter(r => r.isActive && !r.accesible);
+      const rotas = rutas.filter(r => r.isActive && (!r.accesible || r.otroDisco));
       checks.bibliotecas = {
         ok: rotas.length === 0,
         total: rutas.length,
@@ -513,30 +562,38 @@ module.exports = function createSystemRoutes(deps) {
    */
   router.get('/scan-paths', async (req, res) => {
     try {
-      const paths = await loadScanPaths();
-      // Enriquecer cada ruta con cobertura de escaneo visual: cuantos de sus
-      // archivos media tienen `visual_description` (lo pone catalogReader cuando
-      // hay descripcion, sea del modelo VLM que sea). Se calcula sobre la lista
-      // en memoria (live), no sobre el fileCount persistido.
+      const paths = await rutasParaMostrar();
+      // Enriquecer cada ruta con su cobertura, sobre la lista en memoria (live),
+      // no sobre el fileCount persistido:
+      //  - visualTotal: lo que el escaneo mira (audio y formatos raros fuera;
+      //    antes contaban y salian como "faltan" para siempre).
+      //  - visualScanned: de eso, lo que tiene descripcion.
+      //  - pendientes: lo que le falta algun trabajo encendido AHORA en esa
+      //    ruta (antes solo se contaban descripciones, asi que con las caras
+      //    encendidas despues el boton de escanear salia apagado).
       const media = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
       // Normaliza para comparar prefijos en Windows: barras unificadas a "\",
       // minusculas y sin barra final.
       const norm = (s) => (s || '').replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
       const enriched = paths.map((p) => {
         const base = norm(p.path);
+        const caps = escaneoConfig.deRuta(p);
         let visualTotal = 0;
         let visualScanned = 0;
+        let pendientes = 0;
         if (base) {
           for (const f of media) {
             const fp = norm(f.fullPath);
             if (!fp || !(fp === base || fp.startsWith(base + '\\'))) continue;
+            if (!scanOrchestrator.esEscaneable(f.name || f.fullPath)) continue;
             visualTotal++;
             if (typeof f.visual_description === 'string' && f.visual_description.trim()) {
               visualScanned++;
             }
+            if (scanOrchestrator.archivoPendiente(f, caps)) pendientes++;
           }
         }
-        return { ...p, visualTotal, visualScanned, escaneoEfectivo: escaneoConfig.deRuta(p) };
+        return { ...p, visualTotal, visualScanned, pendientes, escaneoEfectivo: caps };
       });
       res.json({
         success: true,
@@ -553,229 +610,126 @@ module.exports = function createSystemRoutes(deps) {
 
   /**
    * POST /api/scan-paths
-   * Añade una nueva ruta de escaneo
+   * Añade una nueva ruta de escaneo, ya vinculada, y la sincroniza en segundo
+   * plano (antes habia que añadir, vincular y sincronizar a mano).
    */
   router.post('/scan-paths', async (req, res) => {
     try {
-      const { path: newPath } = req.body;
-
-      if (!newPath) {
-        return res.status(400).json({
-          success: false,
-          error: 'La ruta es requerida'
-        });
-      }
-
-      // Verificar que la ruta existe
-      try {
-        await fs.access(newPath);
-      } catch {
-        return res.status(400).json({
-          success: false,
-          error: 'La ruta no existe o no es accesible'
-        });
-      }
-
       const paths = await loadScanPaths();
-
-      // Verificar que no existe ya
-      if (paths.some(p => p.path === newPath)) {
-        return res.status(400).json({
-          success: false,
-          error: 'La ruta ya está configurada'
-        });
-      }
+      const v = await validarCarpeta(req.body && req.body.path, paths);
+      if (v.error) return res.status(v.status).json({ success: false, error: v.error, ...(v.extra || {}) });
 
       const newPathConfig = mediaIdentity.ensureScanPathSchema({
         id: crypto.randomBytes(8).toString('hex'),
-        path: newPath,
-        isActive: false,
+        path: v.ruta,
+        isActive: true,
         lastScan: null,
         fileCount: 0,
-        status: 'disconnected'
+        status: 'connected',
+        // El disco de esta biblioteca: si otro dia aparece en otra letra, se
+        // reconoce (ver utils/volumen.js).
+        ...(v.serie ? { volumen: v.serie } : {}),
       });
 
       paths.push(newPathConfig);
       await saveScanPaths(paths);
+      console.log(`✅ Nueva ruta añadida: ${v.ruta}`);
+      sincronizarLuego([newPathConfig.id]);
 
-      console.log(`✅ Nueva ruta añadida: ${newPath}`);
-
-      res.json({
-        success: true,
-        data: newPathConfig
-      });
+      res.json({ success: true, data: newPathConfig, sincronizando: true });
     } catch (error) {
-      console.error('❌ Error añadiendo ruta:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Error añadiendo ruta'
-      });
+      return responderFallo(res, 'añadir la ruta', error);
     }
   });
 
   /**
    * POST /api/scan-paths/:id/sync
-   * Sincroniza una ruta específica
+   * Sincroniza una ruta. Es la MISMA sincronizacion que la completa, limitada a
+   * esta biblioteca: nombres de carpeta, fecha, favoritos, archivos movidos...
+   * Antes tenia su propio camino, que se saltaba todo eso (sus archivos
+   * desaparecian de los filtros por año hasta reiniciar) y podia correr a la
+   * vez que otra sincronizacion.
    */
   router.post('/scan-paths/:id/sync', async (req, res) => {
     try {
       const { id } = req.params;
       const paths = await loadScanPaths();
       const pathConfig = paths.find(p => p.id === id);
-
       if (!pathConfig) {
-        return res.status(404).json({
-          success: false,
-          error: 'Ruta no encontrada'
-        });
+        return res.status(404).json({ success: false, error: 'Ruta no encontrada' });
       }
 
-      console.log(`🔄 Sincronizando ruta: ${pathConfig.path}`);
-
-      // Verificar que la ruta existe
       try {
         await fs.access(pathConfig.path);
       } catch {
-        return res.status(400).json({
-          success: false,
-          error: 'La ruta no existe o no es accesible'
-        });
+        return res.status(400).json({ success: false, error: 'La ruta no existe o no es accesible' });
       }
 
-      // Enviar progreso inicial
-      broadcastProgress({
-        type: 'sync_start',
-        status: `Escaneando ${pathConfig.path}...`,
-        percentage: 0
-      });
-
-      // Contar archivos primero
-      const totalFiles = await countMediaFiles(pathConfig.path);
-      console.log(`📊 Total de archivos multimedia en ${pathConfig.path}: ${totalFiles}`);
-
-      // Escanear archivos de esta ruta específica. Se pasa pathConfig.id como
-      // libraryId para que cada archivo reciba su mediaKey portable.
-      const scanResult = await scanDirectory(pathConfig.path, pathConfig.path, totalFiles, 0, pathConfig.id);
-
-      // Procesar miniaturas para videos nuevos
-      let videoCount = 0;
-      for (const file of scanResult.files) {
-        if (file.type === 'video' && !file.thumbnail) {
-          videoCount++;
-          broadcastProgress({
-            type: 'sync_progress',
-            fase: 'miniaturas',
-            archivo: file.name,
-            hechos: videoCount,
-            status: `Generando miniatura para video ${videoCount}...`,
-            percentage: Math.round((videoCount / scanResult.files.length) * 100)
-          });
-
-          try {
-            // generateThumbnail ya devuelve la URL final (/api/thumbnails/:id).
-            // El thumbnail se guarda junto al archivo, en su .pensadero.
-            file.thumbnail = await generateThumbnail(file.fullPath, file.id, file.name);
-          } catch (error) {
-            console.error(`Error generando miniatura para ${file.name}:`, error);
-          }
-        }
+      // Sincronizar una ruta desvinculada es volver a vincularla.
+      if (!pathConfig.isActive) {
+        pathConfig.isActive = true;
+        await saveScanPaths(paths);
       }
 
-      // Añadir archivos encontrados a la lista global
-      // Primero eliminar archivos existentes de esta ruta
-      let mediaFiles = getMediaFiles();
-      mediaFiles = mediaFiles.filter(f => !f.fullPath || !f.fullPath.startsWith(pathConfig.path));
-
-      // Luego añadir los nuevos
-      mediaFiles.push(...scanResult.files);
-      setMediaFiles(mediaFiles);
-
-      console.log(`✅ Total de archivos en el sistema: ${mediaFiles.length}`);
-
-      // Actualizar configuración
-      // Sobre las rutas RELEIDAS: el recorrido puede haber tardado minutos y
-      // el usuario haber cambiado algo de otra ruta (o de esta) mientras.
-      const frescas = await loadScanPaths();
-      const destino = (Array.isArray(frescas) ? frescas : []).find(p => p.id === pathConfig.id) || pathConfig;
-      destino.lastScan = new Date().toISOString();
-      destino.fileCount = scanResult.files.length;
-      destino.status = 'connected';
-      destino.isActive = true;
-
-      await saveScanPaths(destino === pathConfig ? paths : frescas);
-
-      // Guardar cache si hay cambios
-      if (scanResult.stats.newFiles > 0 || scanResult.stats.modifiedFiles > 0) {
-        await saveCache();
+      console.log(`🔄 Sincronizando ruta: ${pathConfig.path}`);
+      const r = await syncFiles({ soloIds: [id] });
+      if (r && r.error) {
+        return res.status(500).json({ success: false, error: `No se pudo sincronizar: ${r.error}` });
       }
-
-      // Enviar progreso final
-      broadcastProgress({
-        type: 'sync_complete',
-        status: `✅ ${scanResult.files.length} archivos sincronizados`,
-        percentage: 100,
-        stats: scanResult.stats
-      });
-
+      const estado = (r && r.porBiblioteca && r.porBiblioteca[id]) || null;
+      if (estado && estado.status === 'otro_disco') {
+        return res.status(409).json({ success: false, error: estado.lastError, sugerencia: estado.sugerencia });
+      }
+      if (estado && estado.status === 'disconnected') {
+        return res.status(409).json({ success: false, error: estado.lastError || 'El disco se ha desconectado' });
+      }
+      const fileCount = estado ? estado.fileCount : null;
       res.json({
         success: true,
-        fileCount: scanResult.files.length,
-        message: `${scanResult.files.length} archivos sincronizados`,
-        stats: scanResult.stats
+        fileCount,
+        aviso: estado && estado.lastError ? estado.lastError : undefined,
+        message: `${fileCount ?? 0} archivos sincronizados`,
+        stats: r ? r.stats : undefined,
+        reenlazados: r ? r.reenlazados : undefined,
       });
     } catch (error) {
-      console.error('❌ Error sincronizando ruta:', error);
-
-      broadcastProgress({
-        type: 'sync_error',
-        status: 'Error durante la sincronización',
-        percentage: 0,
-        error: error.message
-      });
-
-      res.status(500).json({
-        success: false,
-        error: 'Error sincronizando ruta'
-      });
+      broadcastProgress({ type: 'sync_error', status: 'Error durante la sincronización', percentage: 0, error: error.message });
+      return responderFallo(res, 'sincronizar la ruta', error);
     }
   });
 
   /**
    * PATCH /api/scan-paths/:id/toggle
-   * Cambia estado activo/inactivo de una ruta
+   * Vincula o desvincula una ruta. El estado es el real (si el disco no esta,
+   * "desconectada", no "conectada" por haberla vinculado) y la galeria se pone
+   * al dia sola: antes lo desvinculado seguia a la vista hasta reiniciar, y lo
+   * vinculado no aparecia hasta sincronizar a mano.
    */
   router.patch('/scan-paths/:id/toggle', async (req, res) => {
     try {
       const { id } = req.params;
-      const { isActive } = req.body;
+      const { isActive } = req.body || {};
+      if (typeof isActive !== 'boolean') {
+        return res.status(400).json({ success: false, error: 'isActive debe ser true o false' });
+      }
 
       const paths = await loadScanPaths();
       const pathConfig = paths.find(p => p.id === id);
-
       if (!pathConfig) {
-        return res.status(404).json({
-          success: false,
-          error: 'Ruta no encontrada'
-        });
+        return res.status(404).json({ success: false, error: 'Ruta no encontrada' });
       }
 
       pathConfig.isActive = isActive;
-      pathConfig.status = isActive ? 'connected' : 'disconnected';
+      const accesible = await fs.access(pathConfig.path).then(() => true).catch(() => false);
+      pathConfig.status = isActive && accesible ? 'connected' : 'disconnected';
 
       await saveScanPaths(paths);
-
       console.log(`✅ Ruta ${isActive ? 'activada' : 'desactivada'}: ${pathConfig.path}`);
+      sincronizarLuego([id]);
 
-      res.json({
-        success: true,
-        data: pathConfig
-      });
+      res.json({ success: true, data: pathConfig, sincronizando: true });
     } catch (error) {
-      console.error('❌ Error cambiando estado de ruta:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Error cambiando estado de ruta'
-      });
+      return responderFallo(res, 'cambiar la ruta', error);
     }
   });
 
@@ -785,14 +739,16 @@ module.exports = function createSystemRoutes(deps) {
    * REMAPEAR la raiz cuando cambia la letra de unidad o se mueve el disco:
    * D:\Fotos -> K:\Fotos. Como el libraryId no cambia y los relativePath de los
    * archivos siguen iguales, las mediaKey portables se conservan -> favoritos,
-   * notas y colecciones NO se pierden.
+   * notas y colecciones NO se pierden. Ademas se lleva la cache, las
+   * miniaturas y el indice visual a la ruta nueva (remapearBiblioteca), asi que
+   * no se reindexa nada. Antes este endpoint existia pero ningun boton lo usaba.
    *
-   * Body (todos opcionales): { path, displayName, role, isActive }
+   * Body (todos opcionales): { path, displayName, role, isActive, escaneo, copiaSeguridad }
    */
   router.patch('/scan-paths/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const { path: newPath, displayName, role, isActive, escaneo } = req.body || {};
+      const { path: newPath, displayName, role, isActive, escaneo, copiaSeguridad } = req.body || {};
 
       const paths = await loadScanPaths();
       const pathConfig = paths.find(p => p.id === id);
@@ -800,27 +756,32 @@ module.exports = function createSystemRoutes(deps) {
         return res.status(404).json({ success: false, error: 'Biblioteca no encontrada' });
       }
 
-      if (typeof newPath === 'string' && newPath.trim() && newPath !== pathConfig.path) {
-        // Validar accesibilidad de la nueva raiz antes de remapear.
-        try {
-          await fs.access(newPath);
-        } catch {
-          return res.status(400).json({ success: false, error: 'La nueva ruta no existe o no es accesible' });
+      let remapeo = null;
+      if (typeof newPath === 'string' && newPath.trim()) {
+        // Mismas reglas que al añadir: ni repetida, ni dentro de otra, ni el
+        // disco de OTRA biblioteca (serian dos bibliotecas para un disco).
+        const v = await validarCarpeta(newPath, paths, id);
+        if (v.error) return res.status(v.status).json({ success: false, error: v.error });
+        const ruta = v.ruta;
+        if (normRaiz(ruta) !== normRaiz(pathConfig.path)) {
+          remapeo = { vieja: pathConfig.path, nueva: ruta };
+          pathConfig.path = ruta;
+          pathConfig.status = isActive === false ? 'disconnected' : 'connected';
+          pathConfig.lastError = null;
+          pathConfig.sugerencia = null;
+          // El disco de la ruta nueva pasa a ser el de la biblioteca.
+          const serie = await volumen.serialDe(ruta);
+          if (serie) pathConfig.volumen = serie; else delete pathConfig.volumen;
+          console.log(`🔀 Biblioteca remapeada (id estable ${id}): ${remapeo.vieja} -> ${ruta}`);
         }
-        // Evitar duplicar la ruta de otra biblioteca.
-        if (paths.some(p => p.id !== id && p.path === newPath)) {
-          return res.status(400).json({ success: false, error: 'Esa ruta ya pertenece a otra biblioteca' });
-        }
-        pathConfig.path = newPath;
-        pathConfig.status = isActive === false ? 'disconnected' : 'connected';
-        console.log(`🔀 Biblioteca remapeada (id estable ${id}): ${newPath}`);
       }
 
       if (typeof displayName === 'string') pathConfig.displayName = displayName.trim() || mediaIdentity.defaultLibraryDisplayName(pathConfig.path);
       if (typeof role === 'string' || role === null) pathConfig.role = role || null;
       if (typeof isActive === 'boolean') {
         pathConfig.isActive = isActive;
-        pathConfig.status = isActive ? 'connected' : 'disconnected';
+        const accesible = await fs.access(pathConfig.path).then(() => true).catch(() => false);
+        pathConfig.status = isActive && accesible ? 'connected' : 'disconnected';
       }
       // Trabajos del escaneo propios de esta ruta: { caras: false } apaga,
       // { caras: null } vuelve a heredar del global.
@@ -829,18 +790,39 @@ module.exports = function createSystemRoutes(deps) {
         if (Object.keys(propio).length > 0) pathConfig.escaneo = propio;
         else delete pathConfig.escaneo;
       }
+      // Disco de copia de seguridad: sus copias exactas se esconden solas
+      // mientras el original este conectado (ver services/copiasExactas.js).
+      if (typeof copiaSeguridad === 'boolean') {
+        if (copiaSeguridad) pathConfig.copiaSeguridad = true;
+        else delete pathConfig.copiaSeguridad;
+      }
 
       await saveScanPaths(paths);
-      res.json({ success: true, data: pathConfig });
+
+      let movido = null;
+      if (remapeo && typeof remapearBiblioteca === 'function') {
+        try {
+          movido = await remapearBiblioteca(id, remapeo.vieja, remapeo.nueva);
+        } catch (err) {
+          // La ruta ya esta cambiada: lo peor es reindexar. Se dice y se sigue.
+          fallos.record('llevar la biblioteca a su nueva ubicacion', err, { path: remapeo.nueva });
+        }
+      }
+      if (typeof alCambiarRutas === 'function') {
+        try { await alCambiarRutas(); } catch (err) { fallos.record('aplicar el cambio de una ruta', err, {}); }
+      }
+      if (remapeo || typeof isActive === 'boolean') sincronizarLuego([id]);
+
+      res.json({ success: true, data: pathConfig, movido, sincronizando: !!(remapeo || typeof isActive === 'boolean') });
     } catch (error) {
-      console.error('❌ Error editando biblioteca:', error);
-      res.status(500).json({ success: false, error: 'Error editando biblioteca' });
+      return responderFallo(res, 'editar la biblioteca', error);
     }
   });
 
   /**
    * DELETE /api/scan-paths/:id
-   * Elimina una ruta de escaneo
+   * Quita una ruta (los archivos del disco no se tocan). Sus archivos salen de
+   * la galeria al momento; antes seguian a la vista hasta reiniciar.
    */
   router.delete('/scan-paths/:id', async (req, res) => {
     try {
@@ -853,7 +835,7 @@ module.exports = function createSystemRoutes(deps) {
         });
       }
 
-      let paths = await loadScanPaths();
+      const paths = await loadScanPaths();
       const index = paths.findIndex(p => p.id === id);
 
       if (index === -1) {
@@ -867,19 +849,15 @@ module.exports = function createSystemRoutes(deps) {
       paths.splice(index, 1);
 
       await saveScanPaths(paths);
-
       console.log(`🗑️ Ruta eliminada: ${removedPath.path}`);
+      sincronizarLuego([id]);
 
       res.json({
         success: true,
         message: 'Ruta eliminada correctamente'
       });
     } catch (error) {
-      console.error('❌ Error eliminando ruta:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Error eliminando ruta'
-      });
+      return responderFallo(res, 'quitar la ruta', error);
     }
   });
 

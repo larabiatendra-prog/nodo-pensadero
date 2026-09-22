@@ -132,6 +132,9 @@ module.exports = function createMediaRoutes(deps) {
   const getVisibles = typeof deps.getMediaFilesVisibles === 'function'
     ? deps.getMediaFilesVisibles
     : getMediaFiles;
+  const getAbribles = typeof deps.getMediaFilesAbribles === 'function'
+    ? deps.getMediaFilesAbribles
+    : getVisibles;
 
   // ============================================
   // ARCHIVOS - CRUD Y METADATOS
@@ -201,7 +204,7 @@ module.exports = function createMediaRoutes(deps) {
    * Obtiene un archivo específico por ID
    */
   router.get('/files/:id', (req, res) => {
-    const mediaFiles = getVisibles();
+    const mediaFiles = getAbribles();
     const file = mediaFiles.find(f => f.id === req.params.id);
     if (file) {
       res.json({ success: true, data: file });

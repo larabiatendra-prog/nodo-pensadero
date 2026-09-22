@@ -174,11 +174,50 @@ const SCANNABLE_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS]);
 
 function isVideoExt(ext) { return VIDEO_EXTS.has(ext.toLowerCase()); }
 
+/** ¿El escaneo con IA mira este archivo? (audio, exports raros... no). */
+function esEscaneable(nombre) {
+  return SCANNABLE_EXTS.has(path.extname(String(nombre || '')).toLowerCase());
+}
+
+/**
+ * ¿A este archivo le falta algun trabajo de los encendidos en `caps`? Mismo
+ * criterio que el filtro de scanFolder, pero sobre un MediaFile ya en memoria
+ * (su `escaneo` lo copia catalogReader). Lo usa Rutas para decir que queda de
+ * verdad: antes contaba solo descripciones, asi que con las caras encendidas
+ * despues el boton de escanear salia apagado, y los audios (que no se escanean
+ * nunca) salian como "faltan" para siempre.
+ */
+function archivoPendiente(file, caps) {
+  const nombre = file && (file.name || file.fullPath);
+  if (!nombre || !esEscaneable(nombre)) return false;
+  const esVideo = isVideoExt(path.extname(nombre));
+  const entrada = file.has_catalog ? { escaneo: file.escaneo } : null;
+  return TRABAJOS.some(cap => {
+    if (!caps || !caps[cap]) return false;
+    if (cap === 'movimiento' && !esVideo) return false;
+    return !trabajoHecho(entrada, cap);
+  });
+}
+
 // Jobs en curso: jobId → { status, total, done, errors, cancelRequested }
 const activeJobs = new Map();
 
 function makeJobId() {
   return `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Aparta un jobId ANTES de que el escaneo arranque. La ruta HTTP comprueba
+ * solapes y reserva en el mismo tic, sin await de por medio: si no, dos
+ * clics seguidos pasaban los dos el guard y lanzaban dos escaneos.
+ */
+function reservarJob(jobId, folderPath) {
+  const job = {
+    jobId, folderPath, status: 'running', fase: 'reservado',
+    total: 0, done: 0, errors: 0, cancelRequested: false, startedAt: Date.now(),
+  };
+  activeJobs.set(jobId, job);
+  return job;
 }
 
 /**
@@ -343,19 +382,82 @@ async function scanSingleFile(filePath, opts = {}) {
  *   - getMediaFiles, syncFiles: opcional, para refrescar memoria post-scan
  *   - jobId: string — id de tracking
  *   - singleFile: string — si se pasa, escanea solo ese archivo
- * @returns {Promise<{jobId, total, done, errors, written}>}
+ *   - forzarDesde: ISO — con force, no rehace lo escaneado desde esa fecha
+ *     (reanudar un re-escaneo cortado no repite lo ya hecho)
+ * @returns {Promise<{jobId, total, done, errors, written, carpetas}>}
  */
 async function scanFolder(folderPath, opts = {}) {
+  const jobId = opts.jobId || makeJobId();
+  const broadcastProgress = opts.broadcastProgress || (() => {});
+  // El job existe desde el primer momento, no tras cargar los modelos:
+  // levantar caras, CLIP y movimiento tarda decenas de segundos en frio, y en
+  // ese rato el escaneo era invisible para el guard de solapes (se podia
+  // lanzar otro sobre la misma carpeta) y "Detener" decia que no habia nada.
+  const job = activeJobs.get(jobId) || {};
+  Object.assign(job, {
+    jobId,
+    folderPath,
+    status: 'running',
+    fase: 'preparando',
+    total: 0,
+    done: 0,
+    errors: 0,
+    // Volcados que no se pudieron escribir. Se cuentan aparte de `errors`
+    // (fallos por archivo) porque significan otra cosa muy distinta: el
+    // trabajo se ha hecho y se esta PERDIENDO. Sale en scan_done con su causa.
+    escriturasFallidas: 0,
+    // Marca del registro de fallos al empezar, para poder contar solo los
+    // de ESTE job al cerrarlo.
+    marcaFallos: fallos.mark(),
+    cancelRequested: !!job.cancelRequested,
+    startedAt: Date.now(),
+    // Ventana movil de duraciones por archivo para estimar tiempo restante.
+    // Movil (no acumulada) porque fotos y videos tardan muy distinto y el
+    // cold-start del VLM en el primer archivo dispararia una media acumulada.
+    recentMs: [],
+    lastTickAt: Date.now(),
+  });
+  activeJobs.set(jobId, job);
+  try {
+    return await escanearCarpeta(folderPath, { ...opts, jobId, broadcastProgress }, job);
+  } catch (err) {
+    // Un fallo fuera del bucle por archivo (listar, leer catalogos...) dejaba
+    // el job en 'running' para siempre: bloqueaba el escaneo desde la tarjeta
+    // hasta reiniciar y la pantalla se quedaba escaneando.
+    job.status = 'error';
+    const exp = fallos.record('escanear la carpeta', err, { path: folderPath });
+    broadcastProgress({
+      type: 'scan_done',
+      jobId,
+      carpeta: folderPath,
+      estado: 'error',
+      status: `El escaneo se ha parado: ${exp.reason}`,
+      causaPrincipal: { reason: exp.reason, hint: exp.hint, code: exp.code },
+      total: job.total,
+      done: job.done,
+      errors: job.errors,
+      percentage: 100,
+    });
+    throw err;
+  } finally {
+    if (!job.finishedAt) job.finishedAt = Date.now();
+    // Conservar el job ~5 min para queries de status, luego liberar.
+    setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
+  }
+}
+
+async function escanearCarpeta(folderPath, opts, job) {
   const {
     force = false,
-    broadcastProgress = () => {},
-    jobId = makeJobId(),
+    broadcastProgress,
+    jobId,
     // singleFile: ruta absoluta. Si se pasa, escanea SOLO ese archivo (no
     // recorre el arbol). Lo usa scanSingleFile para el escaneo desde la tarjeta.
     singleFile = null,
     // Que trabajos se hacen (ver escaneoConfig). Sin nada, todos: es lo de
     // siempre para quien llame sin saber de interruptores.
     capacidades = null,
+    forzarDesde = null,
   } = opts;
   const caps = escaneoConfig.normalizar(capacidades);
 
@@ -426,30 +528,13 @@ async function scanFolder(folderPath, opts = {}) {
     motionEnabled = false;
   }
 
-  // Estado inicial del job
-  const job = {
-    jobId,
-    folderPath,
-    status: 'running',
-    total: 0,
-    done: 0,
-    errors: 0,
-    // Volcados que no se pudieron escribir. Se cuentan aparte de `errors`
-    // (fallos por archivo) porque significan otra cosa muy distinta: el
-    // trabajo se ha hecho y se esta PERDIENDO. Sale en scan_done con su causa.
-    escriturasFallidas: 0,
-    // Marca del registro de fallos al empezar, para poder contar solo los
-    // de ESTE job al cerrarlo.
-    marcaFallos: fallos.mark(),
-    cancelRequested: false,
-    startedAt: Date.now(),
-    // Ventana movil de duraciones por archivo para estimar tiempo restante.
-    // Movil (no acumulada) porque fotos y videos tardan muy distinto y el
-    // cold-start del VLM en el primer archivo dispararia una media acumulada.
-    recentMs: [],
-    lastTickAt: Date.now(),
-  };
-  activeJobs.set(jobId, job);
+  // "Detener" mientras cargaban los modelos: se para aqui, antes de tocar nada.
+  if (job.cancelRequested) {
+    job.status = 'cancelled';
+    broadcastProgress({ type: 'scan_done', ...comunes, estado: 'cancelled', total: 0, done: 0, errors: 0, written: 0, status: 'Escaneo cancelado', percentage: 100 });
+    return { jobId, total: 0, done: 0, errors: 0, written: 0, carpetas: [] };
+  }
+  job.fase = 'escaneando';
 
   // Calcula campos de tiempo para el payload de progreso. Se llama UNA vez por
   // archivo procesado (exito o error): cada llamada registra el delta desde el
@@ -520,7 +605,7 @@ async function scanFolder(folderPath, opts = {}) {
       errors: 0,
       status: 'Sin imágenes que escanear',
     });
-    return { jobId, total: 0, done: 0, errors: 0, written: 0 };
+    return { jobId, total: 0, done: 0, errors: 0, written: 0, carpetas: [] };
   }
 
   // 2) Cargar catálogos existentes por carpeta (cache local del job)
@@ -611,6 +696,9 @@ async function scanFolder(folderPath, opts = {}) {
               console.log(`[scan] ${basename}: identidad manual preservada (${reancladas} re-ancladas, ${conservadas} sin re-detectar)`);
             }
           }
+          // Cuando se hizo: reanudar un re-escaneo cortado salta lo que ya se
+          // hizo en esa misma tanda (ver `forzarDesde`).
+          entry.escaneado_en = new Date().toISOString();
           // Clave canonica `photos` para las nuevas; si habia `clips`, se
           // mantiene (no romper legacy).
           base.photos[basename] = entry;
@@ -670,8 +758,12 @@ async function scanFolder(folderPath, opts = {}) {
     const existingEntries = (c.catalog && (c.catalog.photos || c.catalog.clips)) || {};
     const previa = existingEntries[basename] || null;
     const esVideo = isVideoExt(path.extname(basename).toLowerCase());
+    // Reanudar un re-escaneo que se corto: lo escaneado en esa misma tanda no
+    // se repite. Antes la reanudacion volvia a forzar TODO desde el principio.
+    const forzar = force && !(forzarDesde && previa
+      && typeof previa.escaneado_en === 'string' && previa.escaneado_en >= forzarDesde);
     let hacer;
-    if (!force && previa) {
+    if (!forzar && previa) {
       const faltan = trabajosPendientes(previa, vivos, esVideo);
       if (faltan.length === 0) continue;
       hacer = Object.fromEntries(TRABAJOS.map(cap => [cap, faltan.includes(cap)]));
@@ -720,7 +812,7 @@ async function scanFolder(folderPath, opts = {}) {
       status: `Todas las imágenes ya estaban escaneadas (${allImages.length})`,
       already: allImages.length,
     });
-    return { jobId, total: allImages.length, done: 0, errors: 0, written: 0 };
+    return { jobId, total: allImages.length, done: 0, errors: 0, written: 0, carpetas: [] };
   }
 
   // 4) Escanear en serie
@@ -1184,6 +1276,9 @@ async function scanFolder(folderPath, opts = {}) {
       }
     } catch (err) {
       console.warn(`[scan] ${basename}: ${err.message}`);
+      // Al registro de fallos (agregado por causa): que salga en /api/health y
+      // no solo en una linea de consola que nadie lee.
+      fallos.record('escanear un archivo', err, { path: filePath, silencioso: true });
       job.errors++;
       broadcastProgress({
         type: 'scan_error',
@@ -1286,9 +1381,6 @@ async function scanFolder(folderPath, opts = {}) {
     avgMsPerFile: job.done > 0 ? Math.round((job.finishedAt - job.startedAt) / job.done) : 0,
   });
 
-  // Conservar el job ~5 min para queries de status, luego liberar
-  setTimeout(() => activeJobs.delete(jobId), 5 * 60 * 1000);
-
   // El valor de retorno tambien lleva los fallos: quien llama por HTTP (no por
   // WebSocket) tiene que poder decir "no pude" igual que la UI.
   return {
@@ -1297,6 +1389,9 @@ async function scanFolder(folderPath, opts = {}) {
     done: job.done,
     errors: job.errors,
     written,
+    // Carpetas cuyo catalogo se ha escrito: quien llama puede refrescar solo
+    // esas en vez de resincronizar todos los discos.
+    carpetas: Array.from(writtenDirs),
     escriturasFallidas: job.escriturasFallidas,
     causa: incidencias.principal
       ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
@@ -1346,5 +1441,8 @@ module.exports = {
   getJobStatus,
   listJobs,
   cancelJob,
+  reservarJob,
   listFoldersWithMedia,
+  esEscaneable,
+  archivoPendiente,
 };

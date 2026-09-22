@@ -38,6 +38,8 @@ import CollectionsView from './components/CollectionsView';
 import SpacesManager from './components/SpacesManager';
 import PersonLife from './components/PersonLife';
 import DuplicatesView from './components/DuplicatesView';
+import CopiasExactas from './components/CopiasExactas';
+import AvisoCopias from './components/AvisoCopias';
 import Carta from './components/Carta';
 import OcultosView from './components/OcultosView';
 import PapeleraView from './components/PapeleraView';
@@ -60,6 +62,7 @@ const VIEW_TO_PATH: Record<string, string> = {
   collections: '/colecciones', statistics: '/estadisticas',
   tags: '/etiquetas', synonyms: '/sinonimos', imageSearch: '/busqueda-imagen',
   duplicates: '/gemelas',
+  copias: '/gemelas/copias',
   ocultos: '/ocultos',
   papelera: '/papelera',
   admin: '/admin',
@@ -76,6 +79,7 @@ function viewFromPath(pathname: string): string {
   if (pathname.startsWith('/persona/') && pathname.endsWith('/vida')) return 'personLife';
   if (pathname.startsWith('/persona/')) return 'home';       // home filtrado por persona
   if (pathname.startsWith('/espacios')) return 'spaces';
+  if (pathname.startsWith('/gemelas/copias')) return 'copias';
   if (pathname.startsWith('/gemelas')) return 'duplicates';
   if (pathname.startsWith('/ocultos')) return 'ocultos';
   if (pathname.startsWith('/papelera')) return 'papelera';
@@ -142,6 +146,11 @@ function App() {
   // ella (scroll y paginas de scroll infinito intactos).
   const openFile = React.useCallback((file: MediaFile) => {
     navigate(`/archivo/${encodeURIComponent(file.id)}`, { state: { backgroundLocation: locationRef.current } });
+  }, [navigate]);
+  // Lo mismo solo con el id: una copia exacta escondida no esta en mediaFiles
+  // y el modal la pide al servidor.
+  const abrirPorId = React.useCallback((id: string) => {
+    navigate(`/archivo/${encodeURIComponent(id)}`, { state: { backgroundLocation: locationRef.current } });
   }, [navigate]);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [selectedFile, setSelectedFile] = useState<MediaFile | null>(null);
@@ -609,7 +618,7 @@ function App() {
     const titles: Record<string, string> = {
       home: 'Pensadero', paths: 'Rutas · Pensadero', persons: 'Personas · Pensadero',
       spaces: 'Espacios · Pensadero', collections: 'Colecciones · Pensadero',
-      duplicates: 'Tomas gemelas · Pensadero', ocultos: 'Material oculto · Pensadero',
+      duplicates: 'Tomas gemelas · Pensadero', copias: 'Copias exactas · Pensadero', ocultos: 'Material oculto · Pensadero',
       papelera: 'Papelera · Pensadero',
       personLife: 'Línea de vida · Pensadero',
       statistics: 'Estadísticas · Pensadero',
@@ -1025,6 +1034,13 @@ function App() {
     // persona) cambio los catalogos → recargar para ver las nuevas apariciones.
     if (t === 'persons_refresh' || t === 'catalog_refresh' || t === 'reidentify_done') {
       scheduleQuietReload();
+      return;
+    }
+    // Sincronizacion que lanza el vigilante de discos (se ha copiado o movido
+    // algo): sin pantalla de progreso, que saltaria en cada copia; al terminar
+    // la galeria se recarga en silencio.
+    if (progressData.enSegundoPlano && t.startsWith('sync_')) {
+      if (t === 'sync_complete') scheduleQuietReload();
       return;
     }
 
@@ -3285,9 +3301,20 @@ function App() {
               files={mediaFiles}
               descartadas={descartadas}
               notas={fileNotes}
+              tecladoActivo={!(isModalOpen || modalLoading || modalError || quickPreviewFile || showPresentationMode)}
               onBack={() => navigate('/')}
+              onCambiarApartado={(a) => navigate(a === 'copias' ? '/gemelas/copias' : '/gemelas')}
               onSelectFile={openFile}
               onCambiarDescartes={cambiarDescartes}
+            />
+          );
+
+        case 'copias':
+          return (
+            <CopiasExactas
+              onBack={() => navigate('/')}
+              onAbrir={abrirPorId}
+              onCambiarApartado={(a) => navigate(a === 'copias' ? '/gemelas/copias' : '/gemelas')}
             />
           );
 
@@ -4284,6 +4311,12 @@ function App() {
         || showAddToCollection || showBulkAddToCollection || showFolderScanner
         || editingSessionNote || (isSelectionMode && selectedFiles.size > 0)
       ) && (
+        <>
+        {/* Copias exactas por decidir: abajo a la izquierda, solo en la home.
+            Se esconde con los mismos overlays que la burbuja de la derecha. */}
+        {activeView === 'home' && !portada && (
+          <AvisoCopias recarga={mediaFiles} onRevisar={() => navigate('/gemelas/copias')} />
+        )}
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
           {/* Scroll to Top Button — solo en home */}
           {activeView === 'home' && <ScrollToTopButton />}
@@ -4307,6 +4340,7 @@ function App() {
             }}
           />
         </div>
+        </>
       )}
 
     </div>

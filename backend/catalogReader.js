@@ -491,6 +491,11 @@ function mergeClipIntoFile(fileData, clip, catalog) {
     }
   }
 
+  // Que trabajos del escaneo tiene hechos (ver scanOrchestrator). Lo usa Rutas
+  // para contar lo pendiente con los interruptores de ahora, no solo lo que
+  // falta por describir.
+  if (clip.escaneo && typeof clip.escaneo === 'object') result.escaneo = clip.escaneo;
+
   // Flags
   result.has_catalog = true;
 
@@ -513,6 +518,23 @@ function mergeClipIntoFile(fileData, clip, catalog) {
  *
  * @param {object} fileData - MediaFile con `fullPath` y `name` poblados
  */
+/**
+ * Entrada cruda del catalogo (o sidecar) de un archivo, con la misma
+ * precedencia que applyCatalog, o null. Sirve para leer lo que no pasa al
+ * MediaFile, como la huella visual (`clip_embedding_b64`).
+ */
+async function entradaDe(filePath, name = null) {
+  if (!filePath) return null;
+  const sidecarClip = await getSidecarForFile(filePath);
+  if (sidecarClip) return sidecarClip;
+  const catalog = await getCatalogForDir(path.dirname(filePath));
+  if (!catalog) return null;
+  const basename = name || path.basename(filePath);
+  const photos = (catalog.photos && typeof catalog.photos === 'object') ? catalog.photos : {};
+  const clips = (catalog.clips && typeof catalog.clips === 'object') ? catalog.clips : {};
+  return photos[basename] || clips[basename] || null;
+}
+
 async function applyCatalog(fileData) {
   if (!fileData || !fileData.fullPath) return fileData;
 
@@ -559,6 +581,7 @@ module.exports = {
   invalidateSidecar,
   clearCatalogCache,
   applyCatalog,
+  entradaDe,
   mergeClipIntoFile,
   normalizeFace,
   normalizeSpace,

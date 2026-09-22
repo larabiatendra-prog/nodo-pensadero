@@ -8,6 +8,7 @@ const path = require('path');
 const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
 const fallos = require('./utils/failureReason');
 const mediaIdentity = require('./utils/mediaIdentity');
+const retiradas = require('./services/retiradas');
 
 // Identificador canonico LEGACY: path normalizado (lowercase + colapsar
 // separadores). Debe coincidir con src/utils/formatData.ts en el frontend.
@@ -309,6 +310,30 @@ class FavoritesManager {
   }
 
   /**
+   * Un archivo ha cambiado de sitio (movido, o su disco cambio de letra): su
+   * favorito pasa a la identidad nueva. Ver services/reenlazar.js.
+   * @param {Array<{de:{mediaKey,fullPath}, a:{mediaKey,fullPath}}>} pares
+   * @returns {Promise<number>} favoritos reenlazados
+   */
+  async reenlazar(pares) {
+    let n = 0;
+    const ahora = new Date().toISOString();
+    for (const { de, a } of pares || []) {
+      const viejas = [de.mediaKey, de.fullPath].filter(Boolean).map(normalizePath);
+      const vieja = viejas.find(k => this.favorites.has(k));
+      if (!vieja) continue;
+      const nueva = normalizePath(a.mediaKey || a.fullPath);
+      if (!nueva || viejas.includes(nueva)) continue;
+      const fav = this.favorites.get(vieja);
+      for (const k of viejas) this.favorites.delete(k);
+      this.favorites.set(nueva, { ...fav, fileId: nueva, filePath: a.fullPath || fav.filePath, lastModified: ahora });
+      n++;
+    }
+    if (n > 0) await this.saveFavorites();
+    return n;
+  }
+
+  /**
    * Limpiar favoritos huérfanos (archivos que ya no existen).
    *
    * OJO con el criterio: antes bastaba con que la clave no apareciera entre las
@@ -320,7 +345,10 @@ class FavoritesManager {
    * @param {Array} files - MediaFile[] del sync (con mediaKey y fullPath)
    * @param {Set<string>} scannedLibraryIds - ids de bibliotecas SI recorridas
    */
-  async cleanupOrphanedFavorites(files, scannedLibraryIds) {
+  async cleanupOrphanedFavorites(files, scannedLibraryIds, opts = {}) {
+    // Lo desaparecido hace poco puede estar a punto de aparecer en otro sitio
+    // (services/reenlazar): su favorito se conserva mientras tanto.
+    const protegidas = opts.protegidas instanceof Set ? opts.protegidas : null;
     try {
       const lista = Array.isArray(files) ? files : [];
       // Identidades presentes, por las dos claves posibles.
@@ -339,7 +367,7 @@ class FavoritesManager {
       let protegidos = 0;
       for (const key of this.favorites.keys()) {
         if (existingSet.has(key)) continue;
-        if (!this._puedeProbarQueFalta(key, scanned)) { protegidos++; continue; }
+        if (!this._puedeProbarQueFalta(key, scanned) || (protegidas && protegidas.has(key))) { protegidos++; continue; }
         orphanedIds.push(key);
       }
       if (protegidos > 0) {
@@ -348,6 +376,11 @@ class FavoritesManager {
 
       if (orphanedIds.length > 0) {
         console.log(`🧹 Limpiando ${orphanedIds.length} favoritos huérfanos...`);
+        // Rastro de lo quitado: antes no quedaba ninguno (ver services/retiradas).
+        retiradas.anotar('favorito', orphanedIds.map(id => {
+          const fav = this.favorites.get(id) || {};
+          return { ref: id, ruta: fav.filePath || null };
+        }));
 
         orphanedIds.forEach(id => {
           this.favorites.delete(id);

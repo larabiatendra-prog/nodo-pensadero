@@ -12,9 +12,12 @@ import './Portada.css';
  * recuerdo de origen y viaja por el hilo hasta el de destino, y desde alli
  * sale el siguiente: no son saltos al azar, es una deriva, como la memoria.
  *
- * Es contemplativa a proposito. Pocos recuerdos, un hilo principal a la vez,
- * todo lento. El Atlas de recuerdos se retiro por ser una telaraña de lineas;
- * esto no debe acabar igual.
+ * Es contemplativa a proposito, pero no quieta: hay varias DERIVAS a la vez
+ * (hasta tres, segun lo que quepa en pantalla), cada una paseando por su
+ * cuenta. La primera manda —va entera de brillo y es la que recoge el clic— y
+ * las demas acompañan, mas tenues y a otro ritmo, para que la escena respire
+ * sin convertirse en una telaraña: el Atlas de recuerdos se retiro por eso.
+ * Dos derivas nunca se pelean por el mismo recuerdo.
  *
  * Sabe que dia es: si el archivo tiene material de un dia como hoy de otros
  * años, la deriva empieza ahi y el centro lo dice. Y se puede tirar del hilo:
@@ -48,6 +51,8 @@ interface Nodo {
   situacion?: string;
   /** Evento como numero: dos del mismo evento a la vez aburren. */
   ev?: number;
+  /** Como se llama aquello ("Navidad Madrid"), si la carpeta lo dice. */
+  titulo?: string;
 }
 
 interface Efemeride {
@@ -90,6 +95,18 @@ interface Hilo {
   a: number;
   t0: number;
   curva: 1 | -1;
+  /** Que deriva lo lanzo: la 0 va entera de brillo, las demas acompañan. */
+  deriva: number;
+  /** Lo que tarda en dibujarse. Distinto por deriva para que no latan a la vez. */
+  dibujo: number;
+}
+
+/** Un paseante: por donde va, por donde ha pasado y con que tipo de hilo. */
+interface Deriva {
+  actual: number | null;
+  recientes: number[];
+  ultimoTipo: TipoHilo | null;
+  pasos: number;
 }
 
 export interface OpcionesEntrar {
@@ -120,6 +137,9 @@ const ESTILO: Record<TipoHilo, { color: string; ancho: number; trazo?: string; b
 const PESO: Record<TipoHilo, number> = { persona: 5, rima: 4, fecha: 4, lugar: 4, tema: 3, luz: 2, color: 2 };
 
 const T_DIBUJO = 2900;
+// Cada deriva dibuja a su ritmo: con el mismo, las tres latian a la vez y
+// parecia un metronomo en vez de varias cosas pasando.
+const T_DIBUJO_DERIVA = [T_DIBUJO, 2300, 3400];
 const T_ESPERA = 1900;
 const T_DESVANECE = 2800;
 const T_ENTRADA = 1500; // lo que tarda en aparecer un recuerdo que se trae
@@ -128,6 +148,26 @@ const OMEGA = (Math.PI * 2) / 480; // una vuelta del remolino cada 8 minutos
 
 const RETRATO = (id: string) => `/persons-avatars/people/${encodeURIComponent(id)}/avatar.jpg`;
 const miles = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sept', 'oct', 'nov', 'dic'];
+
+/**
+ * De cuando y de que es un recuerdo, en una linea: "Navidad Madrid · 25 dic
+ * 2019 · Ana". Es lo unico que la portada sabe de cada cosa que enseña, y
+ * hasta ahora no lo decia: habia que adivinar de que año era cada imagen.
+ * Sin fecha ni nombre no se inventa nada, se devuelve vacio.
+ */
+function pieDe(n: Nodo): string {
+  const trozos: string[] = [];
+  if (n.titulo) trozos.push(n.titulo);
+  if (n.fecha) {
+    const [a, m, d] = n.fecha.split('-').map(Number);
+    if (a && m && d) trozos.push(`${d} ${MESES_CORTOS[m - 1]} ${a}`);
+  }
+  const gente = n.personas.map(p => p.nombre).filter(Boolean);
+  if (gente.length) trozos.push(gente.slice(0, 2).join(', '));
+  return trozos.join(' · ');
+}
 
 // ── Geometria ─────────────────────────────────────────────────────────────
 
@@ -251,12 +291,11 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
   const visiblesRef = useRef<Visible[]>([]);
   const hilosRef = useRef<Hilo[]>([]);
   const huecosRef = useRef<Hueco[]>([]);
-  const actualRef = useRef<number | null>(null);
-  const recientesRef = useRef<number[]>([]);
-  const ultimoTipoRef = useRef<TipoHilo | null>(null);
+  const derivasRef = useRef<Deriva[]>([]);
   const encendidosRef = useRef(new Map<number, { hasta: number; brillo: string }>());
   const cargadas = useRef(new Set<string>());
-  const temporizadores = useRef<number[]>([]);
+  /** Temporizadores con la deriva que los pidio (-1 = de nadie en concreto). */
+  const temporizadores = useRef<Array<{ id: number; d: number }>>([]);
   const ratonRef = useRef({ x: 0, y: 0, sx: 0, sy: 0 });
   /**
    * Con el raton sobre un recuerdo la deriva espera: estas mirando eso. Se
@@ -270,7 +309,6 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
   const porVerRef = useRef<number[]>([]);
   const salidaRef = useRef<number | null>(null);
   const contadorHilos = useRef(0);
-  const pasosRef = useRef(0);
 
   const reducido = useMemo(() => {
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
@@ -361,10 +399,31 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
     return m;
   }, [datos]);
 
-  const programar = useCallback((fn: () => void, ms: number) => {
-    const id = window.setTimeout(fn, ms);
-    temporizadores.current.push(id);
+  /**
+   * Un temporizador a nombre de una deriva. Hace falta saber de quien es
+   * porque un clic reconduce SOLO la deriva principal: si se cancelara todo,
+   * las demas se quedarian congeladas a medio hilo.
+   */
+  const programar = useCallback((fn: () => void, ms: number, d = -1) => {
+    const id = window.setTimeout(() => {
+      temporizadores.current = temporizadores.current.filter(t => t.id !== id);
+      fn();
+    }, ms);
+    temporizadores.current.push({ id, d });
     return id;
+  }, []);
+
+  const cancelarTodo = useCallback(() => {
+    temporizadores.current.forEach(t => window.clearTimeout(t.id));
+    temporizadores.current = [];
+  }, []);
+
+  const cancelarDeriva = useCallback((d: number) => {
+    temporizadores.current = temporizadores.current.filter(t => {
+      if (t.d !== d) return true;
+      window.clearTimeout(t.id);
+      return false;
+    });
   }, []);
 
   const fijarVisibles = (v: Visible[]) => { visiblesRef.current = v; setVisibles(v); };
@@ -388,8 +447,11 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
     if (reducido || modoMinimo || !datos) return;
     const n = datos.nodos[nodo];
     if (!n || n.tipo !== 'video') return;
+    // Uno cada vez de verdad: con varias derivas, dos llegadas seguidas a dos
+    // videos se quitaban el turno la una a la otra y parpadeaban.
+    if (vivoRef.current) return;
     const v = visiblesRef.current.find(x => x.nodo === nodo && !x.saliendo);
-    if (!v || vivoRef.current === v.clave) return;
+    if (!v) return;
     fetch(`/api/media/${encodeURIComponent(n.id)}/playable?sinPreparar=1`)
       .then(r => r.json())
       .then(j => {
@@ -414,18 +476,18 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
   // ── Reparto inicial ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!datos || datos.nodos.length === 0) return;
-    temporizadores.current.forEach(t => window.clearTimeout(t));
-    temporizadores.current = [];
+    cancelarTodo();
     hilosRef.current = [];
     setHilos([]);
     encendidosRef.current.clear();
-    recientesRef.current = [];
 
     const ancho = window.innerWidth;
     const alto = window.innerHeight;
     // Cuantos caben: por AREA, no por ancho. En una pantalla alta y estrecha
-    // repartir por ancho dejaba la mitad vacia.
-    const cabidos = Math.round(limitar(Math.sqrt(ancho * alto) / 78, 9, 18));
+    // repartir por ancho dejaba la mitad vacia. Con varias derivas a la vez
+    // hace falta mas gente en pantalla: tres hilos entre doce recuerdos no
+    // dejan nada suelto, y lo que no esta en juego es lo que da aire.
+    const cabidos = Math.round(limitar(Math.sqrt(ancho * alto) / 66, 10, 26));
     huecosRef.current = crearHuecos(Math.min(datos.nodos.length, cabidos), ancho, alto);
     const n = huecosRef.current.length;
 
@@ -467,33 +529,53 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
     fijarVisibles(elegidos.map((nodo, k) => ({
       clave: `${nodo}-${k}-0`, nodo, hueco: huecosBarajados[k], desde: ahora - Math.random() * 9000,
     })));
-    actualRef.current = inicio;
-    programar(() => pasoRef.current(), 2200);
-    return () => {
-      temporizadores.current.forEach(t => window.clearTimeout(t));
-      temporizadores.current = [];
-    };
+    // Cuantas derivas: una por cada seis huecos, hasta tres. Con la pantalla
+    // pequeña vuelve a ser una sola, que es como estaba pensada. Con el
+    // movimiento reducido, tambien: varias cosas moviendose es justo lo que
+    // esa preferencia pide no hacer.
+    const cuantas = reducido ? 1 : Math.max(1, Math.min(T_DIBUJO_DERIVA.length, Math.floor(n / 6)));
+    // La primera empieza en la efemeride; las demas, lo mas lejos posible de
+    // lo ya tomado, para que los hilos no salgan todos del mismo rincon.
+    const arranques: number[] = [inicio];
+    for (const cand of barajar(elegidos)) {
+      if (arranques.length >= cuantas) break;
+      if (arranques.includes(cand)) continue;
+      if ((ady.get(cand) || []).length === 0) continue;
+      arranques.push(cand);
+    }
+    derivasRef.current = Array.from({ length: cuantas }, (_, d) => ({
+      actual: arranques[d] ?? null,
+      recientes: [],
+      ultimoTipo: null,
+      pasos: 0,
+    }));
+    derivasRef.current.forEach((_, d) => programar(() => pasoRef.current(d), 2200 + d * 1900, d));
+    return cancelarTodo;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datos, ady]);
 
   // ── La deriva ───────────────────────────────────────────────────────────
-  const lanzarHilo = (enlace: Enlace, de: number, a: number) => {
+  const lanzarHilo = (enlace: Enlace, de: number, a: number, d: number) => {
     const ahora = performance.now();
+    const dv = derivasRef.current[d];
+    if (!dv) return;
     const estilo = ESTILO[enlace.tipo] || ESTILO.rima;
-    const hilo: Hilo = { id: ++contadorHilos.current, enlace, de, a, t0: ahora, curva: Math.random() < 0.5 ? 1 : -1 };
-    const dibujo = reducido ? 300 : T_DIBUJO;
-    // Como mucho tres hilos: el que viaja y la estela de los dos anteriores.
-    fijarHilos([...hilosRef.current.slice(-2), hilo]);
+    const dibujo = reducido ? 300 : T_DIBUJO_DERIVA[d % T_DIBUJO_DERIVA.length];
+    const hilo: Hilo = { id: ++contadorHilos.current, enlace, de, a, t0: ahora, curva: Math.random() < 0.5 ? 1 : -1, deriva: d, dibujo };
+    // Dos por deriva: el que viaja y la estela del anterior. La lista sigue
+    // siendo cronologica (el motor lee de ella quien releva a quien).
+    const mio = hilosRef.current.filter(h => h.deriva === d).slice(-1);
+    fijarHilos([...hilosRef.current.filter(h => h.deriva !== d || mio.includes(h)), hilo]);
     encender(de, dibujo + T_ESPERA + 800, estilo.brillo);
-    ultimoTipoRef.current = enlace.tipo;
+    dv.ultimoTipo = enlace.tipo;
     programar(() => {
       encender(a, T_ESPERA + T_DESVANECE, estilo.brillo);
-      actualRef.current = a;
-      recientesRef.current = [...recientesRef.current.slice(-8), de];
+      dv.actual = a;
+      dv.recientes = [...dv.recientes.slice(-8), de];
       respirar(a);
-    }, dibujo);
-    programar(() => pasoRef.current(), dibujo + T_ESPERA + 500);
-    programar(() => fijarHilos(hilosRef.current.filter(h => h.id !== hilo.id)), dibujo + T_ESPERA + T_DESVANECE + 100);
+    }, dibujo, d);
+    programar(() => pasoRef.current(d), dibujo + T_ESPERA + 500, d);
+    programar(() => fijarHilos(hilosRef.current.filter(h => h.id !== hilo.id)), dibujo + T_ESPERA + T_DESVANECE + 100, d);
   };
 
   /**
@@ -504,6 +586,9 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
   const elegirVictima = (proteger: number[]): Visible | null => {
     const ahora = performance.now();
     const ocupados = new Set(hilosRef.current.flatMap(h => [h.de, h.a]).concat(proteger));
+    // Donde esta parada cada deriva: quitarle a una el recuerdo de debajo la
+    // deja sin sitio desde el que salir.
+    for (const o of derivasRef.current) if (o.actual !== null) ocupados.add(o.actual);
     const pausa = pausadoRef.current;
     const libres = visiblesRef.current.filter(v => !v.saliendo && !ocupados.has(v.nodo)
       && v.nodo !== pausa?.nodo && v.clave !== vivoRef.current
@@ -579,7 +664,7 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
     const colgados = visiblesRef.current.filter(v => v.saliendo && ahora - v.saliendo > T_ENTRADA + 800);
     if (colgados.length) fijarVisibles(visiblesRef.current.filter(v => !colgados.includes(v)));
     if (visiblesRef.current.some(v => v.saliendo)) return;
-    const victima = elegirVictima(actualRef.current !== null ? [actualRef.current] : []);
+    const victima = elegirVictima([]);
     if (!victima || ahora - (victima.desde ?? 0) < 8000) return;
     const nodo = siguienteDistinto(visiblesRef.current.filter(v => !v.saliendo && v.clave !== victima.clave));
     if (nodo === null) return;
@@ -601,49 +686,73 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
     return () => window.clearInterval(t);
   }, [datos, modoMinimo, reducido]);
 
-  const paso = () => {
+  const paso = (d: number) => {
     if (!datos || salidaRef.current) return;
-    // Mirando un recuerdo: la deriva espera, pero se vuelve a preguntar
-    // enseguida. Nunca se cancela el ciclo, que era como se quedaba parada.
+    const dv = derivasRef.current[d];
+    if (!dv) return;
+    // Mirando un recuerdo: la deriva que esta ahi espera, pero se vuelve a
+    // preguntar enseguida. Nunca se cancela el ciclo, que era como se quedaba
+    // parada. Las otras derivas siguen: congelar la escena entera por pasar el
+    // raton por encima de una foto era demasiado.
     const pausa = pausadoRef.current;
-    if (pausa) {
+    if (pausa && pausa.nodo === dv.actual) {
       const sigueAhi = visiblesRef.current.some(v => v.nodo === pausa.nodo && !v.saliendo);
       if (sigueAhi && performance.now() - pausa.desde < 12000) {
-        programar(() => pasoRef.current(), 700);
+        programar(() => pasoRef.current(d), 700, d);
         return;
       }
       pausadoRef.current = null;
     }
-    pasosRef.current++;
+    dv.pasos++;
+    const ahora = performance.now();
     const enPantalla = new Set(visiblesRef.current.filter(v => !v.saliendo).map(v => v.nodo));
-    let actual = actualRef.current;
+    // Lo que tienen entre manos las demas derivas (donde estan paradas y los
+    // dos extremos de un hilo que aun viaja). Dos hilos peleandose por el
+    // mismo recuerdo se leen como un enredo, no como dos historias.
+    const ajenos = new Set<number>();
+    derivasRef.current.forEach((o, k) => { if (k !== d && o.actual !== null) ajenos.add(o.actual); });
+    for (const h of hilosRef.current) {
+      if (h.deriva === d || ahora - h.t0 > h.dibujo + T_ESPERA) continue;
+      ajenos.add(h.de);
+      ajenos.add(h.a);
+    }
+    if (pausa) ajenos.add(pausa.nodo);
+
+    let actual = dv.actual;
     if (actual === null || !enPantalla.has(actual)) {
-      const conHilos = Array.from(enPantalla).filter(n => (ady.get(n) || []).length > 0);
-      if (conHilos.length === 0) { programar(() => pasoRef.current(), 4000); return; }
+      const conHilos = Array.from(enPantalla).filter(n => !ajenos.has(n) && (ady.get(n) || []).length > 0);
+      if (conHilos.length === 0) { programar(() => pasoRef.current(d), 4000, d); return; }
       actual = conHilos[Math.floor(Math.random() * conHilos.length)];
-      actualRef.current = actual;
+      dv.actual = actual;
     }
 
-    const todos = (ady.get(actual) || []).map(e => ({ e, otro: e.a === actual ? e.b : e.a }));
-    let cands = todos.filter(c => !recientesRef.current.includes(c.otro));
+    const todos = (ady.get(actual) || [])
+      .map(e => ({ e, otro: e.a === actual ? e.b : e.a }))
+      .filter(c => !ajenos.has(c.otro));
+    let cands = todos.filter(c => !dv.recientes.includes(c.otro));
     if (cands.length === 0) cands = todos;
     if (cands.length === 0) {
       // Callejon sin salida: la deriva salta a otro recuerdo, sin hilo.
-      const otros = Array.from(enPantalla).filter(n => n !== actual && (ady.get(n) || []).length > 0);
+      const otros = Array.from(enPantalla).filter(n => n !== actual && !ajenos.has(n) && (ady.get(n) || []).length > 0);
       if (otros.length) {
-        actualRef.current = otros[Math.floor(Math.random() * otros.length)];
-        encender(actualRef.current, 1800, 'rgba(200,182,255,.35)');
+        dv.actual = otros[Math.floor(Math.random() * otros.length)];
+        encender(dv.actual, 1800, 'rgba(200,182,255,.35)');
       }
-      programar(() => pasoRef.current(), 2400);
+      programar(() => pasoRef.current(d), 2400, d);
       return;
     }
 
-    // El primer hilo del dia, si se puede, es el salto entre años de hoy.
+    // Tipos de hilo que ya estan en pantalla ahora mismo: que dos derivas
+    // dibujen "persona" a la vez desaprovecha que cada tipo tiene su color.
+    const enJuego = new Set(hilosRef.current.filter(h => ahora - h.t0 < h.dibujo + T_ESPERA).map(h => h.enlace.tipo));
+    // El primer hilo del dia, si se puede, es el salto entre años de hoy. Lo
+    // tira la deriva principal: es la que se mira.
     const efeSet = new Set(datos.efemeride?.nodos || []);
     const peso = (c: { e: Enlace; otro: number }) => (PESO[c.e.tipo] || 1)
-      * (c.e.tipo === ultimoTipoRef.current ? 0.35 : 1)
+      * (c.e.tipo === dv.ultimoTipo ? 0.35 : 1)
+      * (enJuego.has(c.e.tipo) ? 0.5 : 1)
       * (c.e.detalle ? 1.4 : 1)
-      * (pasosRef.current <= 2 && c.e.tipo === 'fecha' && efeSet.has(c.otro) ? 6 : 1);
+      * (d === 0 && dv.pasos <= 2 && c.e.tipo === 'fecha' && efeSet.has(c.otro) ? 6 : 1);
     const enVista = cands.filter(c => enPantalla.has(c.otro));
     // A veces, aunque haya destino en pantalla, se trae uno nuevo: la escena
     // se renueva sola y no se queda en los mismos quince para siempre.
@@ -654,10 +763,10 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
 
     const origen = actual;
     if (!enPantalla.has(elegido.otro)) {
-      if (!traer(elegido.otro, [origen])) { programar(() => pasoRef.current(), 2000); return; }
-      programar(() => lanzarHilo(elegido.e, origen, elegido.otro), T_ENTRADA);
+      if (!traer(elegido.otro, [origen])) { programar(() => pasoRef.current(d), 2000, d); return; }
+      programar(() => lanzarHilo(elegido.e, origen, elegido.otro, d), T_ENTRADA, d);
     } else {
-      lanzarHilo(elegido.e, origen, elegido.otro);
+      lanzarHilo(elegido.e, origen, elegido.otro, d);
     }
   };
   // El temporizador siempre llama a la version mas reciente (datos y ady al dia).
@@ -769,13 +878,20 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
       }
 
       // Hilos que viajan
-      const dibujo = reducido ? 300 : T_DIBUJO;
       const listaHilos = hilosRef.current;
       for (let ih = 0; ih < listaHilos.length; ih++) {
         const h = listaHilos[ih];
+        const dibujo = reducido ? 300 : h.dibujo;
+        // La deriva principal va entera; las que acompañan, mas tenues, o la
+        // pantalla no diria donde mirar.
+        const tono = h.deriva === 0 ? 1 : 0.6;
         // Relevo: la etiqueta que llego a un recuerdo se funde en cuanto sale
-        // de ese mismo recuerdo el hilo siguiente, en vez de montarse con el.
-        const siguiente = listaHilos[ih + 1];
+        // de ese mismo recuerdo el hilo siguiente DE SU MISMA DERIVA, en vez
+        // de montarse con el.
+        let siguiente: Hilo | undefined;
+        for (let j = ih + 1; j < listaHilos.length; j++) {
+          if (listaHilos[j].deriva === h.deriva) { siguiente = listaHilos[j]; break; }
+        }
         const relevo = siguiente ? 1 - limitar((ahora - siguiente.t0) / 380) : 1;
         const refs = elsHilo.current.get(h.id);
         const A = posiciones.get(h.de);
@@ -808,7 +924,7 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
         }
         if (h.enlace.tipo === 'rima' && !reducido) refs.visible.setAttribute('stroke-dashoffset', String(-(ahora / 45) % 60));
         const grupo = refs.visible.parentElement;
-        if (grupo) grupo.setAttribute('opacity', String(desvanecer * (1 - salida)));
+        if (grupo) grupo.setAttribute('opacity', String(desvanecer * (1 - salida) * tono));
         const hx = cuadratica(p, x0, ccx, x1);
         const hy = cuadratica(p, y0, ccy, y1);
         if (refs.cabeza) {
@@ -821,9 +937,13 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
           // Una etiqueta cortada por el borde no cuenta nada: se mantiene dentro.
           const mitad = (refs.etiqueta.offsetWidth || 140) / 2 + 10;
           const ex = limitar(hx, Math.min(mitad, W / 2), Math.max(W - mitad, W / 2));
-          const ey = Math.max(hy, 52);
-          refs.etiqueta.style.transform = `translate3d(${ex}px, ${ey}px, 0) translate(-50%, -150%)`;
-          refs.etiqueta.style.opacity = String(aparecer * desvanecer * relevo * (1 - salida));
+          // Cada deriva pone su etiqueta a una altura distinta respecto a la
+          // cabeza del hilo: con dos cruzandose, si no, se montan una sobre otra.
+          const debajo = h.deriva === 1;
+          const ey = debajo ? Math.min(hy, H - 52) : Math.max(hy, 52);
+          const desplazar = debajo ? '60%' : h.deriva === 0 ? '-150%' : '-260%';
+          refs.etiqueta.style.transform = `translate3d(${ex}px, ${ey}px, 0) translate(-50%, ${desplazar})`;
+          refs.etiqueta.style.opacity = String(aparecer * desvanecer * relevo * (1 - salida) * tono);
         }
       }
 
@@ -864,9 +984,9 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
     if (salidaRef.current) return;
     salidaRef.current = performance.now();
     setSaliendo(true);
-    temporizadores.current.forEach(t => window.clearTimeout(t));
+    cancelarTodo();
     window.setTimeout(() => onEntrar(opciones), 950);
-  }, [onEntrar]);
+  }, [onEntrar, cancelarTodo]);
 
   // Teclado y rueda: Intro, Espacio o Escape entran; bajar la rueda, tambien.
   useEffect(() => {
@@ -901,14 +1021,17 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
    */
   const pulsarRecuerdo = (nodo: number) => {
     if (!datos || modoMinimo) return;
-    temporizadores.current.forEach(t => window.clearTimeout(t));
-    temporizadores.current = [];
-    actualRef.current = nodo;
-    recientesRef.current = [];
+    const dv = derivasRef.current[0];
+    if (!dv) return;
+    // Solo la deriva principal se reconduce: las que acompañan siguen a lo
+    // suyo, que es lo que hace que la escena no se pare al tocar algo.
+    cancelarDeriva(0);
+    dv.actual = nodo;
+    dv.recientes = [];
     encender(nodo, 2500, 'rgba(200,182,255,.45)');
     respirar(nodo);
-    programar(() => fijarHilos([]), 900);
-    programar(() => pasoRef.current(), 350);
+    programar(() => fijarHilos(hilosRef.current.filter(h => h.deriva !== 0)), 900, 0);
+    programar(() => pasoRef.current(0), 350, 0);
   };
 
   const abrirRecuerdo = (nodo: number) => {
@@ -987,7 +1110,7 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
             onPointerLeave={() => asomarse(null)}
             role="button"
             tabIndex={-1}
-            aria-label={n.personas.length ? n.personas.map(p => p.nombre).join(', ') : 'Recuerdo'}
+            aria-label={pieDe(n) || 'Recuerdo'}
           >
             <img
               src={n.miniatura}
@@ -1000,6 +1123,7 @@ export default function Portada({ archivosCargados, desdeMenu = false, onEntrar 
               }}
               onError={(e) => { const caja = e.currentTarget.parentElement; if (caja) caja.style.display = 'none'; }}
             />
+            {pieDe(n) && <span className="pt-pie" aria-hidden="true">{pieDe(n)}</span>}
             {vivo && vivo.clave === v.clave && (
               // Un vídeo al que le ha llegado el hilo: unos segundos de vida,
               // en silencio, y vuelve a ser una miniatura quieta.

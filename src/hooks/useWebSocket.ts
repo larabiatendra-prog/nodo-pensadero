@@ -66,6 +66,7 @@ export interface ProgressData {
   carpeta?: string;
   force?: boolean;
   unArchivo?: boolean;     // escaneo desde la tarjeta: no abre la pantalla completa
+  enSegundoPlano?: boolean; // sincronizacion del vigilante de discos: sin pantalla, recarga en silencio
   yaHechos?: number;       // ya descritos en escaneos anteriores
   errores?: number;
   estado?: string;         // scan_done: done | done_con_fallos | cancelled

@@ -164,3 +164,54 @@ export type VideoItem = {
   height?: number;
 };
 
+
+// ── Copias exactas ────────────────────────────────────────────────────────
+// El mismo archivo en dos sitios (ver backend/services/copiasExactas.js).
+
+export interface CopiasResumen {
+  calculando: boolean;
+  leidos: number;
+  porLeer: number;
+  ultimaVez: string | null;
+  grupos: number;
+  /** Grupos con mas de una copia a la vista y sin decidir. */
+  pendientes: number;
+  /** Archivos que sobran en esos grupos: lo que anuncia el aviso de la home. */
+  sobrantes: number;
+  escondidas: number;
+  /** Escondidas solas por estar en un disco marcado como copia de seguridad. */
+  porCopiaSeguridad: number;
+}
+
+export interface CopiaMiembro {
+  id: string;
+  name: string;
+  type: MediaFile['type'];
+  fullPath: string;
+  carpeta: string;
+  thumbnail: string;
+  duration?: number;
+  biblioteca: { id: string | null; nombre: string | null; copiaSeguridad: boolean };
+  humano: { favorito?: boolean; nota?: boolean; coleccion?: boolean };
+  trabajo: { descripcion?: boolean; caras?: boolean; visual?: boolean };
+  visible: boolean;
+  preferida: boolean;
+}
+
+export interface CopiaGrupo {
+  huella: string;
+  tamano: number;
+  /** pendiente: sin decidir · decidido: se ve la elegida · suplente: la elegida
+   *  no esta conectada y se ve otra · copia-seguridad: resuelto por Rutas. */
+  estado: 'pendiente' | 'decidido' | 'suplente' | 'copia-seguridad';
+  origen: 'auto' | 'manual' | null;
+  propuesta: { id: string; motivo: string };
+  miembros: CopiaMiembro[];
+}
+
+/** Dos bibliotecas entre las que hay copias pendientes, y cuantos grupos. */
+export interface CopiasPar {
+  a: { id: string; nombre: string };
+  b: { id: string; nombre: string };
+  grupos: number;
+}

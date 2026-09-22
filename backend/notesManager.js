@@ -126,6 +126,27 @@ class NotesManager {
     return { note: text, legacyRetirada: retiraLegacy || undefined };
   }
 
+  /**
+   * Un archivo ha cambiado de sitio: su nota pasa a la identidad nueva. Si el
+   * destino ya tiene nota propia, manda la del destino (no se pisa nada).
+   * Ver services/reenlazar.js.
+   * @returns {Promise<number>} notas reenlazadas
+   */
+  async reenlazar(pares) {
+    await this.ensureLoaded();
+    let n = 0;
+    for (const { de, a } of pares || []) {
+      const vieja = [de.mediaKey, de.id].find(k => k && this.files.has(k));
+      const nueva = a.mediaKey || a.id;
+      if (!vieja || !nueva || vieja === nueva) continue;
+      if (!this.files.has(nueva)) this.files.set(nueva, this.files.get(vieja));
+      this.files.delete(vieja);
+      n++;
+    }
+    if (n > 0) await this._save();
+    return n;
+  }
+
   /** Devuelve { files: { id: note }, sessions: { key: note } } como strings planos. */
   async getAll() {
     await this.ensureLoaded();

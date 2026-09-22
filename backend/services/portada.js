@@ -19,6 +19,14 @@
  * (eso es obvio) y las relaciones van por prioridad: persona, lugar, rima
  * visual y fecha antes que tema, luz o color.
  *
+ * Funciona SIN IA. Caras, lugares, rima visual y atmosfera vienen del escaneo
+ * con vision local, que es opcional: un archivo recien indexado no tiene nada
+ * de eso y antes se quedaba sin un solo recuerdo (la portada era la escena de
+ * orbes vacia, justo para quien todavia no ha instalado Ollama). Lo que se
+ * sabe sin mirar la imagen tambien cuenta: la fecha, el nombre de la carpeta
+ * del evento ("191225_Navidad" -> "Navidad", que ademas une las navidades de
+ * varios años) y lo que has marcado tu (favorito, nota, coleccion).
+ *
  * Y sabe que dia es: lo que paso un dia como hoy de otros años entra primero
  * en el reparto (las efemerides). Un archivo personal tiene esa carta y no
  * jugarla seria tonto: es lo unico que hace que abrir la aplicacion un martes
@@ -52,6 +60,12 @@ const MAX_RONDAS = 5;
 // historia: la portada sigue siendo el archivo entero.
 const MAX_EFEMERIDES = 20;
 const MAX_EFEMERIDES_POR_EVENTO = 2;
+// Hasta cuantos eventos se cuentan por etiqueta. Tiene que quedar POR ENCIMA
+// del techo de "etiqueta rara" (`techoTema`): si se deja de contar en 40 y el
+// techo sube de 40 (archivos de mas de ~660 eventos), una etiqueta que sale en
+// cuatrocientos eventos declara 40 y se cuela como si fuera rara. El criterio
+// se invertia justo en los archivos grandes.
+const TOPE_CONTEO_EVENTOS = 120;
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const MESES_CORTOS = ['ene.', 'feb.', 'mar.', 'abr.', 'may.', 'jun.', 'jul.', 'ago.', 'sept.', 'oct.', 'nov.', 'dic.'];
@@ -95,7 +109,39 @@ const ETIQUETAS_VACIAS = new Set([
   ...MESES, ...MESES.map(m => m[0].toUpperCase() + m.slice(1)),
 ]);
 
+// Como se llaman las carpetas que no dicen de que es el evento. Sin esto, la
+// mitad de los hilos de un archivo sin escanear serian "fotos" y "camara".
+const CARPETAS_VACIAS = new Set([
+  'fotos', 'foto', 'videos', 'video', 'imagenes', 'imágenes', 'camara', 'cámara', 'dcim', 'pictures',
+  'movies', 'media', 'archivo', 'archivos', 'backup', 'copia', 'copias', 'respaldo', 'nueva', 'nuevo',
+  'nuevos', 'nuevas', 'carpeta', 'descargas', 'downloads', 'whatsapp', 'telegram', 'screenshot',
+  'screenshots', 'captura', 'capturas', 'varios', 'otros', 'otras', 'iphone', 'android', 'samsung',
+  'canon', 'sony', 'nikon', 'gopro', 'dron', 'drone', 'movil', 'móvil', 'telefono', 'teléfono',
+  'proyecto', 'proyectos', 'bruto', 'brutos', 'montaje', 'secuencia', 'render', 'renders', 'master',
+  'masters', 'temp', 'tmp', 'test', 'prueba', 'pruebas', 'recortes', 'seleccion', 'selección',
+  'editar', 'edicion', 'edición', 'original', 'originales', 'importado', 'importados', 'sesion', 'sesión',
+  // Un archivo audiovisual tiene ademas carpetas de PRODUCCION, que nombran
+  // una fase o un formato, nunca lo que pasaba aquel dia. Unen dos proyectos
+  // por como estaban montados, que no es un recuerdo de nada.
+  'footage', 'recursos', 'recurso', 'capas', 'capa', 'plano', 'planos', 'proxies', 'proxy',
+  'efectos', 'efecto', 'animacion', 'animación', 'motion', 'graphics', 'grafismo', 'rotulos', 'rótulos',
+  'intro', 'introduccion', 'introducción', 'presentacion', 'presentación', 'tutorial', 'tutoriales',
+  'desplazamiento', 'transicion', 'transición', 'transiciones', 'salida', 'entrada', 'final', 'finales',
+  'jpeg', 'tiff', 'wav', 'mp3', 'mp4', 'mov', 'psd', 'aep', 'prproj',
+  'subtitulos', 'subtítulos', 'musica', 'música', 'sonido', 'audios', 'voces', 'locucion', 'locución',
+  'entrega', 'entregas', 'entregable', 'entregables', 'revision', 'revisión', 'revisiones', 'version', 'versión',
+  'versiones', 'cliente', 'clientes', 'trabajo', 'trabajos', 'curso', 'cursos', 'clase', 'clases',
+  'png', 'jpg', 'svg', 'gif', 'logo', 'logos', 'vídeo', 'vídeos', 'alpha', 'croma',
+]);
+
+/** Una palabra que no cuenta nada: ni como hilo ni como nombre de aquello. */
+const vacia = (p) => ETIQUETAS_VACIAS.has(p) || CARPETAS_VACIAS.has(p);
+
 const CARPETA_FECHADA = /(?:^|[\s\-_])(\d{6})[_\s]/;
+
+// Palabras del nombre de una carpeta, por evento. Se vacia en cada preparacion
+// (una carpeta se puede renombrar entre dos sincronizaciones).
+const memoEvento = new Map();
 
 let _memoria = null; // { version, generada, nodos, enlaces }
 
@@ -107,6 +153,43 @@ function eventoDe(fullPath) {
   }
   return segs.slice(0, -1).join('/').toLowerCase();
 }
+
+/**
+ * El nombre del evento sin su fecha: "191225_Navidad_Madrid" -> "Navidad
+ * Madrid". Es lo unico que se sabe de un archivo sin escanear, y resulta que
+ * es bastante: la carpeta ya lleva escrito de que iba aquello.
+ */
+function infoEvento(ev, fullPath) {
+  const memo = memoEvento.get(ev);
+  if (memo) return memo;
+  const segs = String(fullPath || '').split(/[\\/]/).filter(Boolean);
+  let seg = '';
+  for (let i = segs.length - 2; i >= 0; i--) {
+    if (CARPETA_FECHADA.test(segs[i])) { seg = segs[i]; break; }
+  }
+  if (!seg) seg = segs.length >= 2 ? segs[segs.length - 2] : '';
+  const limpio = String(seg)
+    .replace(/(?:^|[\s\-_.])\d{6,8}(?=[\s\-_.]|$)/g, ' ')  // 191225, 20191225
+    .replace(/\d{4}[-_.]\d{2}[-_.]\d{2}/g, ' ')            // 2019-12-25
+    .replace(/[_\-.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const trozos = limpio.toLowerCase().split(/[^a-záéíóúüñ]+/i).filter(Boolean);
+  // "DCIM", "Camara", "Fotos": eso no es el nombre de nada. Mejor no decir
+  // nada que decir el nombre de la carpeta donde vuelca la camara.
+  const dice = trozos.some(p => p.length >= 2 && !vacia(p));
+  const info = {
+    titulo: dice && limpio.length >= 2 && limpio.length <= 48 ? limpio : '',
+    palabras: Array.from(new Set(trozos)).filter(p => p.length >= 4 && !vacia(p)).slice(0, 4),
+  };
+  memoEvento.set(ev, info);
+  return info;
+}
+
+/** Las palabras del titulo del evento que pueden servir de hilo. */
+const palabrasDeEvento = (ev, fullPath) => infoEvento(ev, fullPath).palabras;
+/** Como se llama aquello, para enseñarlo. */
+const tituloDeEvento = (ev, fullPath) => infoEvento(ev, fullPath).titulo;
 
 function fechaDe(f) {
   const cand = f.extractedDate || f.createdAt;
@@ -132,6 +215,14 @@ const mmddLocal = (d) => diaLocal(d).slice(5);
 function situacionDe(f) {
   const atm = f.atmosphere || {};
   const encuadre = (f.composition && f.composition.people_framing) || '';
+  // Sin escaneo de vision no hay ni espacio ni luz ni encuadre: todo caeria en
+  // 'otro·nadie·dia' y el reparto por variedad (que evita diez fotos iguales
+  // seguidas) se quedaria sin nada que repartir. Con lo que se sabe sin mirar
+  // la imagen —foto o video, y de que año— la pantalla al menos mezcla epocas.
+  if (!atm.space_type && !atm.lighting && !atm.time_of_day && !encuadre) {
+    const d = fechaDe(f);
+    return `${f.type === 'video' ? 'video' : 'foto'}·${d ? d.getFullYear() : 'sin fecha'}`;
+  }
   const gente = !encuadre || encuadre === 'ninguno' ? 'nadie'
     : encuadre === 'individual' ? 'alguien'
       : encuadre === 'pareja' ? 'dos'
@@ -184,7 +275,7 @@ function rutaMiniatura(f) {
  * con algo por lo que poder unirse a otros. La semilla es el dia, asi que cada
  * dia la portada tiene otro reparto.
  */
-function elegirNodos(files, clipIndex, dia, hoy) {
+function elegirNodos(files, clipIndex, dia, hoy, humano) {
   const porEvento = new Map();
   for (const f of files) {
     if (!f || (f.type !== 'image' && f.type !== 'video')) continue;
@@ -193,10 +284,18 @@ function elegirNodos(files, clipIndex, dia, hoy) {
     const personas = Array.isArray(f.faces) ? f.faces.filter(c => c && c.person_id).length : 0;
     const clip = clipIndex && typeof clipIndex.has === 'function' && clipIndex.has(f.id);
     const atm = f.atmosphere && (f.atmosphere.lighting || f.atmosphere.mood);
-    let puntos = (personas > 0 ? 4 : 0) + (clip ? 2 : 0) + (atm ? 1 : 0) + (Array.isArray(f.spaces) && f.spaces.length ? 2 : 0);
-    if (puntos === 0) continue;
-    puntos += (semilla(f.id + dia) % 100) / 100; // desempate que cambia cada dia
     const ev = eventoDe(f.fullPath);
+    // Lo que has marcado tu pesa como una cara: si lo guardaste, algo tenia.
+    const h = humano(f) || {};
+    const propio = (f.isFavorite || h.favorito ? 3 : 0) + (h.nota ? 2 : 0) + (h.coleccion ? 2 : 0);
+    let puntos = (personas > 0 ? 4 : 0) + (clip ? 2 : 0) + (atm ? 1 : 0)
+      + (Array.isArray(f.spaces) && f.spaces.length ? 2 : 0) + propio
+      + (fechaDe(f) ? 1 : 0) + (palabrasDeEvento(ev, f.fullPath).length ? 1 : 0);
+    // Nada de lo anterior: un archivo indexado y nunca escaneado. Entra igual,
+    // el ultimo de su evento. Antes se descartaba, y un archivo entero sin
+    // escanear no tenia un solo recuerdo que enseñar.
+    if (puntos === 0) puntos = 0.5;
+    puntos += (semilla(f.id + dia) % 100) / 100; // desempate que cambia cada dia
     const arr = porEvento.get(ev);
     const item = { f, puntos, situacion: situacionDe(f) };
     if (arr) arr.push(item); else porEvento.set(ev, [item]);
@@ -259,7 +358,10 @@ function elegirNodos(files, clipIndex, dia, hoy) {
       if (elegidos.length >= MAX_NODOS) break;
       const orden = arr
         .filter(c => !yaElegido.has(c.f.id))
-        .map(c => ({ c, clave: (porSituacion.get(c.situacion) || 0) - c.puntos * 0.01 }))
+        // La variedad manda (cada repeticion de situacion cuesta 10), pero
+        // dentro de lo igual de fresco gana lo que tiene algo que contar: en un
+        // archivo a medio escanear, lo escaneado sale antes que lo que aun no.
+        .map(c => ({ c, clave: (porSituacion.get(c.situacion) || 0) * 10 - c.puntos * 0.4 }))
         .sort((a, b) => a.clave - b.clave);
       // Si al primero le falta la miniatura, el siguiente: un evento no se
       // queda fuera de la ronda por un archivo sin preparar.
@@ -288,29 +390,38 @@ function familiaDe(f) {
  * Prepara la portada a partir de la lista de archivos (sin filtrar por el
  * candado: eso se hace al servir).
  */
-function preparar(files, { clipIndex, hoy = new Date() } = {}) {
+function preparar(files, { clipIndex, hoy = new Date(), humano } = {}) {
+  memoEvento.clear();
+  const dime = typeof humano === 'function' ? humano : () => ({});
   const dia = hoy.toISOString().slice(0, 10);
-  const elegidos = elegirNodos(Array.isArray(files) ? files : [], clipIndex, dia, hoy);
+  const elegidos = elegirNodos(Array.isArray(files) ? files : [], clipIndex, dia, hoy, dime);
+
+  // Las etiquetas de un archivo son las suyas mas las palabras del nombre de su
+  // carpeta. Sin escaneo, las primeras casi no existen y las segundas son todo
+  // lo que hay: son las que unen la navidad de 2019 con la de 2024.
+  const etiquetasDe = (f, ev) => (Array.isArray(f.tags) ? f.tags : []).concat(palabrasDeEvento(ev, f.fullPath));
 
   // Conteo de etiquetas por evento, sobre TODO el archivo: una etiqueta que
   // sale en 400 eventos no une nada; una que sale en 2 a 30, si.
   const eventosPorEtiqueta = new Map();
+  const eventos = new Set();
   for (const f of files || []) {
-    if (!Array.isArray(f.tags)) continue;
+    if (!f || !f.fullPath) continue;
     const ev = eventoDe(f.fullPath);
-    for (const t of f.tags) {
+    eventos.add(ev);
+    for (const t of etiquetasDe(f, ev)) {
       if (typeof t !== 'string') continue;
       const k = t.trim().toLowerCase();
-      if (k.length < 4 || ETIQUETAS_VACIAS.has(k) || /\d/.test(k) || k.includes('_') || /^(gris|negro|blanco|marron|piel|crema|beige)\b/.test(k)) continue;
+      if (k.length < 4 || vacia(k) || /\d/.test(k) || k.includes('_') || /^(gris|negro|blanco|marron|piel|crema|beige)\b/.test(k)) continue;
       let s = eventosPorEtiqueta.get(k);
       if (!s) { s = new Set(); eventosPorEtiqueta.set(k, s); }
-      if (s.size < 40) s.add(ev);
+      if (s.size < TOPE_CONTEO_EVENTOS) s.add(ev);
     }
   }
 
   // Rara = significativa: una etiqueta sirve de hilo si sale en pocos eventos.
-  const totalEventos = new Set((files || []).map(f => eventoDe(f.fullPath))).size;
-  const techoTema = Math.max(3, Math.round(totalEventos * 0.06));
+  const totalEventos = eventos.size;
+  const techoTema = Math.max(3, Math.min(TOPE_CONTEO_EVENTOS - 1, Math.round(totalEventos * 0.06)));
 
   const nodos = elegidos.map(({ f, ev, ruta }, i) => {
     const d = fechaDe(f);
@@ -320,7 +431,7 @@ function preparar(files, { clipIndex, hoy = new Date() } = {}) {
         personas.push({ id: c.person_id, nombre: c.display_name || c.person_id });
       }
     }
-    const temas = (Array.isArray(f.tags) ? f.tags : [])
+    const temas = etiquetasDe(f, ev)
       .map(t => String(t).trim().toLowerCase())
       .filter(t => { const s = eventosPorEtiqueta.get(t); return s && s.size >= 2 && s.size <= techoTema; })
       .slice(0, 12);
@@ -330,6 +441,9 @@ function preparar(files, { clipIndex, hoy = new Date() } = {}) {
       mediaKey: f.mediaKey || null,
       tipo: f.type,
       evento: ev,
+      // Como se llama aquello: es lo que se enseña al pasar por encima, y en un
+      // archivo sin escanear es lo unico que se sabe del recuerdo.
+      titulo: tituloDeEvento(ev, f.fullPath),
       ruta,
       fecha: d ? diaLocal(d) : null,
       situacion: situacionDe(f),
@@ -463,6 +577,7 @@ function preparar(files, { clipIndex, hoy = new Date() } = {}) {
       i: n.i, id: n.id, mediaKey: n.mediaKey, tipo: n.tipo, fecha: n.fecha, ruta: n.ruta,
       personas: n.personas.slice(0, 4),
       situacion: n.situacion,
+      titulo: n.titulo || '',
       // El evento como numero: a la portada solo le hace falta saber si dos
       // recuerdos son del mismo, no la ruta.
       ev: semilla(n.evento),
@@ -532,8 +647,10 @@ function servir(portada, estaOculto, hoy = new Date()) {
       : null,
     nodos: vivos.map((n, idx) => ({
       i: idx, id: n.id, tipo: n.tipo, fecha: n.fecha, personas: n.personas,
-      situacion: n.situacion || '', ev: n.ev || 0,
-      miniatura: `/api/thumbnails/${encodeURIComponent(n.id)}`,
+      situacion: n.situacion || '', ev: n.ev || 0, titulo: n.titulo || '',
+      // ?o=1: las miniaturas de fotos verticales se rehicieron giradas bien
+      // (23/09/2026); con la URL de antes el navegador enseñaba 7 dias la tumbada.
+      miniatura: `/api/thumbnails/${encodeURIComponent(n.id)}?o=1`,
     })),
     enlaces: (portada.enlaces || [])
       .filter(e => nuevo.has(e.a) && nuevo.has(e.b))

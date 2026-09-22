@@ -9,6 +9,7 @@ const fallos = require('./utils/failureReason');
 const mediaIdentity = require('./utils/mediaIdentity');
 const crypto = require('crypto');
 const { quarantineCorrupt } = require('./utils/jsonStore');
+const retiradas = require('./services/retiradas');
 
 // Límite máximo de archivos por colección
 const MAX_FILES_PER_COLLECTION = 500;
@@ -394,6 +395,43 @@ class CollectionsManager {
   }
 
   /**
+   * Un archivo ha cambiado de sitio: sus referencias en las colecciones pasan
+   * a la identidad nueva (la portable si la tiene), en el mismo orden.
+   * Ver services/reenlazar.js.
+   * @returns {Promise<number>} referencias reenlazadas
+   */
+  async reenlazar(pares) {
+    const mapa = new Map();
+    for (const { de, a } of pares || []) {
+      const nuevo = a.mediaKey || a.id;
+      if (!nuevo) continue;
+      if (de.id) mapa.set(de.id, nuevo);
+      if (de.mediaKey) mapa.set(de.mediaKey, nuevo);
+    }
+    if (mapa.size === 0) return 0;
+    let n = 0;
+    for (const collection of this.collections.values()) {
+      let cambio = false;
+      const vistos = new Set();
+      const nuevas = [];
+      for (const ref of collection.mediaFiles || []) {
+        const r = mapa.get(ref) || ref;
+        if (r !== ref) { n++; cambio = true; }
+        if (vistos.has(r)) { cambio = true; continue; }
+        vistos.add(r);
+        nuevas.push(r);
+      }
+      if (mapa.has(collection.coverImage)) { collection.coverImage = mapa.get(collection.coverImage); cambio = true; }
+      if (cambio) {
+        collection.mediaFiles = nuevas;
+        collection.updatedAt = new Date().toISOString();
+      }
+    }
+    if (n > 0) await this.saveCollections();
+    return n;
+  }
+
+  /**
    * Limpiar archivos huérfanos (archivos en colecciones que ya no existen)
    */
   async cleanupOrphanedFiles(files, opts = {}) {
@@ -415,6 +453,9 @@ class CollectionsManager {
       // Si alguna biblioteca activa no se ha podido leer, no se puede afirmar
       // que un id md5 haya desaparecido: puede estar en el disco desconectado.
       const todasLeidas = !!opts.todasLasBibliotecasLeidas;
+      // Lo desaparecido hace poco puede estar a punto de aparecer en otro
+      // sitio (services/reenlazar): se conserva mientras tanto.
+      const protegidas = opts.protegidas instanceof Set ? opts.protegidas : null;
 
       // ¿Se puede DEMOSTRAR que esta referencia ya no existe?
       const puedeProbarQueFalta = (ref) => {
@@ -426,12 +467,16 @@ class CollectionsManager {
       let totalRemovedFiles = 0;
       let protegidos = 0;
       const updatedCollections = [];
+      // Rastro de lo que se quita (services/retiradas): con su ruta si se sabe.
+      const rutaDe = typeof opts.rutaDe === 'function' ? opts.rutaDe : () => null;
+      const quitadas = [];
 
       for (const collection of this.collections.values()) {
         const initialFileCount = collection.mediaFiles.length;
         collection.mediaFiles = collection.mediaFiles.filter(ref => {
           if (presentes.has(ref)) return true;
-          if (!puedeProbarQueFalta(ref)) { protegidos++; return true; }
+          if (!puedeProbarQueFalta(ref) || (protegidas && protegidas.has(ref))) { protegidos++; return true; }
+          quitadas.push({ ref, donde: collection.name, ruta: rutaDe(ref) || null });
           return false;
         });
 
@@ -447,6 +492,7 @@ class CollectionsManager {
         console.log(`🛡️ ${protegidos} referencia(s) de bibliotecas no recorridas: se conservan en sus colecciones`);
       }
       if (totalRemovedFiles > 0) {
+        retiradas.anotar('coleccion', quitadas);
         await this.saveCollections();
         console.log(`🧹 Archivos huérfanos eliminados: ${totalRemovedFiles} archivos de ${updatedCollections.length} colecciones`);
         console.log(`   Colecciones afectadas: ${updatedCollections.join(', ')}`);

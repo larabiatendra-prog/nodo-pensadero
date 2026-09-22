@@ -7,6 +7,7 @@ import {
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
 import type { MediaFile } from '../types';
+import PestanasGemelas, { type ApartadoGemelas } from './PestanasGemelas';
 
 /**
  * Tomas gemelas.
@@ -47,7 +48,14 @@ interface Props {
   descartadas: Set<string>;
   /** Notas humanas por fileId: una toma anotada no la descarta una maquina. */
   notas?: Record<string, string>;
+  /**
+   * Falso cuando hay algo abierto encima (visor, vista rapida, pase). La vista
+   * sigue montada debajo del visor, y sin esto sus atajos seguian vivos: Intro
+   * o flecha abajo aceptaban el grupo que no estabas viendo.
+   */
+  tecladoActivo?: boolean;
   onBack: () => void;
+  onCambiarApartado: (a: ApartadoGemelas) => void;
   onSelectFile: (file: MediaFile) => void;
   /** Persiste el cambio y actualiza el estado global. */
   onCambiarDescartes: (fileIds: string[], descartar: boolean) => Promise<void>;
@@ -138,7 +146,7 @@ function elegirMejor(
 }
 
 export default function DuplicatesView({
-  files, descartadas, notas, onBack, onSelectFile, onCambiarDescartes,
+  files, descartadas, notas, tecladoActivo = true, onBack, onCambiarApartado, onSelectFile, onCambiarDescartes,
 }: Props) {
   const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [stats, setStats] = useState<Record<string, number> | null>(null);
@@ -184,6 +192,14 @@ export default function DuplicatesView({
   >(null);
 
   const porId = useMemo(() => new Map(files.map(f => [f.id, f])), [files]);
+
+  // Cuantas copias exactas hay por decidir, para la pestaña de al lado.
+  const [copiasPendientes, setCopiasPendientes] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    api.getCopiasResumen()
+      .then(r => { if (r.success && r.data) setCopiasPendientes(r.data.pendientes); })
+      .catch(() => { /* la pestaña sale sin numero */ });
+  }, []);
 
   const cargar = async (u: number) => {
     setCargando(true);
@@ -459,6 +475,7 @@ export default function DuplicatesView({
   // Teclado: con cientos de grupos por delante, ir al raton para cada uno es
   // el cuello de botella.
   useEffect(() => {
+    if (!tecladoActivo) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -470,7 +487,7 @@ export default function DuplicatesView({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [grupoActual, quedan, cola.length, soloPendientes, trabajando, ultimaAccion]);
+  }, [grupoActual, quedan, cola.length, soloPendientes, trabajando, ultimaAccion, tecladoActivo]);
 
   const apartadasDelGrupo = grupoActual
     ? grupoActual.fileIds.filter(id => descartadas.has(id)).length
@@ -487,6 +504,8 @@ export default function DuplicatesView({
         <ArrowLeft className="w-4 h-4" />
         <span>Volver</span>
       </button>
+
+      <PestanasGemelas activo="parecidas" onCambiar={onCambiarApartado} pendientesCopias={copiasPendientes} />
 
       {/* Cabecera y herramientas comparten fila: en escritorio sobra ancho de
           sobra y apilarlas solo empujaba el trabajo hacia abajo. */}

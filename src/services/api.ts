@@ -1,5 +1,5 @@
 import { config } from '../config';
-import type { GrupoPersonas, MediaFile } from '../types';
+import type { CopiaGrupo, CopiasPar, CopiasResumen, GrupoPersonas, MediaFile } from '../types';
 
 const API_BASE_URL = config.apiBaseUrl;
 
@@ -150,8 +150,9 @@ class ApiService {
 
         // Intentar extraer mensaje de error del body
         let errorMessage = response.statusText;
+        let errorData: any = null;
         try {
-          const errorData = await response.json();
+          errorData = await response.json();
           // Buscar mensaje en 'message' o 'error'
           if (errorData.message) {
             errorMessage = errorData.message;
@@ -165,6 +166,9 @@ class ApiService {
         const error: any = new Error(errorMessage);
         error.status = response.status;
         error.statusText = response.statusText;
+        // El cuerpo entero, para errores que traen algo mas que el mensaje
+        // (p. ej. "este disco ya es la biblioteca X": `mismoDisco`).
+        error.data = errorData;
         throw error;
       }
 
@@ -429,6 +433,59 @@ class ApiService {
     });
   }
 
+  // ── Copias exactas ─────────────────────────────────────────────────────
+  // El mismo archivo en dos sitios. Nada se borra: solo se decide cual se ve.
+  async getCopiasResumen() {
+    return this.fetchWithErrorHandling<ApiResponse<CopiasResumen>>(`${API_BASE_URL}/copias/resumen`);
+  }
+
+  async getCopias(opts: { solo?: 'pendientes' | 'todas'; desde?: number; limite?: number } = {}) {
+    const q = new URLSearchParams({
+      solo: opts.solo || 'pendientes',
+      desde: String(opts.desde || 0),
+      limite: String(opts.limite || 60),
+    });
+    return this.fetchWithErrorHandling<ApiResponse<{
+      resumen: CopiasResumen;
+      total: number;
+      grupos: CopiaGrupo[];
+      pares: CopiasPar[];
+    }>>(`${API_BASE_URL}/copias?${q}`);
+  }
+
+  async limpiarCopias() {
+    return this.fetchWithErrorHandling<ApiResponse<{
+      grupos: number; escondidas: number; huellas: string[]; lote: string; resumen: CopiasResumen;
+    }>>(`${API_BASE_URL}/copias/limpiar`, { method: 'POST' });
+  }
+
+  async decidirCopia(huella: string, quedan: string[]) {
+    return this.fetchWithErrorHandling<ApiResponse<{ resumen: CopiasResumen }>>(`${API_BASE_URL}/copias/decidir`, {
+      method: 'POST',
+      body: JSON.stringify({ huella, quedan }),
+    });
+  }
+
+  /** Devuelve grupos a pendiente. Con `lote`, solo lo que decidio esa limpieza. */
+  async olvidarCopias(huellas: string[], lote?: string) {
+    return this.fetchWithErrorHandling<ApiResponse<CopiasResumen & { quitadas: number }>>(`${API_BASE_URL}/copias/olvidar`, {
+      method: 'POST',
+      body: JSON.stringify({ huellas, lote }),
+    });
+  }
+
+  async buscarCopias() {
+    return this.fetchWithErrorHandling<ApiResponse<CopiasResumen>>(`${API_BASE_URL}/copias/buscar`, { method: 'POST' });
+  }
+
+  // Disco de copia de seguridad: sus copias exactas se esconden solas.
+  async setCopiaSeguridadRuta(pathId: string, copiaSeguridad: boolean) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan-paths/${pathId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ copiaSeguridad }),
+    });
+  }
+
   // ── Material oculto (candado) ──────────────────────────────────────────
   // Ocultar no pide clave; ver o liberar si. La llave va en cabecera, nunca
   // en la URL, para que no quede en el historial.
@@ -574,6 +631,15 @@ class ApiService {
   async syncPath(pathId: string) {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan-paths/${pathId}/sync`, {
       method: 'POST',
+    });
+  }
+
+  // Cambiar la ubicacion de una biblioteca (otra letra de unidad, otra carpeta)
+  // conservando su identidad: favoritos, notas y colecciones siguen con ella.
+  async cambiarUbicacionRuta(pathId: string, path: string) {
+    return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan-paths/${pathId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ path }),
     });
   }
 
@@ -924,7 +990,8 @@ class ApiService {
   }
 
   async startScanAll(force: boolean = false) {
-    return this.fetchWithErrorHandling<ApiResponse<any> & { jobIds?: string[]; count?: number; force?: boolean }>(
+    // `items` casa cada jobId con SU ruta (casarlos por posicion fallaba).
+    return this.fetchWithErrorHandling<ApiResponse<any> & { jobIds?: string[]; items?: Array<{ pathId: string; path: string; jobId: string }>; count?: number; force?: boolean }>(
       `${API_BASE_URL}/scan/start-all`,
       { method: 'POST', body: JSON.stringify({ force }) }
     );
@@ -972,6 +1039,8 @@ class ApiService {
         // Cobertura de escaneo visual de los archivos DIRECTOS de la carpeta.
         visualTotal: number;
         visualScanned: number;
+        // A cuantos les falta algun trabajo encendido ahora (no solo descripcion).
+        pendientes?: number;
       }>;
     }>>(`${API_BASE_URL}/scan/inventory?${qs}`);
   }

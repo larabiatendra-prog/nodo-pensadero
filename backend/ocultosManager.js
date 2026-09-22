@@ -134,6 +134,31 @@ class OcultosManager {
     return (!!file.mediaKey && this.ids.has(file.mediaKey)) || (!!file.id && this.ids.has(file.id));
   }
 
+  /**
+   * Un archivo oculto ha cambiado de sitio: sigue oculto en el sitio nuevo.
+   * Sin esto, mover una carpeta con material bajo candado lo dejaba a la
+   * vista. Ver services/reenlazar.js.
+   * @returns {Promise<number>} entradas reenlazadas
+   */
+  async reenlazar(pares) {
+    await this.ensureLoaded();
+    let n = 0;
+    for (const { de, a } of pares || []) {
+      const vieja = [de.mediaKey, de.id].find(k => k && this.items.has(k));
+      const nueva = a.mediaKey || a.id;
+      if (!vieja || !nueva || vieja === nueva) continue;
+      const v = this.items.get(vieja);
+      this.items.delete(vieja);
+      if (!this.items.has(nueva)) this.items.set(nueva, { ...v, id: a.id || v.id || null });
+      n++;
+    }
+    if (n > 0) {
+      this._reindexar();
+      await this._save();
+    }
+    return n;
+  }
+
   /** Lo que la aplicacion puede enseñar. Devuelve el mismo array si no hay nada oculto. */
   visibles(files) {
     if (!Array.isArray(files) || this.ids.size === 0) return files || [];

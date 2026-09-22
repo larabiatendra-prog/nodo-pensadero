@@ -55,6 +55,7 @@ async function _escribir(estado) {
  */
 async function iniciar({ tipo, rutas = [], carpeta = null, force = false, reanudando = false }) {
   const previo = reanudando ? (_estado || _leer()) : null;
+  const ahora = new Date().toISOString();
   await _escribir({
     version: 1,
     activo: true,
@@ -62,12 +63,17 @@ async function iniciar({ tipo, rutas = [], carpeta = null, force = false, reanud
     rutas,
     carpeta,
     force,
-    iniciado: new Date().toISOString(),
+    // Un re-escaneo (force) que se reanuda no debe volver a empezar: lo que se
+    // escaneo desde esta fecha ya es de esta tanda (ver scanFolder). Se
+    // conserva la del primer arranque aunque se reanude varias veces.
+    forzarDesde: force ? ((previo && (previo.forzarDesde || previo.iniciado)) || ahora) : null,
+    iniciado: ahora,
     reanudaciones: previo ? (previo.reanudaciones || 0) + 1 : 0,
     // Progreso del arranque anterior, para detectar si reanudar sirve de algo.
     avancePrevio: previo ? (previo.ultimoAvance || 0) : 0,
     ultimoAvance: 0,
   });
+  return _estado;
 }
 
 /**

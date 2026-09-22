@@ -42,11 +42,13 @@
   transition: opacity 1.6s ease, filter 1.2s ease, box-shadow 1.2s ease;
   box-shadow: 0 10px 40px rgba(0,0,0,.45);
 }
-.pt-recuerdo img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 6s ease; pointer-events: none; }
+/* El radio en la imagen (y en el video) permite soltar el `overflow: hidden`
+   del recuerdo mientras se mira, que es lo que recortaba el pie. */
+.pt-recuerdo img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: inherit; transition: transform 6s ease; pointer-events: none; }
 .pt-recuerdo__vivo {
   /* El video que respira: entra sobre su propia miniatura, sin saltos. */
   position: absolute; inset: 0; width: 100%; height: 100%;
-  object-fit: cover; display: block; pointer-events: none;
+  object-fit: cover; display: block; pointer-events: none; border-radius: inherit;
   animation: pt-aparecer 1.1s ease both;
 }
 .pt-recuerdo::after {
@@ -66,6 +68,22 @@
 .pt-recuerdo--encendido img { transform: scale(1.06); }
 .pt-recuerdo--oculto { opacity: 0 !important; }
 .pt-recuerdo:focus-visible { outline: 2px solid #C8B6FF; outline-offset: 3px; }
+/* Mirar algo lo enfoca: quita el velo de profundidad mientras el raton esta
+   encima, igual que cuando le llega el hilo. */
+.pt-recuerdo:hover { filter: none !important; z-index: 6 !important; overflow: visible; }
+
+/* ---- Pie: de cuando y de que es esto ---- */
+.pt-pie {
+  position: absolute; left: 50%; bottom: -6px; transform: translate(-50%, 100%);
+  max-width: 200%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 4px 9px; border-radius: 999px;
+  background: rgba(15,17,26,.78); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(200,182,255,.14);
+  font-size: 10.5px; letter-spacing: .2px; color: #cfd2e6;
+  opacity: 0; pointer-events: none;
+  transition: opacity .45s ease, transform .45s cubic-bezier(.2,.7,.2,1);
+}
+.pt-recuerdo:hover .pt-pie { opacity: 1; transform: translate(-50%, calc(100% - 4px)); }
 
 /* Orbe: recuerdo sin imagen (archivo vacio o casi) */
 .pt-orbe {

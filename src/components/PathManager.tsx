@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   FolderOpen, RefreshCw, Plus, Sparkles, Square, AlertTriangle, ChevronRight,
-  Folder, MoreHorizontal, Check, RotateCcw, Cpu, Zap, Tag, Unlink, Link2, Trash2, X,
+  Folder, MoreHorizontal, Check, RotateCcw, Cpu, Zap, Tag, Unlink, Link2, Trash2, X, ShieldCheck, HardDrive,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
@@ -34,13 +34,20 @@ interface ScanPath {
   isActive: boolean;
   lastScan: Date | null;
   fileCount: number;
-  status: 'connected' | 'disconnected' | 'scanning' | 'error';
+  // otro_disco: en esa letra hay un disco que no es el de la biblioteca (el
+  // servidor lo reconoce por el numero de serie del volumen) y no se lee.
+  status: 'connected' | 'disconnected' | 'otro_disco' | 'scanning' | 'error';
   errorMessage?: string;
   lastError?: string | null;
-  visualTotal?: number;     // archivos media bajo la ruta (live)
+  visualTotal?: number;     // archivos que el escaneo mira bajo la ruta (live)
   visualScanned?: number;   // de esos, cuantos tienen descripcion visual
+  pendientes?: number;      // a cuantos les falta algun trabajo encendido ahora
+  /** El disco de esta biblioteca esta ahora en otra ruta (otra letra). */
+  sugerencia?: { ruta: string; ocupadaPor?: { id: string; nombre: string } | null } | null;
   escaneo?: Partial<Capacidades>;       // lo que esta ruta sobrescribe
   escaneoEfectivo?: Capacidades;         // global + sobrescrituras
+  /** Disco de copia de seguridad: sus copias exactas se esconden solas. */
+  copiaSeguridad?: boolean;
 }
 
 interface AiScanState {
@@ -77,6 +84,15 @@ interface SubfolderInfo {
   folderName: string | null;
   visualTotal: number;
   visualScanned: number;
+  pendientes?: number;
+}
+
+/** Al añadir: esa carpeta es el disco de una biblioteca que ya existe. */
+interface MismoDisco {
+  id: string;
+  nombre: string;
+  ruta: string;
+  nuevaRuta: string;
 }
 
 // Nombres legibles de las capacidades que pueden caerse durante un escaneo.
@@ -116,6 +132,9 @@ const PRESETS: Array<{ id: string; nombre: string; detalle: string; valores: Par
 ];
 
 const miles = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+/** Vinculada y con SU disco en su sitio (ni fuera ni otro disco en esa letra). */
+const estaConectada = (p: ScanPath) => p.isActive && p.status !== 'disconnected' && p.status !== 'otro_disco';
 
 // Formatea una duracion en ms a texto humano corto: "850ms", "2.4s", "3m 12s",
 // "1h 5m". Para medias por archivo (< 1 min) preferimos segundos con decimal.
@@ -186,11 +205,13 @@ function Coste({ recurso, coste }: { recurso: string; coste: string }) {
 }
 
 /** Menu de "mas acciones" de una ruta: lo que no se usa a diario. */
-function MenuRuta({ path, onReescanear, onRenombrar, onVincular, onQuitar, puedeReescanear }: {
+function MenuRuta({ path, onReescanear, onRenombrar, onUbicacion, onVincular, onCopiaSeguridad, onQuitar, puedeReescanear }: {
   path: ScanPath;
   onReescanear: () => void;
   onRenombrar: () => void;
+  onUbicacion: () => void;
   onVincular: () => void;
+  onCopiaSeguridad: () => void;
   onQuitar: () => void;
   puedeReescanear: boolean;
 }) {
@@ -228,9 +249,24 @@ function MenuRuta({ path, onReescanear, onRenombrar, onVincular, onQuitar, puede
             <Tag className="w-4 h-4" />
             Renombrar carpetas
           </button>
+          {/* El disco cambio de letra (D: -> E:) o se movio la carpeta. Añadirla
+              como ruta nueva dejaba colgando lo suyo de la vieja. */}
+          {path.id !== 'default' && (
+            <button role="menuitem" className={`${item} text-niebla hover:bg-pizarra hover:text-marfil`} onClick={hacer(onUbicacion)}>
+              <HardDrive className="w-4 h-4" />
+              <span>Cambiar ubicación<span className="block text-[11px] text-humo">Si el disco tiene otra letra. No se pierde nada</span></span>
+            </button>
+          )}
           <button role="menuitem" className={`${item} text-niebla hover:bg-pizarra hover:text-marfil`} onClick={hacer(onVincular)}>
             {path.isActive ? <Unlink className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
             <span>{path.isActive ? 'Desvincular' : 'Volver a vincular'}<span className="block text-[11px] text-humo">{path.isActive ? 'Deja de sincronizarse, sin borrar nada' : 'Vuelve a sincronizarse'}</span></span>
+          </button>
+          {/* Un disco de backup conectado junto al original duplica todo en la
+              galeria. Marcarlo decide de una vez cual se ve, tambien para lo
+              que se copie mas adelante. */}
+          <button role="menuitemcheckbox" aria-checked={!!path.copiaSeguridad} className={`${item} text-niebla hover:bg-pizarra hover:text-marfil`} onClick={hacer(onCopiaSeguridad)}>
+            <ShieldCheck className={`w-4 h-4 ${path.copiaSeguridad ? 'text-lavanda' : ''}`} />
+            <span>{path.copiaSeguridad ? 'Dejar de ser copia de seguridad' : 'Es copia de seguridad'}<span className="block text-[11px] text-humo">{path.copiaSeguridad ? 'Sus copias vuelven a contar como duplicados' : 'Si un archivo también está en otro disco, se ve el otro'}</span></span>
           </button>
           {path.id !== 'default' && (
             <>
@@ -257,6 +293,11 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [newPath, setNewPath] = useState('');
   const [showAddPath, setShowAddPath] = useState(false);
   const [scanningPaths, setScanningPaths] = useState<Set<string>>(new Set());
+  // Al añadir una carpeta que resulta ser el disco de una biblioteca existente.
+  const [mismoDisco, setMismoDisco] = useState<MismoDisco | null>(null);
+  // Ruta cuya ubicacion se esta cambiando (formulario en su propia fila).
+  const [ubicacion, setUbicacion] = useState<{ id: string; valor: string } | null>(null);
+  const [guardandoUbicacion, setGuardandoUbicacion] = useState(false);
 
   // Que hace el escaneo: catalogo de trabajos y los globales.
   const [catalogo, setCatalogo] = useState<CapacidadInfo[]>(CATALOGO_RESERVA);
@@ -474,7 +515,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               total: progressData.total ?? cur.total,
               done: progressData.done ?? cur.done,
               errors: progressData.errors ?? cur.errors,
-              status: progressData.estado === 'cancelled' ? 'cancelled' : 'done',
+              // 'error': el escaneo se paro por un fallo fuera de un archivo
+              // concreto; antes se quedaba pintado como "escaneando" para siempre.
+              status: progressData.estado === 'cancelled' ? 'cancelled' : progressData.estado === 'error' ? 'error' : 'done',
+              errorMessage: progressData.estado === 'error' ? (progressData.status || 'El escaneo se ha parado') : cur.errorMessage,
               currentFile: undefined,
               totalMs: progressData.elapsedMs ?? cur.totalMs,
               avgMsPerFile: progressData.avgMsPerFile ?? cur.avgMsPerFile,
@@ -570,33 +614,72 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const handleAddPath = async () => {
     if (!newPath.trim()) return;
+    setMismoDisco(null);
     try {
       const response = await api.addScanPath(newPath.trim());
       if (response.success && response.data) {
         setNewPath('');
         setShowAddPath(false);
-        toast.success('Ruta añadida. Sincronízala para ver su contenido.');
+        // Se vincula y se sincroniza sola: ya no hay que hacer tres pasos.
+        toast.success('Ruta añadida. Sincronizando su contenido…');
         loadPaths();
       }
     } catch (error: any) {
+      // Es el disco de una biblioteca que ya existe, con otra letra: lo que
+      // toca es cambiar la ubicacion de esa, no añadir otra.
+      if (error?.data?.mismoDisco) {
+        setMismoDisco(error.data.mismoDisco as MismoDisco);
+        return;
+      }
       toast.error(error?.message || 'No se pudo añadir la ruta. Comprueba que existe.');
+    }
+  };
+
+  /** Lleva una biblioteca a otra ruta conservando todo lo suyo. */
+  const cambiarUbicacion = async (pathId: string, nuevaRuta: string) => {
+    const ruta = nuevaRuta.trim();
+    if (!ruta) return;
+    setGuardandoUbicacion(true);
+    try {
+      const r: any = await api.cambiarUbicacionRuta(pathId, ruta);
+      if (r.success) {
+        setUbicacion(null);
+        setMismoDisco(null);
+        setShowAddPath(false);
+        setNewPath('');
+        const n = r.movido?.archivos;
+        toast.success(n
+          ? `Ubicación cambiada. ${miles(n)} archivos siguen con sus favoritos, notas y colecciones. Sincronizando…`
+          : 'Ubicación cambiada. Sincronizando…');
+        loadPaths();
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'No se pudo cambiar la ubicación');
+    } finally {
+      setGuardandoUbicacion(false);
     }
   };
 
   const handleSyncPath = async (pathId: string) => {
     setScanningPaths(prev => new Set([...prev, pathId]));
     try {
-      setPaths(prev => prev.map(p => p.id === pathId ? { ...p, status: 'scanning' } : p));
-      const response = await api.syncPath(pathId);
+      setPaths(prev => prev.map(p => p.id === pathId ? { ...p, status: 'scanning', errorMessage: undefined } : p));
+      const response: any = await api.syncPath(pathId);
       if (response.success) {
-        toast.success(`Sincronizada: ${miles((response as any).fileCount || 0)} archivos`);
-        loadPaths();
+        // Lectura incompleta (una carpeta sin permiso...): se sincroniza igual,
+        // pero se dice.
+        if (response.aviso) toast(response.aviso, { icon: '⚠️', duration: 8000 });
+        else toast.success(`Sincronizada: ${miles(response.fileCount || 0)} archivos`);
+        const r = response.reenlazados;
+        if (r?.archivos) toast.success(`${miles(r.archivos)} archivos movidos reconocidos: conservan favoritos, notas y colecciones.`);
       }
+      loadPaths();
     } catch (error: any) {
       setPaths(prev => prev.map(p =>
-        p.id === pathId ? { ...p, status: 'error', errorMessage: 'No se pudo sincronizar. Comprueba que la ruta existe.' } : p
+        p.id === pathId ? { ...p, status: 'error', errorMessage: error?.message || 'No se pudo sincronizar. Comprueba que la ruta existe.' } : p
       ));
       toast.error(error?.message || 'No se pudo sincronizar la ruta');
+      loadPaths();
     } finally {
       setScanningPaths(prev => {
         const updated = new Set(prev);
@@ -608,14 +691,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const handleTogglePath = async (pathId: string, currentStatus: boolean) => {
     try {
-      const response = await api.togglePath(pathId, !currentStatus);
+      const response: any = await api.togglePath(pathId, !currentStatus);
       if (response.success) {
+        // El estado lo dice el servidor (si el disco no esta, no esta), y la
+        // galeria se pone al dia sola: el servidor sincroniza esa ruta.
+        const d = response.data || {};
         setPaths(prev => prev.map(p =>
-          p.id === pathId
-            ? { ...p, isActive: !currentStatus, status: !currentStatus ? 'connected' : 'disconnected' }
-            : p
+          p.id === pathId ? { ...p, isActive: !currentStatus, status: d.status || p.status } : p
         ));
-        toast.success(currentStatus ? 'Ruta desvinculada. No se ha borrado nada.' : 'Ruta vinculada de nuevo');
+        toast.success(currentStatus
+          ? 'Ruta desvinculada: sus archivos dejan de verse. No se ha borrado nada.'
+          : d.status === 'connected' ? 'Ruta vinculada. Sincronizando…' : 'Ruta vinculada. Su disco no está conectado.');
       }
     } catch {
       toast.error('No se pudo cambiar la ruta');
@@ -667,14 +753,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const executeActualScanAll = async (force: boolean) => {
     if (batchScan?.running) return;
     try {
-      const r: any = await api.startScanAll(force);
-      if (!r.success) throw new Error(r.error || 'Error iniciando escaneo masivo');
-      const jobIds: string[] = Array.isArray(r.jobIds) ? r.jobIds : [];
-      const activePaths = paths.filter(p => p.isActive);
-      for (let i = 0; i < jobIds.length && i < activePaths.length; i++) {
-        jobIdToPathIdRef.current.set(jobIds[i], activePaths[i].id);
+      const r = await api.startScanAll(force);
+      if (!r.success) throw new Error((r as { error?: string }).error || 'Error iniciando escaneo masivo');
+      // Cada jobId con SU ruta, tal como la devuelve el servidor. Casarlos por
+      // posicion con la lista de aqui pintaba el progreso en la ruta de al lado
+      // si alguna tenia todo el escaneo apagado.
+      for (const it of r.items || []) {
+        if (it.jobId && it.pathId) jobIdToPathIdRef.current.set(it.jobId, it.pathId);
       }
-      setBatchScan({ running: true, total: r.count || activePaths.length, processed: 0, force });
+      setBatchScan({ running: true, total: r.count || (r.items || []).length, processed: 0, force });
     } catch (err: any) {
       toast.error(err.message || 'No se pudo empezar el escaneo');
     }
@@ -695,7 +782,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   /** Escaneo masivo: un modal de contexto por ruta activa y conectada, y luego el lote. */
   const handleScanAll = (force: boolean) => {
     if (batchScan?.running) return;
-    const activePathsList = paths.filter(p => p.isActive && p.status !== 'disconnected');
+    const activePathsList = paths.filter(estaConectada);
     if (activePathsList.length === 0) {
       toast.error('No hay rutas conectadas que escanear');
       return;
@@ -783,6 +870,21 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
+  /** Marca o desmarca una ruta como copia de seguridad (ver copias exactas). */
+  const cambiarCopiaSeguridad = async (p: ScanPath) => {
+    const valor = !p.copiaSeguridad;
+    setPaths(prev => prev.map(x => x.id === p.id ? { ...x, copiaSeguridad: valor } : x));
+    try {
+      await api.setCopiaSeguridadRuta(p.id, valor);
+      toast.success(valor
+        ? 'Marcada como copia de seguridad: si un archivo también está en otro disco, se ve el otro.'
+        : 'Ya no es copia de seguridad: sus copias vuelven a contar como duplicados.');
+    } catch (e: any) {
+      setPaths(prev => prev.map(x => x.id === p.id ? { ...x, copiaSeguridad: !valor } : x));
+      toast.error(e?.message || 'No se pudo guardar');
+    }
+  };
+
   const presetActivo = useMemo(() => {
     if (!capsGlobal) return null;
     return PRESETS.find(pr => ANALISIS.every(id => pr.valores[id] === capsGlobal[id]))?.id ?? null;
@@ -793,21 +895,25 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const vlmCaido = !!vlmHealth && (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable);
 
   const totales = useMemo(() => {
-    let archivos = 0, total = 0, descritos = 0;
+    let archivos = 0, total = 0, descritos = 0, pendientes = 0;
     for (const p of paths) {
       archivos += p.fileCount || 0;
       if (p.isActive && typeof p.visualTotal === 'number') {
         total += p.visualTotal;
         descritos += p.visualScanned ?? 0;
+        // Lo que queda con los interruptores de ahora; con un servidor viejo
+        // que no lo manda, lo que falta por describir.
+        pendientes += p.pendientes ?? Math.max(0, p.visualTotal - (p.visualScanned ?? 0));
       }
     }
-    return { archivos, total, descritos, pendientes: Math.max(0, total - descritos) };
+    return { archivos, total, descritos, pendientes };
   }, [paths]);
 
   /** Por que no se puede escanear una ruta ahora mismo (null = si se puede). */
   const motivoSinEscaneo = (p: ScanPath): string | null => {
     if (!p.isActive) return 'Ruta desvinculada';
     if (p.status === 'disconnected') return 'El disco no está conectado';
+    if (p.status === 'otro_disco') return 'En esta ruta hay otro disco';
     const ef = efectivasDe(p);
     if (!IDS.some(id => ef[id])) return 'Todo el escaneo está apagado en esta ruta';
     if (ef.descripcion && vlmCaido) {
@@ -821,7 +927,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   };
 
   const puedeEscanearTodo = !batchScan?.running
-    && paths.some(p => p.isActive && p.status !== 'disconnected' && !motivoSinEscaneo(p));
+    && paths.some(p => estaConectada(p) && !motivoSinEscaneo(p));
 
   if (isLoading) {
     return (
@@ -872,10 +978,35 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           <button type="submit" disabled={!newPath.trim()} className="px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-40 transition-colors">
             Añadir
           </button>
-          <button type="button" onClick={() => { setShowAddPath(false); setNewPath(''); }} className="p-2 rounded-full text-humo hover:text-marfil" aria-label="Cancelar">
+          <button type="button" onClick={() => { setShowAddPath(false); setNewPath(''); setMismoDisco(null); }} className="p-2 rounded-full text-humo hover:text-marfil" aria-label="Cancelar">
             <X className="w-4 h-4" />
           </button>
         </form>
+      )}
+
+      {/* La carpeta es el disco de una biblioteca que ya existe, con otra letra:
+          lo que toca es moverla, no añadir otra (22/09/2026: E:\(1) WORKS). */}
+      {mismoDisco && (
+        <div role="alert" className="mb-8 -mt-4 flex items-start gap-3 flex-wrap rounded-xl border border-lavanda/30 bg-lavanda/10 px-4 py-3">
+          <HardDrive className="w-4 h-4 mt-0.5 text-lavanda shrink-0" />
+          <div className="flex-1 min-w-[14rem]">
+            <p className="text-[13px] text-marfil">Ese disco ya está añadido como «{mismoDisco.nombre}».</p>
+            <p className="text-[12px] text-niebla break-all">
+              Estaba en <span className="font-mono">{mismoDisco.ruta}</span> y ahora está en <span className="font-mono text-marfil">{mismoDisco.nuevaRuta}</span>.
+            </p>
+            <p className="mt-1 text-[12px] text-niebla">Cambia su ubicación y conservará sus favoritos, notas y colecciones; añadirlo otra vez los dejaría en la ruta vieja.</p>
+          </div>
+          <button
+            onClick={() => cambiarUbicacion(mismoDisco.id, mismoDisco.nuevaRuta)}
+            disabled={guardandoUbicacion}
+            className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+          >
+            Cambiar su ubicación
+          </button>
+          <button onClick={() => setMismoDisco(null)} className="p-1 rounded-full text-humo hover:text-marfil" aria-label="Cerrar aviso">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       )}
 
       {/* ── Lo que queda por hacer / lo que esta pasando ────────────────── */}
@@ -910,12 +1041,12 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             <>
               <div>
                 <p className="text-[15px] text-marfil">
-                  <span className="font-semibold">{miles(totales.pendientes)}</span> {totales.pendientes === 1 ? 'archivo sin describir' : 'archivos sin describir'}
+                  <span className="font-semibold">{miles(totales.pendientes)}</span> {totales.pendientes === 1 ? 'archivo por escanear' : 'archivos por escanear'}
                 </p>
                 <p className="text-[12px] text-humo">
                   {capsGlobal && !capsGlobal.descripcion
-                    ? 'Las descripciones están apagadas: el escaneo hará solo lo que tengas encendido.'
-                    : 'Sin descripción no aparecen en la búsqueda por lenguaje natural.'}
+                    ? 'Les falta algo de lo que tienes encendido. Las descripciones están apagadas: se hará solo lo demás.'
+                    : 'Les falta algo de lo que tienes encendido. Sin descripción no aparecen en la búsqueda por lenguaje natural.'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -942,7 +1073,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             <>
               <div className="flex items-center gap-3">
                 <Check className="w-4 h-4 text-salvia" />
-                <p className="text-[15px] text-marfil">Todo lo conectado está descrito</p>
+                <p className="text-[15px] text-marfil">Todo lo conectado está escaneado</p>
               </div>
               <button
                 onClick={() => handleScanAll(false)}
@@ -962,7 +1093,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         <section aria-label="Bibliotecas" className="min-w-0">
           <div className="flex items-baseline justify-between gap-4 mb-3">
             <h2 className="text-[15px] font-semibold text-marfil">Bibliotecas</h2>
-            <span className="text-[11px] text-humo">Se sincronizan solas al arrancar</span>
+            <span className="text-[11px] text-humo">Se sincronizan solas al arrancar y cuando cambia algo en el disco</span>
           </div>
 
           {paths.length === 0 ? (
@@ -976,18 +1107,23 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
               {paths.map((path) => {
                 const scan = aiScansByPath.get(path.id);
                 const abierta = expandedPaths.has(path.id);
-                const conectada = path.isActive && path.status !== 'disconnected';
+                const conectada = estaConectada(path);
                 const total = path.visualTotal ?? 0;
                 const descritos = path.visualScanned ?? 0;
                 const pct = total > 0 ? Math.round((descritos / total) * 100) : 0;
+                const porEscanear = path.pendientes ?? Math.max(0, total - descritos);
                 const motivo = motivoSinEscaneo(path);
                 const ef = efectivasDe(path);
                 const propias = IDS.filter(id => path.escaneo && typeof path.escaneo[id] === 'boolean');
                 const nombre = path.displayName && path.displayName !== path.path ? path.displayName : path.path;
                 const punto = !path.isActive ? 'bg-humo/50'
-                  : path.status === 'error' ? 'bg-estado-error'
+                  : path.status === 'error' || path.status === 'otro_disco' ? 'bg-estado-error'
                   : path.status === 'disconnected' ? 'bg-melocoton'
                   : 'bg-salvia';
+                // Lo que dijo la ultima sincronizacion (lectura incompleta, otro
+                // disco...). Antes el servidor lo guardaba y no se enseñaba.
+                const avisoServidor = path.isActive && path.lastError && path.status !== 'disconnected' ? path.lastError : null;
+                const editandoUbicacion = ubicacion?.id === path.id;
 
                 return (
                   <li key={path.id} className={`py-5 ${path.isActive ? '' : 'opacity-60 hover:opacity-100 transition-opacity'}`}>
@@ -1006,8 +1142,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                           <span className={`w-2 h-2 rounded-full shrink-0 ${punto} ${path.status === 'scanning' ? 'animate-pulse' : ''}`} aria-hidden="true" />
                           <h3 className="text-[15px] font-semibold text-marfil truncate" title={path.path}>{nombre}</h3>
                           {!path.isActive && <span className="px-2 py-0.5 rounded-full text-[10px] bg-grafito text-humo">desvinculada</span>}
+                          {path.copiaSeguridad && (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-lavanda/10 text-lavanda" title="Si un archivo también está en otro disco, se ve el otro">
+                              <ShieldCheck className="w-3 h-3" />
+                              copia de seguridad
+                            </span>
+                          )}
                           {path.isActive && path.status === 'disconnected' && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] bg-melocoton/15 text-melocoton">disco no conectado</span>
+                          )}
+                          {path.isActive && path.status === 'otro_disco' && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] bg-estado-error/15 text-estado-error">otro disco en esta ruta</span>
                           )}
                         </div>
                         <p className="mt-0.5 text-[11px] text-humo truncate">
@@ -1022,12 +1167,65 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                             </div>
                             <span className="text-[12px] text-niebla tabular-nums">
                               {pct} % descrito
-                              {pct < 100 && <span className="text-humo"> · faltan {miles(total - descritos)}</span>}
+                              {porEscanear > 0 && <span className="text-humo"> · {miles(porEscanear)} por escanear</span>}
                             </span>
                           </div>
-                        ) : path.isActive && path.status === 'disconnected' ? (
-                          <p className="mt-2 text-[12px] text-humo">Conecta el disco y sincroniza: lo ya descrito vuelve solo, sin re-escanear.</p>
+                        ) : path.isActive && path.status === 'disconnected' && !path.sugerencia ? (
+                          <p className="mt-2 text-[12px] text-humo">Conecta el disco y se sincroniza solo: lo ya descrito vuelve sin re-escanear. Si al conectarlo tiene otra letra, usa «Cambiar ubicación».</p>
                         ) : null}
+
+                        {/* El disco de esta biblioteca esta en otra letra. Se
+                            propone, no se hace solo: la decision es tuya. */}
+                        {path.isActive && path.sugerencia && (
+                          <div className="mt-3 flex items-start gap-3 flex-wrap rounded-xl border border-lavanda/30 bg-lavanda/10 px-3 py-2.5">
+                            <HardDrive className="w-4 h-4 mt-0.5 text-lavanda shrink-0" />
+                            {path.sugerencia.ocupadaPor ? (
+                              <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
+                                Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>, pero esa carpeta ya está añadida como «{path.sugerencia.ocupadaPor.nombre}». Son el mismo disco: quita una de las dos.
+                              </p>
+                            ) : (
+                              <>
+                                <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
+                                  Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>.
+                                </p>
+                                <button
+                                  onClick={() => cambiarUbicacion(path.id, path.sugerencia!.ruta)}
+                                  disabled={guardandoUbicacion}
+                                  className="px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+                                >
+                                  Usar esa ubicación
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {avisoServidor && (
+                          <p className={`mt-2 text-[12px] ${path.status === 'otro_disco' ? 'text-estado-error' : 'text-melocoton'}`}>{avisoServidor}</p>
+                        )}
+
+                        {editandoUbicacion && (
+                          <form
+                            onSubmit={(e) => { e.preventDefault(); cambiarUbicacion(path.id, ubicacion!.valor); }}
+                            className="mt-3 flex items-center gap-2 flex-wrap"
+                          >
+                            <input
+                              type="text"
+                              value={ubicacion!.valor}
+                              onChange={(e) => setUbicacion({ id: path.id, valor: e.target.value })}
+                              aria-label={`Nueva ubicación de ${nombre}`}
+                              className="flex-1 min-w-[12rem] px-3 py-1.5 rounded-full bg-tinta border border-pizarra text-[13px] text-marfil font-mono focus:outline-none focus:ring-2 focus:ring-lavanda"
+                              autoFocus
+                            />
+                            <button type="submit" disabled={guardandoUbicacion || !ubicacion!.valor.trim()} className="px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-40 transition-colors">
+                              Cambiar
+                            </button>
+                            <button type="button" onClick={() => setUbicacion(null)} className="p-1.5 rounded-full text-humo hover:text-marfil" aria-label="Cancelar">
+                              <X className="w-4 h-4" />
+                            </button>
+                            <p className="basis-full text-[11px] text-humo">La misma carpeta en su nueva letra. Se conservan favoritos, notas, colecciones y lo ya escaneado.</p>
+                          </form>
+                        )}
 
                         {propias.length > 0 && (
                           <div className="mt-2.5 flex flex-wrap gap-1.5">
@@ -1083,7 +1281,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                           puedeReescanear={!motivo}
                           onReescanear={() => { setContextModalForce(true); setContextModalPathId(path.id); }}
                           onRenombrar={() => setRenameModalPathId(path.id)}
+                          onUbicacion={() => setUbicacion({ id: path.id, valor: path.sugerencia?.ruta || path.path })}
                           onVincular={() => handleTogglePath(path.id, path.isActive)}
+                          onCopiaSeguridad={() => cambiarCopiaSeguridad(path)}
                           onQuitar={() => handleRemovePath(path.id)}
                         />
                       </div>
@@ -1143,7 +1343,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                           ) : (
                             <ul className="max-h-96 overflow-y-auto -mx-2 pr-1">
                               {(subfolders.get(path.id) || []).map((sf) => {
-                                const pendientes = Math.max(0, sf.visualTotal - sf.visualScanned);
+                                // Lo que falta con los interruptores de ahora (con las caras
+                                // encendidas despues, una carpeta descrita al 100 % tambien
+                                // tiene trabajo). Servidor viejo: lo que falta por describir.
+                                const pendientes = sf.pendientes ?? Math.max(0, sf.visualTotal - sf.visualScanned);
                                 const pctSf = sf.visualTotal > 0 ? Math.round((sf.visualScanned / sf.visualTotal) * 100) : 0;
                                 return (
                                   <li key={sf.dir} className="group flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-grafito/60 transition-colors">

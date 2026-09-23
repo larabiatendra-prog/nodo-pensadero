@@ -417,6 +417,17 @@ export default function MediaModal({
   // Manejar tecla Esc para cerrar modal o fullscreen y flechas para navegación
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Escribiendo (la nota, el buscador de personas, el nombre de una cara
+      // nueva) las flechas mueven el cursor y no cambian de archivo: antes
+      // saltaban al de al lado y la nota a medio escribir se perdia. Esc solo
+      // sale del campo, y al salir la nota se guarda (su onBlur).
+      const campo = event.target as HTMLElement | null;
+      if (campo && (campo.tagName === 'INPUT' || campo.tagName === 'TEXTAREA'
+        || campo.tagName === 'SELECT' || campo.isContentEditable)) {
+        if (event.key === 'Escape') campo.blur();
+        return;
+      }
+
       if (event.key === 'Escape') {
         if (isFullscreen) {
           setIsFullscreen(false);

@@ -85,7 +85,8 @@ async function findCatalogs(rootDir) {
   line('  ' + '-'.repeat(60));
 
   // --- Registry ---
-  const reg = peopleRegistry.loadRegistry(REGISTRY_PATH, AVATARS_BASE);
+  // soloLectura: un diagnostico no aparta ni recupera nada del registro.
+  const reg = peopleRegistry.loadRegistry(REGISTRY_PATH, AVATARS_BASE, { soloLectura: true });
   if (!reg.ok && reg.count === 0) {
     line(`  ⚠️ No se pudo leer el registry (${REGISTRY_PATH}): ${reg.error}`);
     line('     Sin registry TODA etiqueta pareceria huerfana. Abortando por seguridad.');

@@ -70,6 +70,7 @@ const { esCarpetaExcluida, esArchivoBasura } = require('./utils/carpetasExcluida
 const fechaArchivo = require('./utils/fechaArchivo');
 const volumen = require('./utils/volumen');
 const reenlazar = require('./services/reenlazar');
+const etiquetasManuales = require('./services/etiquetasManuales');
 const spacesRegistry = require('./spacesRegistry');
 const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
 
@@ -1178,6 +1179,21 @@ async function performSync(opts = {}) {
     // aviso la pantalla se quedaba clavada en el ultimo archivo.
     broadcastProgress({ type: 'sync_progress', ...camposIndexado({ fase: 'rematando', percentage: 100 }) });
 
+    // De que biblioteca es una referencia guardada por id de ruta o por ruta
+    // (colecciones antiguas). Se toma de la cache ANTES de podarla: recuerda
+    // tambien lo de las rutas desactivadas y los discos desconectados, que es
+    // justo lo que la limpieza de huerfanos no puede dar por desaparecido.
+    const bibliotecaDeRef = new Map();
+    for (const [ruta, entrada] of fileCache) {
+      const lib = bibliotecaDe(entrada.fileData || { fullPath: ruta });
+      if (!lib) continue;
+      bibliotecaDeRef.set(collectionsManager.normRuta(ruta), lib);
+      if (entrada.fileData && entrada.fileData.id) bibliotecaDeRef.set(entrada.fileData.id, lib);
+    }
+    const ubicarRef = (ref) => bibliotecaDeRef.get(ref)
+      || bibliotecaDeRef.get(collectionsManager.normRuta(ref))
+      || (/^[a-z]:[\\/]|^\\\\/i.test(String(ref)) ? bibliotecaDe({ fullPath: ref }) : null);
+
     // 2) Cache: fuera SOLO lo que se puede probar que ya no esta (su
     // biblioteca se ha leido y su carpeta tambien) y lo de bibliotecas que ya
     // no existen. Antes se podaba todo lo que no apareciera, asi que
@@ -1215,6 +1231,7 @@ async function performSync(opts = {}) {
           colecciones: collectionsManager,
           notas: notesManager,
           ocultos: ocultosManager,
+          etiquetas: etiquetasManuales,
           clipIndex,
         });
         reenlazados.archivos = pares.length;
@@ -1243,6 +1260,11 @@ async function performSync(opts = {}) {
     // manera, y los filtros por año/mes dejaban fuera a 639 archivos.
     allFiles = fechaArchivo.aplicar(allFiles);
 
+    // Lo que el usuario ha cambiado a mano en las etiquetas, encima de todo lo
+    // derivado (ver services/etiquetasManuales.js). Sin esto, renombrar o
+    // borrar una etiqueta se deshacia en la siguiente sincronizacion.
+    allFiles = etiquetasManuales.aplicar(allFiles);
+
     // Aplicar favoritos (a todo: un reenlazado puede haber movido alguno).
     mediaFiles = favoritesManager.applyFavoritesToFiles(soloIds ? conservados.concat(allFiles) : allFiles);
 
@@ -1252,10 +1274,15 @@ async function performSync(opts = {}) {
     const todasLeidas = !soloIds && librariesScanned.size === activePaths.length;
     await favoritesManager.cleanupOrphanedFavorites(mediaFiles, librariesScanned, { protegidas });
     await sincronizarIndiceClip({ todos: mediaFiles, recorridos: allFiles, podar: todasLeidas });
+    // Lo guardado en colecciones por id o por ruta pasa a mediaKey si el
+    // archivo esta: asi deja de depender de la letra del disco.
+    await collectionsManager.aPortable(mediaFiles)
+      .catch(err => fallos.record('poner al dia las referencias de las colecciones', err));
     await collectionsManager.cleanupOrphanedFiles(mediaFiles, {
       scannedLibraryIds: librariesScanned,
       todasLasBibliotecasLeidas: todasLeidas,
       protegidas,
+      ubicar: ubicarRef,
     });
 
     // Recalcular agregado de personas tras cada sync (memoización)
@@ -1529,6 +1556,8 @@ async function refreshFilesInDir(dirPath, { agregado = true } = {}) {
   // Misma fecha que en el sync completo: refrescar una carpeta no puede dejar
   // sus archivos con otra fecha que el resto del catalogo.
   fechaArchivo.aplicar(touched);
+  // Y las etiquetas cambiadas a mano, igual que en el sync completo.
+  etiquetasManuales.aplicar(touched);
   // Recalcular el agregado de personas: si el refresco cambio las caras de un
   // archivo (re-id, assign-face, promote), los conteos/bubbles del home deben
   // reflejarlo. Sin esto, el mediaFile se actualizaba pero personsAggregate no.
@@ -1591,6 +1620,7 @@ async function remapearBiblioteca(libraryId, vieja, nueva) {
     colecciones: collectionsManager,
     notas: notesManager,
     ocultos: ocultosManager,
+    etiquetas: etiquetasManuales,
     clipIndex,
   });
   // Lo que habia en memoria con la ruta vieja fuera: la sincronizacion lo rehace.
@@ -1678,7 +1708,10 @@ const aiRoutes = createAiRoutes({
 app.use('/api', aiRoutes);
 
 const organizationRoutes = createOrganizationRoutes({
-  getMediaFiles: mediaFilesVisibles
+  getMediaFiles: mediaFilesVisibles,
+  // Para reconocer lo guardado en una coleccion aunque este oculto o sea una
+  // copia escondida (el frontend no lo pinta, pero sigue en la coleccion).
+  getTodos: () => mediaFiles,
 });
 app.use('/api', organizationRoutes);
 
@@ -1994,12 +2027,14 @@ async function initialize() {
   }
 
   const loadResult = peopleRegistry.loadRegistry(PERSONS_REGISTRY_PATH, PERSONS_AVATARS_BASE);
-  if (!loadResult.ok && loadResult.count === 0) {
+  if (loadResult.noExiste) {
     // El archivo no existe todavía: dejamos la ruta configurada para futuros
     // saveToDisk(), sin warnings ruidosos.
     peopleRegistry.setRegistryPath(PERSONS_REGISTRY_PATH, PERSONS_AVATARS_BASE);
     console.log(`👥 Registry vacío. Se creará en ${PERSONS_REGISTRY_PATH} al guardar la primera persona.`);
   }
+  // Si estaba dañado o no se pudo leer, loadRegistry ya lo ha apuntado en las
+  // incidencias (/api/health) y no deja guardar encima de lo que no leyo.
   // Spaces: mismo patron. Comparten avatarsBase con personas.
   try {
     await fs.mkdir(path.dirname(SPACES_REGISTRY_PATH), { recursive: true });
@@ -2008,7 +2043,7 @@ async function initialize() {
     console.warn(`⚠️ No se pudo preparar carpeta de spaces: ${err.message}`);
   }
   const spacesLoadResult = spacesRegistry.loadRegistry(SPACES_REGISTRY_PATH, PERSONS_AVATARS_BASE);
-  if (!spacesLoadResult.ok && spacesLoadResult.count === 0) {
+  if (spacesLoadResult.noExiste) {
     spacesRegistry.setRegistryPath(SPACES_REGISTRY_PATH, PERSONS_AVATARS_BASE);
     console.log(`🏢 Spaces registry vacío. Se creará en ${SPACES_REGISTRY_PATH} al guardar el primer espacio.`);
   }
@@ -2109,9 +2144,10 @@ function watchPersonsRegistry() {
       .on('change', handleChange)
       .on('add', handleChange)
       .on('unlink', () => {
-        console.warn('⚠️ people_registry.json eliminado. Personas operarán como vacío hasta que se restaure.');
-        peopleRegistry.loadRegistry(null);
-        recomputePersonsAggregate();
+        // Antes se vaciaba el registro en memoria y se soltaba su ruta: lo
+        // que se guardara despues se descartaba. Ahora se conserva lo que hay
+        // en memoria y el siguiente guardado vuelve a escribir el archivo.
+        console.warn('⚠️ people_registry.json ha desaparecido del disco: se conserva en memoria y se volverá a escribir al guardar.');
       });
   } catch (err) {
     console.warn('⚠️ No se pudo vigilar people_registry.json:', err.message);

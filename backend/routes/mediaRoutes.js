@@ -19,6 +19,7 @@ const archiver = require('archiver');
 const { exec } = require('child_process');
 
 const favoritesManager = require('../favoritesManager');
+const etiquetasManuales = require('../services/etiquetasManuales');
 const pathsConfig = require('../config/paths');
 const videoProxyService = require('../services/videoProxyService');
 
@@ -414,12 +415,23 @@ module.exports = function createMediaRoutes(deps) {
         }
       }
 
+      // Las etiquetas se guardan como lo que cambia respecto a las que tenia
+      // (services/etiquetasManuales.js): asignarlas sin mas se perdia en la
+      // siguiente sincronizacion, porque la cache no guarda esta copia.
+      if (Array.isArray(updates.tags)) {
+        const nuevas = updates.tags.filter(t => typeof t === 'string');
+        const antes = Array.isArray(file.tags) ? file.tags : [];
+        await etiquetasManuales.cambiar([file], {
+          anadir: nuevas.filter(t => !antes.includes(t)),
+          quitar: antes.filter(t => !nuevas.includes(t)),
+        });
+        delete updates.tags;
+      }
+
       mediaFiles[fileIndex] = {
         ...mediaFiles[fileIndex],
         ...updates
       };
-
-      await saveCache();
 
       const response = {
         success: true,
@@ -526,27 +538,16 @@ module.exports = function createMediaRoutes(deps) {
         });
       }
 
-      let updatedCount = 0;
-
-      mediaFiles.forEach(file => {
-        if (fileIds.includes(file.id)) {
-          if (removeTags.length > 0) {
-            file.tags = file.tags.filter(tag => !removeTags.includes(tag));
-          }
-
-          if (addTags.length > 0) {
-            addTags.forEach(newTag => {
-              if (!file.tags.includes(newTag)) {
-                file.tags.push(newTag);
-              }
-            });
-          }
-
-          updatedCount++;
-        }
+      // Antes se cambiaba solo la copia en memoria y se guardaba la cache, que
+      // no la contiene: la siguiente sincronizacion lo deshacia todo. Ahora el
+      // cambio se apunta aparte y se vuelve a poner encima de lo derivado en
+      // cada sincronizacion (services/etiquetasManuales.js).
+      const pedidos = new Set(fileIds);
+      const afectados = mediaFiles.filter(file => pedidos.has(file.id));
+      const updatedCount = await etiquetasManuales.cambiar(afectados, {
+        anadir: Array.isArray(addTags) ? addTags : [],
+        quitar: Array.isArray(removeTags) ? removeTags : [],
       });
-
-      await saveCache();
 
       console.log(`✅ Tags actualizados: ${updatedCount} archivos, removidos: [${removeTags.join(', ')}], añadidos: [${addTags.join(', ')}]`);
 

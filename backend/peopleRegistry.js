@@ -27,6 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { atomicWriteFileSync } = require('./utils/jsonStore');
+const { leerRegistro } = require('./utils/registroSeguro');
 const fallos = require('./utils/failureReason');
 
 // Estado del módulo. Se rellena con `loadRegistry()`.
@@ -34,6 +35,11 @@ let registryPath = null;       // Ruta absoluta al `people_registry.json`
 let avatarsBase = null;         // Carpeta base para los `avatar_path` relativos
 let peopleById = new Map();     // person_id → entrada original del JSON
 let warnedOnce = false;         // evita spam si el JSON está roto
+// Ruta cuyo contenido refleja la memoria (se leyo bien, o se comprobo que no
+// existe todavia). Una recarga fallida de esa ruta conserva la memoria.
+let cargadoDe = null;
+// El archivo esta ahi pero no se ha podido leer: guardar lo pisaria.
+let sinLeer = false;
 
 // Contador de cambios en los datos de personas (alta/baja/edicion/retrain).
 // Lo consume faceClusterer para saber si su cache de "caras desconocidas"
@@ -50,15 +56,19 @@ function getDataVersion() { return dataVersion; }
  * @param {string|null} filePath - Ruta absoluta a `people_registry.json`.
  * @param {string|null} [avatarsBaseOverride] - Carpeta base para los avatares.
  *   Si se omite, se deriva de `dirname(filePath)`.
- * @returns {{ ok: boolean, count: number, error: string|null }}
+ * @param {{ soloLectura?: boolean }} [opts] - soloLectura: no apartar un
+ *   archivo roto ni tirar de la copia (herramientas de diagnostico).
+ * @returns {{ ok: boolean, count: number, error: string|null, noExiste?: boolean, conservado?: boolean }}
+ *   Si la lectura falla y ya habia un registro bueno de ese archivo en
+ *   memoria, se conserva (`conservado`): nunca se sustituye por uno vacio.
  */
-function loadRegistry(filePath, avatarsBaseOverride = null) {
-  // Reset
-  registryPath = null;
-  avatarsBase = null;
-  peopleById = new Map();
-
+function loadRegistry(filePath, avatarsBaseOverride = null, { soloLectura = false } = {}) {
   if (!filePath || typeof filePath !== 'string' || !filePath.trim()) {
+    registryPath = null;
+    avatarsBase = null;
+    peopleById = new Map();
+    cargadoDe = null;
+    sinLeer = false;
     return { ok: true, count: 0, error: null };
   }
 
@@ -71,48 +81,64 @@ function loadRegistry(filePath, avatarsBaseOverride = null) {
     avatarsBase = path.dirname(registryPath);
   }
 
-  let raw;
-  try {
-    raw = fs.readFileSync(registryPath, 'utf-8');
-  } catch (err) {
-    if (!warnedOnce) {
-      console.warn(`⚠️ people_registry.json no accesible (${registryPath}): ${err.message}`);
-      warnedOnce = true;
+  // Lo que hay en memoria es lo ultimo bueno de ESTE archivo: una recarga que
+  // falle no lo toca (ver utils/registroSeguro.js).
+  const yaCargado = cargadoDe === registryPath;
+  const r = leerRegistro(registryPath, 'people', { primeraVez: !yaCargado, soloLectura });
+
+  if (r.estado === 'ok') {
+    const nuevo = new Map();
+    for (const person of r.datos.people) {
+      if (!person || typeof person !== 'object') continue;
+      const personId = (typeof person.person_id === 'string' && person.person_id.trim())
+        ? person.person_id.trim()
+        : null;
+      if (!personId) continue;
+      nuevo.set(personId, person);
     }
-    return { ok: false, count: 0, error: err.message };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    if (!warnedOnce) {
-      console.warn(`⚠️ people_registry.json no parsea: ${err.message}`);
-      warnedOnce = true;
+    peopleById = nuevo;
+    cargadoDe = registryPath;
+    sinLeer = false;
+    warnedOnce = false; // recarga exitosa: permitir warnings futuros
+    if (r.desdeCopia) {
+      fallos.record('leer el registro de personas', r.error, { path: registryPath });
+      console.warn(`⚠️ people_registry.json dañado${r.apartado ? ` (apartado en ${r.apartado})` : ''}: cargada la copia .bak`);
     }
-    return { ok: false, count: 0, error: err.message };
+    console.log(`👥 People registry cargado: ${peopleById.size} personas (${registryPath})`);
+    return { ok: true, count: peopleById.size, error: null };
   }
 
-  if (!parsed || !Array.isArray(parsed.people)) {
-    if (!warnedOnce) {
-      console.warn('⚠️ people_registry.json sin array `people`. Operando como vacío.');
-      warnedOnce = true;
+  if (yaCargado) {
+    // Recarga fallida: a medio escribir, bloqueado, borrado o editado a mano y
+    // roto. Antes el registro se vaciaba aqui y el siguiente guardado
+    // escribia el vacio encima: se perdian todas las personas.
+    if (r.estado === 'no_existe') {
+      console.warn('⚠️ people_registry.json ha desaparecido: se conserva en memoria y se volverá a escribir al guardar.');
+    } else {
+      fallos.record('recargar el registro de personas', r.error, { path: registryPath });
     }
-    return { ok: false, count: 0, error: 'sin array people' };
+    return { ok: false, count: peopleById.size, error: r.error.message, conservado: true };
   }
 
-  for (const person of parsed.people) {
-    if (!person || typeof person !== 'object') continue;
-    const personId = (typeof person.person_id === 'string' && person.person_id.trim())
-      ? person.person_id.trim()
-      : null;
-    if (!personId) continue;
-    peopleById.set(personId, person);
+  // Primera lectura sin nada bueno.
+  peopleById = new Map();
+  if (r.estado === 'no_existe') {
+    // Primer arranque: se creara al guardar la primera persona.
+    cargadoDe = registryPath;
+    sinLeer = false;
+    return { ok: false, count: 0, error: r.error.message, noExiste: true };
   }
-
-  warnedOnce = false; // recarga exitosa: permitir warnings futuros
-  console.log(`👥 People registry cargado: ${peopleById.size} personas (${registryPath})`);
-  return { ok: true, count: peopleById.size, error: null };
+  if (!warnedOnce) {
+    console.warn(`⚠️ people_registry.json no se ha podido cargar (${registryPath}): ${r.error.message}`);
+    warnedOnce = true;
+  }
+  if (soloLectura) return { ok: false, count: 0, error: r.error.message };
+  fallos.record('leer el registro de personas', r.error, { path: registryPath });
+  // Roto y ya apartado: se puede empezar de cero sin pisar nada. Si sigue ahi
+  // (no se pudo leer, o apartarlo fallo), no se escribe encima (saveToDisk).
+  sinLeer = !(r.estado === 'roto' && r.apartado);
+  if (!sinLeer) cargadoDe = registryPath;
+  return { ok: false, count: 0, error: r.error.message };
 }
 
 /**
@@ -313,6 +339,14 @@ function deletePerson(personId) {
 function saveToDisk() {
   if (!registryPath) {
     console.warn('⚠️ saveToDisk sin registryPath; descartando.');
+    return false;
+  }
+  if (sinLeer) {
+    // El archivo existe y no se pudo leer al arrancar: la memoria no lo tiene,
+    // y guardar ahora lo sustituiria por lo poco que haya en memoria.
+    fallos.record('guardar el registro de personas',
+      new Error('No se guarda: people_registry.json no se pudo leer al arrancar y guardar ahora borraría las personas que tiene. Reinicia Pensadero.'),
+      { path: registryPath });
     return false;
   }
   const data = {

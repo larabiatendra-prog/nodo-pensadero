@@ -70,14 +70,15 @@ function emparejar(desaparecidos, llegados) {
 }
 
 /**
- * Lleva favoritos, colecciones, notas, candado e indice visual de `de` a `a`.
- * Cada almacen guarda por su cuenta y solo si algo ha cambiado.
- * @returns {Promise<{favoritos:number, colecciones:number, notas:number, ocultos:number, visual:number}>}
+ * Lleva favoritos, colecciones, notas, candado, etiquetas cambiadas a mano e
+ * indice visual de `de` a `a`. Cada almacen guarda por su cuenta y solo si
+ * algo ha cambiado.
+ * @returns {Promise<{favoritos:number, colecciones:number, notas:number, ocultos:number, etiquetas:number, visual:number}>}
  */
 async function aplicar(pares, almacenes) {
-  const r = { favoritos: 0, colecciones: 0, notas: 0, ocultos: 0, visual: 0 };
+  const r = { favoritos: 0, colecciones: 0, notas: 0, ocultos: 0, etiquetas: 0, visual: 0 };
   if (!Array.isArray(pares) || pares.length === 0) return r;
-  const { favoritos, colecciones, notas, ocultos, clipIndex } = almacenes || {};
+  const { favoritos, colecciones, notas, ocultos, etiquetas, clipIndex } = almacenes || {};
   const paso = async (clave, nombre, fn) => {
     try {
       r[clave] = (await fn()) || 0;
@@ -89,6 +90,7 @@ async function aplicar(pares, almacenes) {
   if (colecciones) await paso('colecciones', 'las colecciones', () => colecciones.reenlazar(pares));
   if (notas) await paso('notas', 'las notas', () => notas.reenlazar(pares));
   if (ocultos) await paso('ocultos', 'el material oculto', () => ocultos.reenlazar(pares));
+  if (etiquetas) await paso('etiquetas', 'las etiquetas cambiadas a mano', () => etiquetas.reenlazar(pares));
   if (clipIndex) {
     await paso('visual', 'el indice visual', async () => {
       let n = 0;

@@ -1996,12 +1996,17 @@ function App() {
 
       const response = await deleteFromCollection(selectedCollectionId, file);
       if (response.success) {
-        // Update collections state
+        // `file` es la ruta del archivo, pero la coleccion lo tiene por su id
+        // (asi llega del servidor) o por su ruta (lo añadido en grupo en esta
+        // sesion): se quita de las dos formas. Antes solo por la ruta, y el
+        // archivo seguia en pantalla hasta recargar.
+        const archivo = mediaFiles.find(f => f.fullPath && normalizePath(f.fullPath) === file);
+        const fuera = new Set([file, ...(archivo ? [archivo.id] : [])]);
         const updatedCollections = collections.map(collection => {
           if (collection.id === selectedCollectionId) {
             return {
               ...collection,
-              mediaFiles: collection.mediaFiles.filter(fId => fId !== file),
+              mediaFiles: collection.mediaFiles.filter(fId => !fuera.has(fId)),
               updatedAt: new Date()
             };
           }
@@ -2019,6 +2024,8 @@ function App() {
 
         // const collection = collections.find(c => c.id === selectedCollectionId);
         // console.log(`✅ Archivo eliminado de la colección "${collection?.name}"`);
+      } else {
+        toast.error('No se ha podido quitar de la colección');
       }
     } catch (error) {
       console.error('Error eliminando archivo de colección:', error);
@@ -2047,7 +2054,7 @@ function App() {
       // const collection = collections.find(c => c.id === selectedCollectionId);
       // console.log(`⚠️ Archivo eliminado localmente de "${collection?.name}" (sincronización pendiente)`);
     }
-  }, [selectedCollectionId, collections]);
+  }, [selectedCollectionId, collections, mediaFiles]);
 
   const handleDownloadCollection = async (collectionId: string, e?: React.MouseEvent) => {
     console.log(`📦 Iniciando descarga de colección: ${collectionId}`);

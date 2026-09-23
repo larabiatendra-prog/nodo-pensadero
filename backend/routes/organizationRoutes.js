@@ -26,10 +26,30 @@ const router = express.Router();
 const favoritesManager = require('../favoritesManager');
 const collectionsManager = require('../collectionsManager');
 const smartFolderEvaluator = require('../smartFolderEvaluator');
+const fallos = require('../utils/failureReason');
 
 module.exports = function createOrganizationRoutes(deps) {
-  // getMediaFiles: necesario para resolver Smart Folders al vuelo.
-  const { getMediaFiles } = deps || {};
+  // getMediaFiles: lo visible, para resolver Smart Folders al vuelo.
+  // getTodos: el catalogo entero, para reconocer un archivo guardado en una
+  // coleccion manual por id, ruta o mediaKey (tambien lo oculto o escondido).
+  const { getMediaFiles, getTodos } = deps || {};
+  const todos = () => (typeof getTodos === 'function' ? getTodos()
+    : (typeof getMediaFiles === 'function' ? getMediaFiles() : []));
+
+  /**
+   * Una coleccion tal como la espera el frontend: las smart con sus archivos
+   * resueltos y las manuales con el id de ruta de cada archivo (se guardan por
+   * mediaKey, que el frontend no compara). `idx` se reutiliza entre colecciones.
+   */
+  function paraCliente(c, idx) {
+    if (!c) return c;
+    if (c.type === 'smart' && Array.isArray(c.rules) && c.rules.length > 0) {
+      const files = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+      const matches = smartFolderEvaluator.filterFiles(files, c.rules, c.rule_combinator);
+      return { ...c, mediaFiles: matches.map(f => f.id) };
+    }
+    return { ...c, mediaFiles: collectionsManager.refsParaCliente(c, idx || collectionsManager.indiceDeArchivos(todos())) };
+  }
 
   // ============================================
   // FAVORITOS
@@ -88,19 +108,12 @@ module.exports = function createOrganizationRoutes(deps) {
    */
   router.get('/collections', (req, res) => {
     try {
+      // El frontend espera mediaFiles como array de IDs en cada coleccion:
+      // las smart se resuelven evaluando reglas, las manuales traduciendo lo
+      // guardado (mediaKey, ruta o id) al id de ruta de hoy.
       const collections = collectionsManager.getAllCollections();
-      // Para Smart Folders: resolver mediaFiles al vuelo evaluando reglas.
-      // El frontend ya espera mediaFiles como array de IDs en cada coleccion,
-      // asi que las smart se ven indistinguibles de las estaticas en la UI.
-      const files = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
-      const enriched = collections.map(c => {
-        if (c.type === 'smart' && Array.isArray(c.rules) && c.rules.length > 0) {
-          const matches = smartFolderEvaluator.filterFiles(files, c.rules, c.rule_combinator);
-          return { ...c, mediaFiles: matches.map(f => f.id) };
-        }
-        return c;
-      });
-      res.json(enriched);
+      const idx = collectionsManager.indiceDeArchivos(todos());
+      res.json(collections.map(c => paraCliente(c, idx)));
     } catch (error) {
       console.error('❌ Error obteniendo colecciones:', error);
       res.status(500).json({ error: error.message });
@@ -145,25 +158,17 @@ module.exports = function createOrganizationRoutes(deps) {
       );
 
       // Si se pasaron archivos iniciales (solo aplica a estaticas), añadirlos
+      // La coleccion ya existe: si sus archivos no caben (limite), se crea
+      // igual y el fallo queda apuntado con su causa.
       if (newCollection.type !== 'smart' && Array.isArray(files) && files.length > 0) {
-        for (const fileId of files) {
-          try {
-            await collectionsManager.addFileToCollection(newCollection.id, fileId);
-          } catch (err) {
-            console.warn(`⚠️ No se pudo añadir ${fileId} a la nueva colección:`, err.message);
-          }
+        try {
+          await collectionsManager.anadirArchivos(newCollection.id, files, todos());
+        } catch (err) {
+          fallos.record('añadir los archivos a una colección nueva', err);
         }
       }
 
-      const final = collectionsManager.getCollection(newCollection.id);
-      // Si es smart, resolver mediaFiles al vuelo para devolver al cliente
-      if (final.type === 'smart') {
-        const allFiles = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
-        const matches = smartFolderEvaluator.filterFiles(allFiles, final.rules, final.rule_combinator);
-        res.status(201).json({ ...final, mediaFiles: matches.map(f => f.id) });
-      } else {
-        res.status(201).json(final);
-      }
+      res.status(201).json(paraCliente(collectionsManager.getCollection(newCollection.id)));
     } catch (error) {
       console.error('❌ Error creando colección:', error);
       res.status(400).json({ error: error.message });
@@ -206,14 +211,7 @@ module.exports = function createOrganizationRoutes(deps) {
         req.params.id,
         { name, description, coverImage, coverType, rules, rule_combinator, type }
       );
-      // Si es smart, devolver con mediaFiles resueltos
-      if (collection.type === 'smart') {
-        const allFiles = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
-        const matches = smartFolderEvaluator.filterFiles(allFiles, collection.rules, collection.rule_combinator);
-        res.json({ ...collection, mediaFiles: matches.map(f => f.id) });
-      } else {
-        res.json(collection);
-      }
+      res.json(paraCliente(collection));
     } catch (error) {
       console.error('❌ Error actualizando colección:', error);
       if (error.message === 'Colección no encontrada') {
@@ -279,40 +277,13 @@ module.exports = function createOrganizationRoutes(deps) {
 
   /**
    * Helper: añadir múltiples archivos a una colección con validación de límite.
+   * Llegan ids (de uno en uno) o rutas (en grupo); se guardan por mediaKey y
+   * con un solo guardado (ver collectionsManager.anadirArchivos).
    */
   async function addFilesToCollection(collectionId, fileIds) {
-    const collection = collectionsManager.getCollection(collectionId);
-    if (!collection) {
-      const err = new Error('Colección no encontrada');
-      err.status = 404;
-      throw err;
-    }
-
-    const newFiles = fileIds.filter(fid => !collection.mediaFiles.includes(fid));
-    const finalCount = collection.mediaFiles.length + newFiles.length;
-
-    if (finalCount > 500) {
-      const err = new Error(
-        `Operación excedería el límite de 500 archivos. Actuales: ${collection.mediaFiles.length}, intentando añadir: ${newFiles.length}`
-      );
-      err.status = 413;
-      err.code = 'COLLECTION_LIMIT_REACHED';
-      throw err;
-    }
-
-    let added = 0;
-    let skipped = 0;
-    for (const fileId of fileIds) {
-      if (!collection.mediaFiles.includes(fileId)) {
-        await collectionsManager.addFileToCollection(collectionId, fileId);
-        added++;
-      } else {
-        skipped++;
-      }
-    }
-
+    const { collection, added, skipped } = await collectionsManager.anadirArchivos(collectionId, fileIds, todos());
     return {
-      collection: collectionsManager.getCollection(collectionId),
+      collection: paraCliente(collection),
       stats: { added, skipped, total: fileIds.length }
     };
   }
@@ -371,22 +342,15 @@ module.exports = function createOrganizationRoutes(deps) {
         return res.status(400).json({ error: 'Se requiere fileIds (array no vacío)' });
       }
 
-      let removed = 0;
-      for (const fileId of fileIds) {
-        try {
-          await collectionsManager.removeFileFromCollection(req.params.id, fileId);
-          removed++;
-        } catch (err) {
-          if (err.message === 'Colección no encontrada') {
-            return res.status(404).json({ error: err.message });
-          }
-        }
-      }
-      const collection = collectionsManager.getCollection(req.params.id);
-      res.json({ ...collection, _stats: { removed, total: fileIds.length } });
+      // El frontend manda la ruta del archivo y la coleccion puede tenerlo
+      // guardado por id o por mediaKey: se quita en cualquiera de sus formas.
+      // Antes solo se quitaba si coincidia tal cual, y lo añadido de uno en
+      // uno (por id) no habia forma de sacarlo.
+      const { collection, removed } = await collectionsManager.quitarArchivos(req.params.id, fileIds, todos());
+      res.json({ ...paraCliente(collection), _stats: { removed, total: fileIds.length } });
     } catch (error) {
       console.error('❌ Error quitando archivos de colección:', error);
-      res.status(500).json({ error: error.message });
+      res.status(error.status || 500).json({ error: error.message });
     }
   });
 
@@ -396,11 +360,8 @@ module.exports = function createOrganizationRoutes(deps) {
    */
   router.delete('/collections/:id/files/:fileId', async (req, res) => {
     try {
-      const collection = await collectionsManager.removeFileFromCollection(
-        req.params.id,
-        req.params.fileId
-      );
-      res.json(collection);
+      const { collection } = await collectionsManager.quitarArchivos(req.params.id, [req.params.fileId], todos());
+      res.json(paraCliente(collection));
     } catch (error) {
       console.error('❌ Error eliminando archivo de colección:', error);
       if (error.message === 'Colección no encontrada') {

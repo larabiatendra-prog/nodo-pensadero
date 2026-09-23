@@ -14,6 +14,43 @@ const retiradas = require('./services/retiradas');
 // Límite máximo de archivos por colección
 const MAX_FILES_PER_COLLECTION = 500;
 
+// ── Como se guarda cada archivo en una coleccion manual ──────────────────
+// Segun por donde se añadia, un archivo quedaba guardado de una de tres
+// formas: su id de ruta (md5, de uno en uno), su ruta completa en minusculas
+// (en grupo) o su mediaKey (al reenlazar un archivo movido). La limpieza de
+// huerfanos solo reconocia las dos primeras como presentes... y las rutas, ni
+// eso: se daban por desaparecidas en cuanto se leian todos los discos. La
+// buena es la mediaKey: no cambia con la letra del disco y dice de que
+// biblioteca es. Estas funciones reconocen las tres y guardan la buena.
+
+/** Misma normalizacion de ruta que el frontend (`normalizePath`) y favoritos. */
+function normRuta(p) {
+  return String(p || '').replace(/\\+/g, '\\').trim().toLowerCase();
+}
+
+/** Indice de archivos por sus tres formas: id, mediaKey y ruta normalizada. */
+function indiceDeArchivos(files) {
+  const idx = new Map();
+  for (const f of Array.isArray(files) ? files : []) {
+    if (!f) continue;
+    if (f.fullPath) idx.set(normRuta(f.fullPath), f);
+    if (f.mediaKey) idx.set(f.mediaKey, f);
+    if (f.id) idx.set(f.id, f);
+  }
+  return idx;
+}
+
+/** El archivo al que apunta una referencia guardada (en cualquiera de sus formas), o null. */
+function archivoDeRef(ref, idx) {
+  if (typeof ref !== 'string' || !ref) return null;
+  return idx.get(ref) || idx.get(normRuta(ref)) || null;
+}
+
+/** La forma en que se guarda un archivo: su mediaKey si la tiene. */
+function claveDeArchivo(f) {
+  return (f && (f.mediaKey || f.id)) || null;
+}
+
 class CollectionsManager {
   constructor() {
     this.collectionsFile = path.join(__dirname, 'collections_persistent.json');
@@ -219,66 +256,137 @@ class CollectionsManager {
   }
 
   /**
-   * Añadir archivo a colección
+   * Añade archivos a una coleccion manual con UN solo guardado. `refs` puede
+   * traer ids, rutas o mediaKeys: cada archivo se guarda por su mediaKey si
+   * esta en `files`, y no se repite aunque ya estuviera guardado de otra forma.
+   * @param {string} collectionId
+   * @param {string[]} refs
+   * @param {Array} files - catalogo con el que resolver las referencias
+   * @returns {Promise<{collection, added:number, skipped:number}>}
    */
-  async addFileToCollection(collectionId, fileId) {
-    try {
-      const collection = this.collections.get(collectionId);
-      if (!collection) {
-        throw new Error('Colección no encontrada');
-      }
-
-      // Verificar límite de archivos por colección
-      if (collection.mediaFiles.length >= MAX_FILES_PER_COLLECTION) {
-        const error = new Error(`Esta colección ha alcanzado el límite de ${MAX_FILES_PER_COLLECTION} archivos.`);
-        error.code = 'COLLECTION_LIMIT_REACHED';
-        throw error;
-      }
-
-      // Verificar si el archivo ya está en la colección
-      if (!collection.mediaFiles.includes(fileId)) {
-        collection.mediaFiles.push(fileId);
-        collection.updatedAt = new Date().toISOString();
-
-        await this.saveCollections();
-        console.log(`📎 Archivo ${fileId} añadido a colección "${collection.name}"`);
-      } else {
-        console.log(`⚠️ Archivo ${fileId} ya existe en colección "${collection.name}"`);
-      }
-
-      return collection;
-    } catch (error) {
-      console.error(`❌ Error añadiendo archivo ${fileId} a colección ${collectionId}:`, error);
-      throw error;
+  async anadirArchivos(collectionId, refs, files) {
+    const collection = this.collections.get(collectionId);
+    if (!collection) {
+      const err = new Error('Colección no encontrada');
+      err.status = 404;
+      throw err;
     }
+    const idx = indiceDeArchivos(files);
+    const clave = (ref) => claveDeArchivo(archivoDeRef(ref, idx)) || ref;
+    const yaEstan = new Set((collection.mediaFiles || []).map(clave));
+    const nuevas = [];
+    let skipped = 0;
+    for (const ref of Array.isArray(refs) ? refs : []) {
+      if (typeof ref !== 'string' || !ref) continue;
+      const c = clave(ref);
+      if (yaEstan.has(c)) { skipped++; continue; }
+      yaEstan.add(c);
+      nuevas.push(c);
+    }
+    if (collection.mediaFiles.length + nuevas.length > MAX_FILES_PER_COLLECTION) {
+      const err = new Error(
+        `Operación excedería el límite de ${MAX_FILES_PER_COLLECTION} archivos. Actuales: ${collection.mediaFiles.length}, intentando añadir: ${nuevas.length}`
+      );
+      err.status = 413;
+      err.code = 'COLLECTION_LIMIT_REACHED';
+      throw err;
+    }
+    if (nuevas.length > 0) {
+      collection.mediaFiles.push(...nuevas);
+      collection.updatedAt = new Date().toISOString();
+      await this.saveCollections();
+      console.log(`📎 ${nuevas.length} archivo(s) añadidos a la colección "${collection.name}"`);
+    }
+    return { collection, added: nuevas.length, skipped };
   }
 
   /**
-   * Eliminar archivo de colección
+   * Quita archivos de una coleccion manual con UN solo guardado, este guardado
+   * cada uno de la forma que este (id, ruta o mediaKey).
+   * @returns {Promise<{collection, removed:number}>}
    */
-  async removeFileFromCollection(collectionId, fileId) {
-    try {
-      const collection = this.collections.get(collectionId);
-      if (!collection) {
-        throw new Error('Colección no encontrada');
-      }
-
-      const initialLength = collection.mediaFiles.length;
-      collection.mediaFiles = collection.mediaFiles.filter(f => f !== fileId);
-
-      if (collection.mediaFiles.length !== initialLength) {
-        collection.updatedAt = new Date().toISOString();
-        await this.saveCollections();
-        console.log(`🗑️ Archivo ${fileId} eliminado de colección "${collection.name}"`);
-      } else {
-        console.log(`⚠️ Archivo ${fileId} no estaba en colección "${collection.name}"`);
-      }
-
-      return collection;
-    } catch (error) {
-      console.error(`❌ Error eliminando archivo ${fileId} de colección ${collectionId}:`, error);
-      throw error;
+  async quitarArchivos(collectionId, refs, files) {
+    const collection = this.collections.get(collectionId);
+    if (!collection) {
+      const err = new Error('Colección no encontrada');
+      err.status = 404;
+      throw err;
     }
+    const idx = indiceDeArchivos(files);
+    const fuera = new Set();
+    for (const ref of Array.isArray(refs) ? refs : []) {
+      if (typeof ref !== 'string' || !ref) continue;
+      fuera.add(ref);
+      fuera.add(normRuta(ref));
+      const f = archivoDeRef(ref, idx);
+      if (f) {
+        if (f.id) fuera.add(f.id);
+        if (f.mediaKey) fuera.add(f.mediaKey);
+        if (f.fullPath) fuera.add(normRuta(f.fullPath));
+      }
+    }
+    const antes = collection.mediaFiles.length;
+    collection.mediaFiles = collection.mediaFiles.filter(r => !fuera.has(r) && !fuera.has(normRuta(r)));
+    const removed = antes - collection.mediaFiles.length;
+    if (removed > 0) {
+      collection.updatedAt = new Date().toISOString();
+      await this.saveCollections();
+      console.log(`🗑️ ${removed} archivo(s) quitados de la colección "${collection.name}"`);
+    }
+    return { collection, removed };
+  }
+
+  /**
+   * Pasa a mediaKey las referencias guardadas por id o por ruta de los
+   * archivos que estan ahora en el catalogo. Se llama en cada sincronizacion:
+   * lo guardado a la antigua se va poniendo al dia solo, igual que favoritos y
+   * notas. Lo que no esta ahora (disco desconectado) se queda como estaba.
+   * @returns {Promise<number>} referencias cambiadas
+   */
+  async aPortable(files) {
+    const idx = indiceDeArchivos(files);
+    let n = 0;
+    for (const collection of this.collections.values()) {
+      if (collection.type === 'smart' || !Array.isArray(collection.mediaFiles)) continue;
+      let cambio = false;
+      const vistas = new Set();
+      const nuevas = [];
+      for (const ref of collection.mediaFiles) {
+        const f = archivoDeRef(ref, idx);
+        const r = (f && f.mediaKey) || ref;
+        if (r !== ref) { n++; cambio = true; }
+        if (vistas.has(r)) { cambio = true; continue; }
+        vistas.add(r);
+        nuevas.push(r);
+      }
+      if (cambio) {
+        collection.mediaFiles = nuevas;
+        collection.updatedAt = new Date().toISOString();
+      }
+    }
+    if (n > 0) {
+      await this.saveCollections();
+      console.log(`🔑 Colecciones: ${n} referencia(s) pasadas a identidad portable`);
+    }
+    return n;
+  }
+
+  /**
+   * Las referencias de una coleccion tal como las espera el frontend: el id de
+   * ruta de cada archivo que este en `files` (lo demas, tal cual). El frontend
+   * compara por id; sin esto, lo guardado por mediaKey no salia en la coleccion.
+   */
+  refsParaCliente(collection, idx) {
+    const out = [];
+    const vistas = new Set();
+    for (const ref of (collection && collection.mediaFiles) || []) {
+      const f = archivoDeRef(ref, idx);
+      const r = (f && f.id) || ref;
+      if (vistas.has(r)) continue;
+      vistas.add(r);
+      out.push(r);
+    }
+    return out;
   }
 
   /**
@@ -446,6 +554,9 @@ class CollectionsManager {
         if (typeof f === 'string') { presentes.add(f); continue; }
         if (f.id) presentes.add(f.id);
         if (f.mediaKey) presentes.add(f.mediaKey);
+        // Lo añadido en grupo se guardaba por ruta: sin esto, todo archivo
+        // guardado asi contaba como desaparecido aunque estuviera ahi.
+        if (f.fullPath) presentes.add(normRuta(f.fullPath));
       }
       const scanned = opts.scannedLibraryIds instanceof Set
         ? opts.scannedLibraryIds
@@ -457,11 +568,18 @@ class CollectionsManager {
       // sitio (services/reenlazar): se conserva mientras tanto.
       const protegidas = opts.protegidas instanceof Set ? opts.protegidas : null;
 
+      // De que biblioteca es una referencia por id o por ruta (lo sabe quien
+      // llama: la cache recuerda tambien lo de las rutas desactivadas).
+      const ubicar = typeof opts.ubicar === 'function' ? opts.ubicar : () => null;
+
       // ¿Se puede DEMOSTRAR que esta referencia ya no existe?
       const puedeProbarQueFalta = (ref) => {
-        const libId = mediaIdentity.libraryIdFromKey(ref);
-        if (libId) return scanned.has(libId);   // mediaKey: mira SU biblioteca
-        return todasLeidas;                     // id md5: solo si se leyo todo
+        const libId = mediaIdentity.libraryIdFromKey(ref) || ubicar(ref);
+        // Con su biblioteca localizada: solo si ESA se ha leido entera. Asi
+        // desactivar una ruta no vacia sus colecciones: "todas las leidas"
+        // cuenta solo las activas y lo de la desactivada no estaba.
+        if (libId) return scanned.has(libId);
+        return todasLeidas;                     // sin localizar: solo si se leyo todo
       };
 
       let totalRemovedFiles = 0;
@@ -737,5 +855,8 @@ class CollectionsManager {
 
 // Exportar instancia singleton
 const collectionsManager = new CollectionsManager();
+// Para las rutas: resolver referencias con el mismo criterio que aqui.
+collectionsManager.indiceDeArchivos = indiceDeArchivos;
+collectionsManager.normRuta = normRuta;
 
 module.exports = collectionsManager;

@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const { EMBEDDING_DIM } = require('./services/clipService');
 const { atomicWriteFileSync } = require('./utils/jsonStore');
+const { leerRegistro } = require('./utils/registroSeguro');
 const fallos = require('./utils/failureReason');
 
 // Threshold por defecto. 0.70 es conservador para CLIP base: la experiencia
@@ -37,16 +38,21 @@ let spaceById = new Map();
 // Cache de centroides en memoria para matching rapido. Float32Array(EMBEDDING_DIM)
 let centroidsCache = new Map();
 let warnedOnce = false;
+// Ruta cuyo contenido refleja la memoria, y si el archivo esta ahi sin poder
+// leerse (entonces no se guarda encima). Ver peopleRegistry.
+let cargadoDe = null;
+let sinLeer = false;
 // Threshold actual configurable en runtime (se persiste al JSON del registry)
 let currentThreshold = DEFAULT_THRESHOLD;
 
 function loadRegistry(filePath, avatarsBaseOverride = null) {
-  registryPath = null;
-  avatarsBase = null;
-  spaceById = new Map();
-  centroidsCache = new Map();
-
   if (!filePath || typeof filePath !== 'string' || !filePath.trim()) {
+    registryPath = null;
+    avatarsBase = null;
+    spaceById = new Map();
+    centroidsCache = new Map();
+    cargadoDe = null;
+    sinLeer = false;
     return { ok: true, count: 0, error: null };
   }
 
@@ -55,31 +61,40 @@ function loadRegistry(filePath, avatarsBaseOverride = null) {
     ? path.normalize(avatarsBaseOverride)
     : path.dirname(registryPath);
 
-  let raw;
-  try {
-    raw = fs.readFileSync(registryPath, 'utf-8');
-  } catch (err) {
-    if (err.code !== 'ENOENT' && !warnedOnce) {
-      console.warn(`⚠️ spaces_registry.json no accesible: ${err.message}`);
-      warnedOnce = true;
+  // Mismo criterio que el registro de personas (utils/registroSeguro.js): una
+  // lectura que falla nunca deja el registro vacio para que se guarde asi.
+  const yaCargado = cargadoDe === registryPath;
+  const r = leerRegistro(registryPath, 'spaces', { primeraVez: !yaCargado });
+  if (r.estado !== 'ok') {
+    if (yaCargado) {
+      if (r.estado !== 'no_existe') fallos.record('recargar el registro de espacios', r.error, { path: registryPath });
+      return { ok: false, count: spaceById.size, error: r.error.message, conservado: true };
     }
-    return { ok: false, count: 0, error: err.message };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
+    spaceById = new Map();
+    centroidsCache = new Map();
+    if (r.estado === 'no_existe') {
+      cargadoDe = registryPath;
+      sinLeer = false;
+      return { ok: false, count: 0, error: r.error.message, noExiste: true };
+    }
     if (!warnedOnce) {
-      console.warn(`⚠️ spaces_registry.json no parsea: ${err.message}`);
+      console.warn(`⚠️ spaces_registry.json no se ha podido cargar: ${r.error.message}`);
       warnedOnce = true;
     }
-    return { ok: false, count: 0, error: err.message };
+    fallos.record('leer el registro de espacios', r.error, { path: registryPath });
+    sinLeer = !(r.estado === 'roto' && r.apartado);
+    if (!sinLeer) cargadoDe = registryPath;
+    return { ok: false, count: 0, error: r.error.message };
   }
-
-  if (!parsed || !Array.isArray(parsed.spaces)) {
-    return { ok: false, count: 0, error: 'sin array spaces' };
+  if (r.desdeCopia) {
+    fallos.record('leer el registro de espacios', r.error, { path: registryPath });
+    console.warn(`⚠️ spaces_registry.json dañado${r.apartado ? ` (apartado en ${r.apartado})` : ''}: cargada la copia .bak`);
   }
+  const parsed = r.datos;
+  spaceById = new Map();
+  centroidsCache = new Map();
+  cargadoDe = registryPath;
+  sinLeer = false;
 
   // Cargar threshold global persistido (si existe). Si no, default.
   if (typeof parsed.match_threshold === 'number' && parsed.match_threshold > 0 && parsed.match_threshold <= 1) {
@@ -260,15 +275,22 @@ function saveToDisk() {
     console.warn('⚠️ saveToDisk sin registryPath; descartando.');
     return false;
   }
+  if (sinLeer) {
+    fallos.record('guardar el registro de espacios',
+      new Error('No se guarda: spaces_registry.json no se pudo leer al arrancar y guardar ahora borraría los espacios que tiene. Reinicia Pensadero.'),
+      { path: registryPath });
+    return false;
+  }
   const data = {
     version: 1,
     match_threshold: currentThreshold,
     spaces: Array.from(spaceById.values()),
   };
   // Escritura atómica (tmp + rename). spaces_registry.json guarda los
-  // centroid_b64, costosos de regenerar (requieren re-entrenar desde fotos).
+  // centroid_b64, costosos de regenerar (requieren re-entrenar desde fotos):
+  // con copia .bak, que es la que se usa si el archivo aparece dañado.
   try {
-    atomicWriteFileSync(registryPath, JSON.stringify(data, null, 2));
+    atomicWriteFileSync(registryPath, JSON.stringify(data, null, 2), { backup: true });
     return true;
   } catch (err) {
     fallos.record('guardar el registro de espacios', err, { path: registryPath });

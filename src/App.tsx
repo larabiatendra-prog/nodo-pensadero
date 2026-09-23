@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Grid, List, LayoutGrid, LayoutList, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock } from 'lucide-react';
+import { Grid, List, LayoutGrid, LayoutList, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock, Loader2 } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { noteFor } from './utils/mediaNotes';
 import Ecos from './components/Ecos';
@@ -112,6 +112,58 @@ const normalizaTexto = (s: unknown) => String(s ?? '')
   .toLowerCase()
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '');
+
+// \u2500\u2500 Busqueda por imagen o video arrastrado \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Por tipo y, si el navegador no lo sabe (.mts, .m2ts de camara), por extension.
+const EXT_VIDEO_ARRASTRADO = /\.(mp4|mov|m4v|mkv|avi|webm|mts|m2ts|ts|mpg|mpeg|wmv|3gp|mxf|dv|vob|flv|ogv)$/i;
+const EXT_IMAGEN_ARRASTRADA = /\.(jpe?g|png|webp|gif|bmp|tiff?|heic|heif)$/i;
+const esVideoArrastrado = (f: File) => f.type.startsWith('video/') || EXT_VIDEO_ARRASTRADO.test(f.name);
+const esImagenArrastrada = (f: File) => f.type.startsWith('image/') || EXT_IMAGEN_ARRASTRADA.test(f.name);
+
+const leerComoDataURL = (file: File) => new Promise<string | null>((resolve) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+  reader.onerror = () => resolve(null);
+  reader.readAsDataURL(file);
+});
+
+/**
+ * Un fotograma peque\u00f1o del video arrastrado, para ense\u00f1ar con que se busca.
+ * Lo saca el navegador; si no sabe abrir ese video (HEVC, ProRes, .mts), no
+ * hay vista previa y la busqueda sigue igual (el servidor usa ffmpeg).
+ */
+const fotogramaDeVideo = (file: File) => new Promise<string | null>((resolve) => {
+  const url = URL.createObjectURL(file);
+  const v = document.createElement('video');
+  v.muted = true;
+  v.preload = 'metadata';
+  let hecho = false;
+  const fin = (r: string | null) => {
+    if (hecho) return;
+    hecho = true;
+    clearTimeout(tope);
+    v.removeAttribute('src');
+    URL.revokeObjectURL(url);
+    resolve(r);
+  };
+  const tope = setTimeout(() => fin(null), 5000);
+  v.onloadedmetadata = () => { v.currentTime = Math.min(1, (v.duration || 0) / 2); };
+  v.onseeked = () => {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 160;
+      c.height = Math.round(160 * ((v.videoHeight / v.videoWidth) || 0.5625));
+      const ctx = c.getContext('2d');
+      if (!ctx) return fin(null);
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      fin(c.toDataURL('image/jpeg', 0.7));
+    } catch {
+      fin(null);
+    }
+  };
+  v.onerror = () => fin(null);
+  v.src = url;
+});
 
 function App() {
   // Uso personal single-user: sin login, sin user.id, sin roles.
@@ -260,6 +312,12 @@ function App() {
   // Se dispara arrastrando una imagen sobre la vista home (drag & drop).
   const [imageSearchFileIds, setImageSearchFileIds] = useState<string[] | null>(null);
   const [imageSearchPreview, setImageSearchPreview] = useState<string | null>(null);
+  // Con que se busco (para el aviso de resultados): imagen o video y su nombre.
+  const [imageSearchConsulta, setImageSearchConsulta] = useState<{ nombre: string; esVideo: boolean } | null>(null);
+  // Busqueda en marcha: se ve mientras el servidor mira la imagen o el video.
+  // Sin esto, tras soltar el archivo no pasaba nada visible durante segundos.
+  const [buscandoParecidas, setBuscandoParecidas] = useState<{ nombre: string; esVideo: boolean; preview: string | null; lenta: boolean } | null>(null);
+  const busquedaImagenRef = useRef<{ n: number; ctrl: AbortController | null }>({ n: 0, ctrl: null });
   // Estado del drag & drop: cuenta de entradas para gestionar enter/leave en
   // elementos anidados sin oscilar el overlay.
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -2568,32 +2626,65 @@ function App() {
 
   // Clear all active filters
   /**
-   * Ejecuta una busqueda por imagen similar usando SigLIP-2:
-   *   - max=50 resultados
-   *   - minSimilarity=0.75 (descartamos parecidos forzados)
+   * Busca lo parecido a una imagen o a un video usando SigLIP-2:
+   *   - max=50 resultados, fotos y videos (un video puntua por el momento que
+   *     mas se parece; si lo arrastrado es un video, se miran varios momentos)
+   *   - minSimilarity=0.75: medido el 23/09/2026 sobre el archivo real, una
+   *     foto ajena no pasa de 0,61-0,81 y una del archivo reenviada por
+   *     WhatsApp da 0,97; por debajo de 0,75 es ruido
    *   - mantenemos el orden de similitud que viene del backend
-   * Disparado por drag & drop sobre la vista home.
+   * Disparado por drag & drop sobre la vista home. Mientras busca se ve un
+   * aviso con lo arrastrado; la ultima busqueda manda (otra la sustituye).
    */
   const executeImageSearch = async (file: File) => {
+    const esVideo = esVideoArrastrado(file);
+    const yo = ++busquedaImagenRef.current.n;
+    busquedaImagenRef.current.ctrl?.abort();
+    const ctrl = new AbortController();
+    busquedaImagenRef.current.ctrl = ctrl;
+    const vigente = () => busquedaImagenRef.current.n === yo;
+
+    setBuscandoParecidas({ nombre: file.name, esVideo, preview: null, lenta: false });
+    // La vista previa se hace mientras el servidor busca, no despues.
+    const previa = (esVideo ? fotogramaDeVideo(file) : leerComoDataURL(file)).catch(() => null);
+    previa.then(p => { if (vigente()) setBuscandoParecidas(b => (b ? { ...b, preview: p } : b)); });
+    // Si tarda, decir por que: la primera vez se carga el modelo visual.
+    const avisoLenta = setTimeout(() => {
+      if (vigente()) setBuscandoParecidas(b => (b ? { ...b, lenta: true } : b));
+    }, 5000);
+
     try {
-      const r = await api.searchByImage(file, 50, 0.75);
+      const r = await api.searchByImage(file, 50, 0.75, ctrl.signal);
+      if (!vigente()) return;
       if (r.success && Array.isArray(r.data) && r.data.length > 0) {
-        const orderedIds = r.data.map((x: any) => x.fileId);
-        const reader = new FileReader();
-        reader.onload = (evt) => {
-          setImageSearchPreview(evt.target?.result as string);
-        };
-        reader.readAsDataURL(file);
-        setImageSearchFileIds(orderedIds);
+        setImageSearchFileIds(r.data.map((x: any) => x.fileId));
+        setImageSearchPreview(await previa);
+        setImageSearchConsulta({ nombre: file.name, esVideo });
         setNaturalSearchIds(null);
         setActiveView('home');
       } else {
-        alert('No se han encontrado imágenes con un parecido razonable (umbral 75%).');
+        toast(esVideo
+          ? 'Nada de tu archivo se parece lo bastante a ese vídeo (umbral 75 %).'
+          : 'Nada de tu archivo se parece lo bastante a esa imagen (umbral 75 %).', { icon: '🔍' });
       }
     } catch (err: any) {
+      if (err?.name === 'AbortError' || !vigente()) return;
       console.error('[image-search] error:', err);
-      alert('Error buscando imágenes similares: ' + (err.message || 'desconocido'));
+      toast.error('No se ha podido buscar: ' + (err?.message || 'error desconocido'));
+    } finally {
+      clearTimeout(avisoLenta);
+      if (vigente()) {
+        setBuscandoParecidas(null);
+        busquedaImagenRef.current.ctrl = null;
+      }
     }
+  };
+
+  const cancelarBusquedaImagen = () => {
+    busquedaImagenRef.current.n++;
+    busquedaImagenRef.current.ctrl?.abort();
+    busquedaImagenRef.current.ctrl = null;
+    setBuscandoParecidas(null);
   };
 
   // Drag & drop global: solo activo cuando estamos en la vista home. Si el
@@ -2635,11 +2726,11 @@ function App() {
       setIsDraggingImage(false);
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0) return;
-      const imageFile = Array.from(files).find(f => f.type.startsWith('image/'));
-      if (imageFile) {
-        executeImageSearch(imageFile);
+      const consulta = Array.from(files).find(f => esImagenArrastrada(f) || esVideoArrastrado(f));
+      if (consulta) {
+        executeImageSearch(consulta);
       } else {
-        alert('Solo puedes arrastrar imágenes para buscar similares.');
+        toast.error('Para buscar parecidas, arrastra una imagen o un vídeo.');
       }
     };
 
@@ -2673,6 +2764,7 @@ function App() {
     setEcoActivo(null);
     setImageSearchFileIds(null);
     setImageSearchPreview(null);
+    setImageSearchConsulta(null);
 
     // Resetear estado interno de la barra (texto/pregunta natural sin enviar)
     searchBarRef.current?.reset();
@@ -3122,7 +3214,11 @@ function App() {
   };
 
   // ── Session grouping ──────────────────────────────────────────────────────
-  const useGrouping = groupingEnabled && viewMode === 'grid';
+  // Con una busqueda por imagen activa se ven los resultados uno a uno, en
+  // orden de parecido: agruparlos por sesion escondia en una tarjeta de evento
+  // justo las fotos y los videos que se estaban buscando.
+  const useGrouping = groupingEnabled && viewMode === 'grid'
+    && !(imageSearchFileIds && imageSearchFileIds.length > 0);
 
   // useSessionGroups se llama aquí (nivel de componente) para cumplir reglas de hooks
   const sessionItems = useSessionGroups(
@@ -3587,14 +3683,22 @@ function App() {
               {/* Indicador "Búsqueda por imagen similar activa" — visible solo
                   en home cuando se ha disparado desde el menú de tres puntos.
                   Muestra el numero de resultados y el orden por similitud. */}
-              {activeView === 'home' && imageSearchPreview && (
+              {activeView === 'home' && imageSearchFileIds !== null && (
                 <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-full bg-lavanda/10 border border-lavanda/30 w-fit">
-                  <img src={imageSearchPreview} alt="" className="w-8 h-8 rounded object-cover border border-lavanda/40" />
+                  {imageSearchPreview
+                    ? <img src={imageSearchPreview} alt="" className="w-8 h-8 rounded object-cover border border-lavanda/40" />
+                    : <span className="w-8 h-8 rounded border border-lavanda/40 flex items-center justify-center text-lavanda text-xs">{imageSearchConsulta?.esVideo ? '▶' : '▣'}</span>}
                   <span className="text-sm text-marfil">
-                    Mostrando {imageSearchFileIds?.length ?? 0} más parecidas (orden por similitud, ≥ 75%)
+                    {/* Lo que se ve, no lo que devolvio el servidor: los filtros activos (tipo, persona...) se aplican encima. */}
+                    {filteredFiles.length === 0
+                      ? `Tus filtros esconden ${imageSearchFileIds.length === 1 ? 'la más parecida' : `las ${imageSearchFileIds.length} más parecidas`} ${imageSearchConsulta?.esVideo ? 'a ese vídeo' : 'a esa imagen'}`
+                      : `${filteredFiles.length === 1 ? 'La más parecida' : `Las ${filteredFiles.length} más parecidas`} ${imageSearchConsulta?.esVideo ? 'a ese vídeo' : 'a esa imagen'} (por similitud, ≥ 75 %)`}
+                    {filteredFiles.length > 0 && filteredFiles.length < imageSearchFileIds.length && (
+                      <span className="text-lavanda-archivo"> · {imageSearchFileIds.length - filteredFiles.length} más que tus filtros no dejan ver</span>
+                    )}
                   </span>
                   <button
-                    onClick={() => { setImageSearchFileIds(null); setImageSearchPreview(null); }}
+                    onClick={() => { setImageSearchFileIds(null); setImageSearchPreview(null); setImageSearchConsulta(null); }}
                     className="ml-1 p-1 rounded-full text-lavanda-archivo hover:text-marfil hover:bg-lavanda/20"
                     title="Limpiar búsqueda por imagen"
                   >
@@ -4029,8 +4133,46 @@ function App() {
             <svg className="w-20 h-20 text-lavanda" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
-            <p className="text-2xl font-medium text-marfil">Suelta aquí para buscar imágenes similares</p>
-            <p className="text-sm text-lavanda-archivo">Encontrará las más parecidas de tu archivo</p>
+            <p className="text-2xl font-medium text-marfil">Suelta aquí para buscar lo parecido</p>
+            <p className="text-sm text-lavanda-archivo">Una imagen o un vídeo: encontrará las fotos y los vídeos más parecidos de tu archivo</p>
+          </div>
+        </div>
+      )}
+
+      {/* Busqueda en marcha: lo arrastrado y que se esta buscando. Sin esto,
+          tras soltar el archivo no se veia nada durante segundos (la primera
+          vez se carga el modelo visual) y parecia que no habia pasado nada. */}
+      {buscandoParecidas && (
+        <div className="fixed inset-0 z-[100] bg-noche/60 backdrop-blur-[2px] flex items-center justify-center" role="status" aria-live="polite">
+          <div className="bg-tinta border border-lavanda/40 rounded-3xl px-8 py-7 flex flex-col items-center gap-4 shadow-2xl max-w-sm mx-4 text-center">
+            <div className="relative">
+              {buscandoParecidas.preview
+                ? <img src={buscandoParecidas.preview} alt="" className="w-28 h-28 rounded-2xl object-cover border border-lavanda/40" />
+                : <div className="w-28 h-28 rounded-2xl border border-lavanda/40 bg-grafito flex items-center justify-center text-3xl text-lavanda">{buscandoParecidas.esVideo ? '▶' : '▣'}</div>}
+              <Loader2 className="absolute -right-2 -bottom-2 w-8 h-8 p-1.5 rounded-full bg-lavanda text-noche animate-spin" />
+            </div>
+            <div>
+              <p className="text-lg font-medium text-marfil">Buscando lo parecido…</p>
+              <p className="text-xs text-niebla mt-1 break-all">{buscandoParecidas.nombre}</p>
+              <p className="text-sm text-lavanda-archivo mt-2">
+                {buscandoParecidas.esVideo
+                  ? 'Mirando varios momentos del vídeo y comparándolos con tu archivo.'
+                  : 'Comparando la imagen con las fotos y los vídeos de tu archivo.'}
+              </p>
+              {buscandoParecidas.lenta && (
+                <p className="text-xs text-niebla mt-2">
+                  {buscandoParecidas.esVideo
+                    ? 'Un vídeo grande tarda un poco más, y la primera búsqueda carga además el modelo visual.'
+                    : 'La primera búsqueda tarda un poco más: se está cargando el modelo visual.'}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={cancelarBusquedaImagen}
+              className="text-sm px-4 py-1.5 rounded-full border border-lavanda/40 text-lavanda-claro hover:bg-lavanda/15"
+            >
+              Cancelar
+            </button>
           </div>
         </div>
       )}

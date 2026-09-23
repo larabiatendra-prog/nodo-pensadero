@@ -148,14 +148,37 @@ function size() { return _index.size; }
  * @returns {Array<{fileId, similarity}>} ordenado desc
  */
 function searchNearest(query, topN = 50, fileIdFilter = null) {
-  if (!query || query.length !== EMBEDDING_DIM) return [];
-  const q = query instanceof Float32Array ? query : Float32Array.from(query);
+  return searchNearestAny([query], topN, fileIdFilter);
+}
+
+/**
+ * Como searchNearest, pero con VARIAS consultas a la vez (los fotogramas de
+ * un video arrastrado): cada archivo puntua por la que mas se le parece. Asi
+ * un clip se encuentra aunque solo coincida con uno de sus momentos.
+ *
+ * @param {Float32Array[]} queries
+ * @param {number} topN
+ * @param {Function|null} fileIdFilter - (fileId) => bool. Si false, salta.
+ *   Filtrar AQUI y no despues importa: el top-N se cogia del indice entero y
+ *   luego se tiraban las huellas de archivos que ya no estan o no se ven; el
+ *   23/09/2026, de 50 pedidos solo 25 eran contenido distinto.
+ * @returns {Array<{fileId, similarity}>} ordenado desc
+ */
+function searchNearestAny(queries, topN = 50, fileIdFilter = null) {
+  const qs = (Array.isArray(queries) ? queries : [])
+    .filter(q => q && q.length === EMBEDDING_DIM)
+    .map(q => (q instanceof Float32Array ? q : Float32Array.from(q)));
+  if (qs.length === 0) return [];
   const results = [];
   for (const [fileId, emb] of _index.entries()) {
     if (fileIdFilter && !fileIdFilter(fileId)) continue;
-    let dot = 0;
-    for (let i = 0; i < EMBEDDING_DIM; i++) dot += q[i] * emb[i];
-    results.push({ fileId, similarity: dot });
+    let mejor = -Infinity;
+    for (const q of qs) {
+      let dot = 0;
+      for (let i = 0; i < EMBEDDING_DIM; i++) dot += q[i] * emb[i];
+      if (dot > mejor) mejor = dot;
+    }
+    results.push({ fileId, similarity: mejor });
   }
   results.sort((a, b) => b.similarity - a.similarity);
   return results.slice(0, topN);
@@ -191,6 +214,7 @@ module.exports = {
   get,
   size,
   searchNearest,
+  searchNearestAny,
   pruneOrphans,
   isLoaded,
   isDirty,

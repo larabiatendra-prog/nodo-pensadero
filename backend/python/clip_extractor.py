@@ -101,7 +101,7 @@ _register_nvidia_dll_directories()
 
 try:
     import torch
-    from PIL import Image
+    from PIL import Image, ImageOps
     from transformers import AutoProcessor, AutoModel
 except Exception as e:
     sys.stderr.write(f"ERROR cargando dependencias: {e}\n")
@@ -199,7 +199,15 @@ def embed_image(path: str) -> dict:
         raise RuntimeError(f"archivo no existe: {path}")
     try:
         with Image.open(path) as raw:
-            img = raw.convert("RGB")
+            # Girar segun la orientacion EXIF antes de mirar la foto: la
+            # vertical de un movil se guarda apaisada con "giro 90", y sin esto
+            # su huella era la de la foto tumbada (medido 23/09/2026: 0,87-0,92
+            # de parecido con la foto derecha, que es la que se busca).
+            try:
+                derecha = ImageOps.exif_transpose(raw)
+            except Exception:
+                derecha = raw  # EXIF raro: mejor tumbada que sin huella
+            img = derecha.convert("RGB")
     except Exception as e:
         raise RuntimeError(f"imagen ilegible ({e})")
 

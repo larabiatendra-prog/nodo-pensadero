@@ -1096,4 +1096,6 @@ function getInstance() {
   return _instance;
 }
 
-module.exports = { VisualScanService, getInstance };
+// probeVideo y extractFrame tambien los usa la busqueda por video arrastrado
+// (routes/colorSearchRoutes.js): mismos fotogramas que el escaneo.
+module.exports = { VisualScanService, getInstance, probeVideo, extractFrame };

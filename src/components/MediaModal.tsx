@@ -42,7 +42,13 @@ interface MediaModalProps {
   onFileSelect?: (file: MediaFile) => void; // Callback para seleccionar archivo relacionado
   onTagClick?: (tag: string) => void; // Callback para filtrar por etiqueta
   onBackgroundRemoved?: (newFileId: string, newFileName: string) => void; // Callback cuando se quita el fondo
-  onPersonFilter?: (personId: string) => void; // Click en un bbox identificado para filtrar por persona
+  /**
+   * Click en una cara o burbuja identificada: filtrar la galeria por esa
+   * persona. Quien lo recibe CIERRA la ficha (navegando a /persona/:id). La
+   * ficha no llama a onClose despues: esa vuelta a la vista de fondo pisaba
+   * la navegacion y la persona no llegaba a activarse.
+   */
+  onPersonFilter?: (personId: string) => void;
   /** Nota humana de este archivo (vacia si no hay). */
   note?: string;
   /** Persiste la nota del archivo. note vacio borra. */
@@ -697,7 +703,6 @@ export default function MediaModal({
                   onPersonFilter={onPersonFilter}
                   onSeedUnknown={handleSeedFromUnknownFace}
                   onAssignFace={handleAssignFaceClick}
-                  onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
                 />
@@ -797,7 +802,6 @@ export default function MediaModal({
                   onPersonFilter={onPersonFilter}
                   onSeedUnknown={handleSeedFromUnknownFace}
                   onAssignFace={handleAssignFaceClick}
-                  onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
                 />
@@ -1024,7 +1028,6 @@ export default function MediaModal({
                 <FilePersonsBubbles
                   file={file}
                   onPersonFilter={onPersonFilter}
-                  onClosePreview={onClose}
                   hoveredFaceKey={hoveredFaceKey}
                   setHoveredFaceKey={setHoveredFaceKey}
                 />
@@ -1426,7 +1429,6 @@ function FaceBoxesOverlay({
   onPersonFilter,
   onSeedUnknown,
   onAssignFace,
-  onClosePreview,
   hoveredFaceKey,
   setHoveredFaceKey,
 }: {
@@ -1436,7 +1438,6 @@ function FaceBoxesOverlay({
   onPersonFilter?: (personId: string) => void;
   onSeedUnknown?: (faceIndex: number) => void;
   onAssignFace?: (faceIndex: number) => void;
-  onClosePreview?: () => void;
   hoveredFaceKey: string | null;
   setHoveredFaceKey: (key: string | null) => void;
 }) {
@@ -1469,7 +1470,6 @@ function FaceBoxesOverlay({
           e.stopPropagation();
           if (isKnown && b.person_id && onPersonFilter) {
             onPersonFilter(b.person_id);
-            onClosePreview?.();
           } else if (assignable && onAssignFace) {
             onAssignFace(faceIdx);
           } else if (seedable && onSeedUnknown) {
@@ -1710,13 +1710,11 @@ function DescriptionOverlay({ file, onClose }: { file: MediaFile; onClose: () =>
 function FilePersonsBubbles({
   file,
   onPersonFilter,
-  onClosePreview,
   hoveredFaceKey,
   setHoveredFaceKey,
 }: {
   file: MediaFile;
   onPersonFilter?: (personId: string) => void;
-  onClosePreview?: () => void;
   hoveredFaceKey: string | null;
   setHoveredFaceKey: (key: string | null) => void;
 }) {
@@ -1774,7 +1772,6 @@ function FilePersonsBubbles({
               onClick={() => {
                 if (clickable && p.person_id && onPersonFilter) {
                   onPersonFilter(p.person_id);
-                  onClosePreview?.();
                 }
               }}
               onMouseEnter={() => setHoveredFaceKey(myKey)}

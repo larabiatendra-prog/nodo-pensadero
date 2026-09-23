@@ -4148,7 +4148,14 @@ function App() {
           navigate(`/archivo/${encodeURIComponent(newFile.id)}`, { state: bg ? { backgroundLocation: bg } : undefined, replace: true });
         }}
         onTagClick={handleTagClick}
-        onPersonFilter={(personId) => navigate('/persona/' + encodeURIComponent(personId))}
+        onPersonFilter={(personId) => {
+          // Como una etiqueta: el filtro se activa en el acto (tambien si la
+          // galeria de fondo ya era /persona/:id y el filtro se habia limpiado,
+          // donde la URL no cambia). Ir a /persona/:id cierra la ficha;
+          // replace para que la ficha no quede en el historial.
+          setSelectedPersonIds([personId]);
+          navigate('/persona/' + encodeURIComponent(personId), { replace: true });
+        }}
         onBackgroundRemoved={async (newFileId, newFileName) => {
           // Mostrar toast de éxito
           toast.success(`Imagen sin fondo creada: ${newFileName}`, {

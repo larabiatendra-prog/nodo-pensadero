@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { User, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge, UserPlus, Check, Camera, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, CheckCircle, Sparkles, Search, Users, ExternalLink, Pencil, GitMerge, UserPlus, Check, Camera, Loader2 } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -149,7 +149,6 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
   const [loadingSimilarity, setLoadingSimilarity] = useState(false);
 
   // Form state
-  const [newPersonId, setNewPersonId] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newAliases, setNewAliases] = useState('');
 
@@ -808,7 +807,6 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       });
       if (!res.success) throw new Error(res.error || 'Error creando persona');
       setShowCreate(false);
-      setNewPersonId('');
       setNewDisplayName('');
       setNewAliases('');
       await loadPersons();

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MediaFile } from '../types';
 import { resolvePlayable } from '../utils/playable';
 

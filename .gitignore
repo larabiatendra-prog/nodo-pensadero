@@ -53,6 +53,8 @@ backend/scan_paths.json
 backend/embeddings_index.json
 backend/visual_search_data/
 backend/clip_index.json
+# Momentos de los videos para la busqueda visual (regenerable desde los catalogos).
+backend/clip_momentos.json
 backend/video_proxies.json
 # Escaneo en curso, para poder retomarlo si el proceso muere a mitad.
 backend/scan_state.json

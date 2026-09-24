@@ -200,6 +200,27 @@ module.exports = function createOrganizationRoutes(deps) {
     }
   });
 
+  // Va ANTES de PATCH /collections/:id: si no, Express casaba "reorder" como
+  // un id de coleccion y reordenar respondia "Colección no encontrada".
+  /**
+   * PATCH /api/collections/reorder
+   * Body: { orderedIds: [id1, id2, ...] }
+   */
+  router.patch('/collections/reorder', async (req, res) => {
+    try {
+      const { orderedIds } = req.body || {};
+      if (!Array.isArray(orderedIds)) {
+        return res.status(400).json({ error: 'Se requiere orderedIds (array)' });
+      }
+      const reordered = await collectionsManager.reorderCollections(orderedIds);
+      const idx = collectionsManager.indiceDeArchivos(todos());
+      res.json({ success: true, data: reordered.map(c => paraCliente(c, idx)) });
+    } catch (error) {
+      console.error('❌ Error reordenando colecciones:', error);
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   /**
    * PATCH /api/collections/:id
    * Body: { name?, description?, coverImage?, coverType? }
@@ -253,23 +274,6 @@ module.exports = function createOrganizationRoutes(deps) {
     }
   });
 
-  /**
-   * PATCH /api/collections/reorder
-   * Body: { orderedIds: [id1, id2, ...] }
-   */
-  router.patch('/collections/reorder', async (req, res) => {
-    try {
-      const { orderedIds } = req.body || {};
-      if (!Array.isArray(orderedIds)) {
-        return res.status(400).json({ error: 'Se requiere orderedIds (array)' });
-      }
-      const reordered = await collectionsManager.reorderCollections(orderedIds);
-      res.json(reordered);
-    } catch (error) {
-      console.error('❌ Error reordenando colecciones:', error);
-      res.status(400).json({ error: error.message });
-    }
-  });
 
   // ============================================
   // ARCHIVOS DENTRO DE COLECCIONES

@@ -8,6 +8,7 @@ import { buildApiUrl, API_CONFIG } from '../config';
 import { api } from '../services/api';
 import config from '../config';
 import { resolveEnterBehavior, normalizeText } from '../utils/smartTags';
+import { aTextoDiaLocal, deTextoDiaLocal } from '../utils/dateUtils';
 import { TAG_SYNONYM_GROUPS } from '../utils/tagSynonyms';
 
 // Schema canónico del intent que devuelve el LLM (ver aiSearchService.js).
@@ -77,7 +78,7 @@ export interface SearchBarHandle {
   reset: () => void;
 }
 
-const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, placeholder = "Buscar archivos...", includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson, grupos = [], gruposActivos = [], onAddGroup, onRemoveGroup, contarGrupo }, ref) {
+const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson, grupos = [], gruposActivos = [], onAddGroup, onRemoveGroup, contarGrupo }, ref) {
   const [query, setQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -90,7 +91,6 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
   // via filters.textTerms en cada onSearch.
   const [localTextTerms, setLocalTextTerms] = useState<string[]>([]);
   const [tagsData, setTagsData] = useState<TagsData | null>(null);
-  const [loading, setLoading] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
 
   // Smart Tag Matching — sugerencias por sinónimos cuando Enter no encuentra
@@ -232,7 +232,6 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
   // Fetch available tags from backend
   const fetchTags = async () => {
     try {
-      setLoading(true);
       const response = await fetch(buildApiUrl('tags'));
       const result = await response.json();
       
@@ -241,8 +240,6 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
       }
     } catch (error) {
       console.error('Error fetching tags:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -1234,10 +1231,10 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <input
                         type="date"
-                        value={filters.dateFrom?.toISOString().split('T')[0] || ''}
-                        onChange={(e) => setFilters({ 
-                          ...filters, 
-                          dateFrom: e.target.value ? new Date(e.target.value) : undefined,
+                        value={filters.dateFrom ? aTextoDiaLocal(filters.dateFrom) : ''}
+                        onChange={(e) => setFilters({
+                          ...filters,
+                          dateFrom: deTextoDiaLocal(e.target.value),
                           year: undefined, // Clear year filter when using date range
                           month: undefined // Clear month filter when using date range
                         })}
@@ -1248,10 +1245,10 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                       />
                       <input
                         type="date"
-                        value={filters.dateTo?.toISOString().split('T')[0] || ''}
-                        onChange={(e) => setFilters({ 
-                          ...filters, 
-                          dateTo: e.target.value ? new Date(e.target.value) : undefined,
+                        value={filters.dateTo ? aTextoDiaLocal(filters.dateTo) : ''}
+                        onChange={(e) => setFilters({
+                          ...filters,
+                          dateTo: deTextoDiaLocal(e.target.value),
                           year: undefined, // Clear year filter when using date range
                           month: undefined // Clear month filter when using date range
                         })}

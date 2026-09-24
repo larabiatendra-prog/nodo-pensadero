@@ -22,7 +22,9 @@ const crypto = require('crypto');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const WebSocket = require('ws');
+const { LOCAL_ORIGIN_RE, hostPermitido, origenPermitido } = require('./utils/origenLocal');
 const http = require('http');
+const { execFile } = require('child_process');
 
 const colorAnalyzer = require('./colorAnalyzer');
 const favoritesManager = require('./favoritesManager');
@@ -50,6 +52,7 @@ const createAliasRoutes = require('./routes/aliasRoutes');
 const createNotesRoutes = require('./routes/notesRoutes');
 const createOcultosRoutes = require('./routes/ocultosRoutes');
 const createProxiesRoutes = require('./routes/proxiesRoutes');
+const createMomentosRoutes = require('./routes/momentosRoutes');
 const createPersonaArchivosRoutes = require('./routes/personaArchivosRoutes');
 const createGruposRoutes = require('./routes/gruposRoutes');
 const createCopiasRoutes = require('./routes/copiasRoutes');
@@ -98,7 +101,14 @@ const HOST = process.env.HOST || '127.0.0.1';
 const server = http.createServer(app);
 
 // WebSocket para progreso en tiempo real
-const wss = new WebSocket.Server({ server, path: '/ws' });
+// El WebSocket no pasa por CORS ni por los middlewares de Express: cualquier
+// web abierta en el navegador podia conectarse y leer el progreso (rutas y
+// nombres de archivo). Mismas reglas que la API (utils/origenLocal.js).
+const wss = new WebSocket.Server({
+  server,
+  path: '/ws',
+  verifyClient: ({ req, origin }) => hostPermitido(req.headers.host) && origenPermitido(origin, req.headers.host),
+});
 const progressClients = new Set();
 
 // Directorios
@@ -199,6 +209,15 @@ async function loadExportsPaths() {
 
 // === MIDDLEWARE ===
 
+// Anti-DNS-rebinding, lo primero de todo: una web con un dominio suyo
+// apuntando a 127.0.0.1 pasaba la comprobacion de Origin (su Origin y su Host
+// coinciden) y podia leer el archivo entero. Ver utils/origenLocal.js.
+app.use((req, res, next) => {
+  if (hostPermitido(req.headers.host)) return next();
+  res.status(403).type('text/plain; charset=utf-8')
+    .send('Pensadero solo responde en este PC (localhost o su IP). Si entras por un nombre de red propio, ponlo en HOSTS_PERMITIDOS en backend/.env.');
+});
+
 // CORS restringido. En producción el backend sirve el frontend en el MISMO
 // origen que la API, así que el navegador NO aplica CORS a las llamadas
 // normales. El único cross-origin legítimo es desarrollo: Vite en :5173 → API
@@ -206,7 +225,6 @@ async function loadExportsPaths() {
 // 127.0.0.1 / ::1, cualquier puerto) y peticiones sin Origin (navegación
 // same-origin, <video>, curl). Una web externa queda sin ACAO → el navegador
 // le bloquea leer la respuesta (anti-exfiltración), crítico al no haber auth.
-const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 app.use(cors({
   origin(origin, cb) {
     if (!origin || LOCAL_ORIGIN_RE.test(origin)) return cb(null, true);
@@ -214,18 +232,13 @@ app.use(cors({
   },
 }));
 
-// Defensa anti-CSRF / anti-DNS-rebinding. Como no hay auth, una web externa
+// Defensa anti-CSRF. Como no hay auth, una web externa
 // podría disparar POSTs cross-origin que mutan estado (scan, tags, etc.). Para
 // métodos que mutan, si viene Origin exigimos que sea el MISMO host que sirve
 // la API (same-origin real) o un origen local de desarrollo; si no, 403. Los
 // GET/HEAD se dejan pasar: su respuesta ya queda protegida por la política CORS.
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (!origin) return next();
-  if (LOCAL_ORIGIN_RE.test(origin)) return next();
-  try {
-    if (new URL(origin).host === req.headers.host) return next();
-  } catch { /* Origin malformado: tratar como no permitido abajo */ }
+  if (origenPermitido(req.headers.origin, req.headers.host)) return next();
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
   return res.status(403).json({ success: false, error: 'Origin no permitido' });
 });
@@ -486,14 +499,17 @@ function extractSmartTags(filename) {
       const m = cleanPart.match(pattern);
       if (m) {
         const [_, year, month, day] = m;
-        const fullYear = 2000 + parseInt(year);
+        // Misma regla de siglo que utils/fechaArchivo.js (AA > 50 -> 19AA):
+        // antes "951225" daba la etiqueta "2095".
+        const yy = parseInt(year, 10);
+        const fullYear = yy > 50 ? 1900 + yy : 2000 + yy;
         const dateObj = new Date(fullYear, parseInt(month) - 1, parseInt(day));
         if (dateObj.getFullYear() === fullYear &&
             dateObj.getMonth() === parseInt(month) - 1 &&
             dateObj.getDate() === parseInt(day)) {
           extractedDate = dateObj;
           tags.push(`${year}-${month}-${day}`);
-          tags.push(`20${year}`);
+          tags.push(String(fullYear));
           const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                           'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
           tags.push(months[parseInt(month) - 1]);
@@ -557,6 +573,36 @@ function getFileType(filePath) {
 
 // === THUMBNAIL ===
 
+// Imagenes que ni sharp ni ffmpeg han podido leer en esta vida del proceso.
+const _miniaturaImposible = new Set();
+
+/**
+ * Miniatura (600 px de ancho) con el ffmpeg del sistema, para lo que sharp no
+ * lee. El ffmpeg incluido en node_modules es antiguo y no sabe de HEIC; el del
+ * PATH (el mismo que usan los proxies y el escaneo) si.
+ * @returns {Promise<boolean>} si ha quedado escrita
+ */
+async function miniaturaConFfmpeg(origen, destino) {
+  // Primero la imagen entera y luego la reduce sharp: una HEIC de iPhone son
+  // teselas que ffmpeg une con su propio filtro, y pedirle ademas que escale
+  // (-vf) falla ("Simple and complex filtering cannot be used together").
+  const tmp = path.join(require('os').tmpdir(), `pensadero-mini-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+  const decodificada = await new Promise((resolve) => {
+    execFile('ffmpeg', ['-y', '-v', 'error', '-i', origen, '-frames:v', '1', '-q:v', '2', tmp],
+      { timeout: 60000, windowsHide: true },
+      (err) => resolve(!err));
+  });
+  try {
+    if (!decodificada) return false;
+    await sharp(tmp).rotate().resize({ width: 600 }).jpeg({ quality: 80 }).toFile(destino);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
 async function generateThumbnail(filePath, fileId, fileName) {
   const fileType = getFileType(filePath);
 
@@ -608,14 +654,26 @@ async function generateThumbnail(filePath, fileId, fileName) {
       // el navegador ya no sabe girarla. Pasaba en 633 de 637 fotos verticales.
       // Solo ancho: el alto sale de la proporcion YA girada. Se lee a buffer
       // desde Node (que si sabe de rutas de mas de 260 caracteres).
-      const imageBuffer = await fs.readFile(filePath);
-      await sharp(imageBuffer)
-        .rotate()
-        .resize({ width: 600, withoutEnlargement: false })
-        .jpeg({ quality: 80 })
-        .toFile(loc.thumbnailPath);
-
-      return loc.thumbnailUrl;
+      if (_miniaturaImposible.has(fileId)) return svgPlaceholder('Error', fileName, '%23fee2e2');
+      try {
+        const imageBuffer = await fs.readFile(filePath);
+        await sharp(imageBuffer)
+          .rotate()
+          .resize({ width: 600, withoutEnlargement: false })
+          .jpeg({ quality: 80 })
+          .toFile(loc.thumbnailPath);
+        return loc.thumbnailUrl;
+      } catch (errSharp) {
+        // Lo que sharp no decodifica lo intenta ffmpeg: las HEIC de iPhone
+        // (van en HEVC, que el sharp que usamos no trae; 79 fotos sin
+        // miniatura el 23/09/2026) y los PSD.
+        if (await miniaturaConFfmpeg(filePath, loc.thumbnailPath)) return loc.thumbnailUrl;
+        // Ni una ni otra: no se reintenta en cada vista (lo pedia la galeria
+        // cada vez, y cada vez apuntaba el mismo error en el log).
+        _miniaturaImposible.add(fileId);
+        console.error(`Error generando miniatura para ${filePath}: ${errSharp.message}`);
+        return svgPlaceholder('Error', fileName, '%23fee2e2');
+      }
     }
 
     if (actualFileType === 'video') {
@@ -654,7 +712,9 @@ async function generateThumbnail(filePath, fileId, fileName) {
             return;
           }
           const timestamps = [2, 5, 1];
-          ffmpeg(effectivePath)
+          // Tiempo limite: un video corrupto podia dejar a ffmpeg colgado y con
+          // el la sincronizacion entera, que espera a cada miniatura.
+          ffmpeg(effectivePath, { timeout: 60 })
             .screenshot({
               timestamps: [timestamps[attempts]],
               filename: loc.thumbnailName,
@@ -791,6 +851,27 @@ async function orientarMiniatura(fileData) {
 }
 
 /**
+ * Segunda oportunidad para una foto que se quedo sin miniatura: si ahora sale
+ * (ffmpeg lee HEIC y PSD), se apunta con sus colores, como una nueva.
+ */
+async function rehacerMiniaturaFallida(fileData) {
+  const url = await generateThumbnail(fileData.fullPath, fileData.id, fileData.name);
+  if (typeof url !== 'string' || url.startsWith('data:')) return false;
+  fileData.thumbnail = url;
+  const loc = pathsConfig.resolveThumbnailLocation({ fullPath: fileData.fullPath, fileId: fileData.id, fileName: fileData.name });
+  const legacy = pathsConfig.resolveThumbnailLocation({ fullPath: fileData.fullPath, fileId: fileData.id, fileName: fileData.name, legacy: true });
+  for (const cand of [loc.thumbnailPath, legacy.thumbnailPath]) {
+    try {
+      await fs.access(cand);
+      fileData.colorData = await colorAnalyzer.analyzeFileColors(cand, 'image');
+      break;
+    } catch { /* sin colores: la miniatura ya vale */ }
+  }
+  cacheSucia = true;
+  return true;
+}
+
+/**
  * Indexa UN archivo: acierto de cache, o nuevo/modificado (miniatura, colores,
  * identidad portable). Lanza si no se puede leer: quien llama lo apunta.
  * @returns {Promise<{file: object, accion: 'cache'|'nuevo'|'modificado'}>}
@@ -818,6 +899,12 @@ async function indexarArchivo(fullPath, nombre, fileType, baseDir, libraryId) {
     // Foto cuya miniatura se hizo sin respetar el giro EXIF: se rehace una vez.
     if (fileType === 'image' && cached.fileData && !cached.fileData.miniaturaOrientada) {
       await orientarMiniatura(cached.fileData);
+    }
+    // Foto que se quedo con el cartel de "Error" (HEIC, PSD: sharp no las lee):
+    // se reintenta una vez por arranque, ahora con ffmpeg de respaldo.
+    if (fileType === 'image' && cached.fileData && typeof cached.fileData.thumbnail === 'string'
+        && cached.fileData.thumbnail.startsWith('data:') && !_miniaturaImposible.has(cached.fileData.id)) {
+      await rehacerMiniaturaFallida(cached.fileData);
     }
     // Re-mergear catalog siempre (puede haber cambiado fuera de banda)
     const merged = await catalogReader.applyCatalog(cached.fileData);
@@ -1369,16 +1456,45 @@ async function sincronizarIndiceClip({ todos, recorridos, podar }) {
         cambios += quitados;
         console.log(`🧹 Indice visual podado: ${quitados} entradas huerfanas (${antes} -> ${clipIndex.size()})`);
       }
+    } else if (clipIndex.size() > 0) {
+      // Aunque no se hayan leido todas las bibliotecas, lo que Pensadero ya
+      // no conoce de NINGUNA forma (ni en la lista ni en la cache, que recuerda
+      // tambien lo de los discos desconectados) sobra: son rutas viejas, como
+      // las 5.811 huellas de D: del 23/09/2026 que ocupaban el indice sin
+      // poder aparecer nunca. Si ese archivo vuelve, su huella se recupera de
+      // su catalogo (mas abajo).
+      const conocidos = todos.map(f => f.id);
+      for (const e of fileCache.values()) if (e && e.fileData && e.fileData.id) conocidos.push(e.fileData.id);
+      const antes = clipIndex.size();
+      const quitados = clipIndex.pruneOrphans(conocidos);
+      if (quitados > 0) {
+        cambios += quitados;
+        console.log(`🧹 Indice visual: ${quitados} huellas de archivos que ya no se conocen (${antes} -> ${clipIndex.size()})`);
+      }
     }
     let recuperadas = 0;
+    let conMomentos = 0;
     for (const f of recorridos || []) {
-      if (!f || !f.id || !f.has_catalog || clipIndex.has(f.id) || _sinHuellaVisual.has(f.id)) continue;
+      if (!f || !f.id || !f.has_catalog || _sinHuellaVisual.has(f.id)) continue;
+      // Un video con huella pero sin sus momentos en el indice tambien se mira:
+      // los momentos viven en el catalogo igual que la huella principal.
+      const faltaPrincipal = !clipIndex.has(f.id);
+      const faltanMomentos = f.type === 'video' && !faltaPrincipal && clipIndex.numMomentos(f.id) === 0;
+      if (!faltaPrincipal && !faltanMomentos) continue;
       const entrada = await catalogReader.entradaDe(f.fullPath, f.name).catch(() => null);
-      if (entrada && entrada.clip_embedding_b64 && clipIndex.upsert(f.id, entrada.clip_embedding_b64)) recuperadas++;
-      else _sinHuellaVisual.add(f.id);
+      if (faltaPrincipal) {
+        if (entrada && entrada.clip_embedding_b64 && clipIndex.upsert(f.id, entrada.clip_embedding_b64)) recuperadas++;
+        else { _sinHuellaVisual.add(f.id); continue; }
+      }
+      if (entrada && Array.isArray(entrada.clip_momentos) && entrada.clip_momentos.length > 0) {
+        if (clipIndex.setMomentos(f.id, entrada.clip_momentos)) conMomentos++;
+      } else if (!faltaPrincipal) {
+        _sinHuellaVisual.add(f.id); // tiene huella y aun no tiene momentos: no volver a leerlo
+      }
     }
     if (recuperadas > 0) console.log(`🔎 Indice visual: ${recuperadas} huellas recuperadas de los catalogos`);
-    if (cambios + recuperadas > 0) await clipIndex.save();
+    if (conMomentos > 0) console.log(`🎞️ Indice visual: momentos de ${conMomentos} videos recuperados de los catalogos`);
+    if (cambios + recuperadas + conMomentos > 0) await clipIndex.save();
   } catch (err) {
     // Que falle no puede tumbar el sync: el indice es regenerable.
     fallos.record('poner al dia el indice de busqueda visual', err);
@@ -1895,6 +2011,9 @@ app.use('/api', ocultosRoutes);
 // === VIDEOS PREPARADOS (estado y tope por disco) ===
 app.use('/api', createProxiesRoutes({ getMediaFiles: () => mediaFiles }));
 
+// === MOMENTOS DE LOS VIDEOS (varias huellas por clip para la busqueda visual) ===
+app.use('/api', createMomentosRoutes({ getMediaFiles: () => mediaFiles }));
+
 // === PERSONS (registry + agregado memoizado) ===
 
 // GET /api/persons — devuelve el agregado memoizado. Sin I/O por request.
@@ -2010,8 +2129,31 @@ function mountFrontend() {
 
 // === ARRANQUE ===
 
+/**
+ * Borra los temporales a medio escribir que deja un corte (cerrar la ventana
+ * del .bat mientras se guardaba): `media_cache.json.<pid>.<n>.tmp` y
+ * similares. Nadie los lee nunca, pero se iban acumulando (el 23/09/2026 habia
+ * uno de 1 MB y otro de 160 KB). Solo los de hace mas de 10 minutos.
+ */
+async function limpiarTemporalesHuerfanos() {
+  const hace = Date.now() - 10 * 60 * 1000;
+  for (const dir of [__dirname, DEFAULT_DATA_DIR]) {
+    let nombres = [];
+    try { nombres = await fs.readdir(dir); } catch { continue; }
+    for (const n of nombres) {
+      if (!/\.tmp$/i.test(n)) continue;
+      const ruta = path.join(dir, n);
+      try {
+        const st = await fs.stat(ruta);
+        if (st.isFile() && st.mtimeMs < hace) await fs.unlink(ruta);
+      } catch { /* en uso o ya no esta: se queda */ }
+    }
+  }
+}
+
 async function initialize() {
   await ensureDirectories();
+  await limpiarTemporalesHuerfanos();
   await loadExportsPaths();
 
   // Cargar registry de personas ANTES del primer sync — así applyCatalog

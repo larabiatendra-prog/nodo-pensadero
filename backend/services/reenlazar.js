@@ -98,7 +98,12 @@ async function aplicar(pares, almacenes) {
         if (!de.id || !a.id || de.id === a.id) continue;
         const emb = clipIndex.get(de.id);
         if (!emb) continue;
-        if (!clipIndex.has(a.id)) clipIndex.upsert(a.id, emb);
+        // Los momentos de un video van con el (remove los quita del id viejo).
+        const momentos = typeof clipIndex.getMomentos === 'function' ? clipIndex.getMomentos(de.id) : [];
+        if (!clipIndex.has(a.id)) {
+          clipIndex.upsert(a.id, emb);
+          if (momentos.length > 0) clipIndex.setMomentos(a.id, momentos);
+        }
         clipIndex.remove(de.id);
         n++;
       }

@@ -40,6 +40,7 @@ const { getInstance: getFaceService, decodeEmbedding } = require('../services/fa
 const faceReidentifier = require('../services/faceReidentifier');
 const faceClusterer = require('../services/faceClusterer');
 const olvidados = require('../services/olvidados');
+const { dentroDeBiblioteca, nombreSuelto } = require('../utils/rutaDeBiblioteca');
 const grupos = require('../services/grupos');
 const sharp = require('sharp');
 const { spawn } = require('child_process');
@@ -62,6 +63,20 @@ const upload = multer({
 module.exports = function createPersonsManageRoutes(deps) {
   const { recomputePersonsAggregate, broadcastProgress, getScanPaths, syncFiles, refreshDir } = deps || {};
   const router = express.Router();
+
+  // Las acciones sobre UNA cara (asignarla, buscar parecidas, usarla de
+  // retrato) reciben su carpeta y su nombre del navegador. Solo valen carpetas
+  // de tus bibliotecas (Rutas, activas o no) y un nombre suelto: antes valia
+  // cualquier carpeta del disco, y asignar escribe su _pensadero.json y el
+  // retrato lee el archivo que se le diga.
+  async function caraDeBiblioteca(body) {
+    const { folder, basename } = body || {};
+    if (!nombreSuelto(basename)) return false;
+    const rutas = (typeof getScanPaths === 'function') ? await getScanPaths() : [];
+    const raices = (Array.isArray(rutas) ? rutas : []).map(p => p && p.path).filter(Boolean);
+    return dentroDeBiblioteca(folder, raices);
+  }
+  const FUERA_DE_BIBLIOTECA = 'esa carpeta no es de ninguna de tus bibliotecas';
 
   /**
    * Tras promote, escribe el `person_id` en las detecciones de los _pensadero.json
@@ -498,6 +513,9 @@ module.exports = function createPersonsManageRoutes(deps) {
     if (!folder || !basename || typeof face_index !== 'number') {
       return res.status(400).json({ success: false, error: 'folder, basename y face_index son requeridos' });
     }
+    if (!(await caraDeBiblioteca(req.body))) {
+      return res.status(403).json({ success: false, error: FUERA_DE_BIBLIOTECA });
+    }
 
     const state = peopleRegistry.getState();
     if (!state.personIds.includes(personId)) {
@@ -903,6 +921,9 @@ module.exports = function createPersonsManageRoutes(deps) {
     const { folder, basename, face_index, threshold } = req.body || {};
     if (!folder || !basename || typeof face_index !== 'number') {
       return res.status(400).json({ success: false, error: 'folder, basename y face_index requeridos' });
+    }
+    if (!(await caraDeBiblioteca(req.body))) {
+      return res.status(403).json({ success: false, error: FUERA_DE_BIBLIOTECA });
     }
     try {
       const rootDirs = (typeof getScanPaths === 'function') ? await getActiveRoots() : [];
@@ -1492,6 +1513,9 @@ module.exports = function createPersonsManageRoutes(deps) {
     const { folder, basename, face_index } = req.body || {};
     if (!folder || !basename || typeof face_index !== 'number') {
       return res.status(400).json({ success: false, error: 'folder, basename y face_index requeridos' });
+    }
+    if (!(await caraDeBiblioteca(req.body))) {
+      return res.status(403).json({ success: false, error: FUERA_DE_BIBLIOTECA });
     }
     let catalog;
     try {

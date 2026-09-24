@@ -84,7 +84,14 @@ function nombreLote(motivo) {
 function mover(files, { motivo, bibliotecas }) {
   return enOrden(async () => {
     cargar();
-    const id = nombreLote(motivo);
+    // El nombre lleva la hora al segundo: dos envios en el mismo segundo
+    // compartian carpeta, y restaurar o vaciar uno borraba la carpeta entera
+    // (con lo del otro dentro). Si el nombre ya esta cogido, -2, -3...
+    const base = nombreLote(motivo);
+    let id = base;
+    const cogido = (x) => lotes.some(l => l.id === x)
+      || (bibliotecas || []).some(b => b && b.path && fs.existsSync(path.join(b.path, SUBCARPETA, x)));
+    for (let n = 2; cogido(id); n++) id = `${base}-${n}`;
     const archivos = [];
     const fallidos = [];
     const porRaiz = new Map(); // raiz de la biblioteca -> entradas del manifiesto

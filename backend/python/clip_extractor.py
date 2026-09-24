@@ -108,6 +108,14 @@ except Exception as e:
     sys.exit(1)
 
 
+# HEIC de iPhone: Pillow no las abre sin pillow-heif (ya esta en el venv). Si
+# faltara, las HEIC siguen sin huella, como antes, pero no se cae nada.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
 MODEL_NAME = os.environ.get("CLIP_MODEL") or "google/siglip2-base-patch16-naflex"
 EMBEDDING_DIM = 768  # SigLIP-2 base
 

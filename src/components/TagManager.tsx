@@ -4,7 +4,6 @@ import {
   Search,
   Edit2,
   Trash2,
-  Save,
   X,
   Undo,
   Clock,
@@ -527,7 +526,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
         }));
         break;
 
-      case 'delete':
+      case 'delete': {
         // Restaurar etiqueta eliminada
         const deletedTag = action.oldValue as TagItem;
         updatedFiles = mediaFiles.map(file => {
@@ -540,8 +539,9 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
           return file;
         });
         break;
+      }
 
-      case 'merge':
+      case 'merge': {
         // Revertir fusión
         const originalTags = action.oldValue as string[];
         const mergedName = action.newValue as string;
@@ -558,6 +558,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
           return file;
         });
         break;
+      }
     }
 
     // Eliminar acción del historial
@@ -626,9 +627,6 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
-
-  // Categorías disponibles en las tags activas
-  const categories = ['all', ...new Set(activeTags.map(t => t.category || 'General'))];
 
   // Agrupar etiquetas activas por categoría
   const groupedTags = activeTags.reduce((acc, tag) => {

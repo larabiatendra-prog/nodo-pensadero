@@ -141,7 +141,7 @@ export function CreateCollectionModal({ isOpen, onClose, onCreate, mediaFiles }:
                 <div className="flex items-center gap-3 flex-1">
                   <div className="w-16 h-16 rounded-lg overflow-hidden border border-pizarra">
                     <img
-                      src={getCoverPreview()}
+                      src={getCoverPreview() ?? undefined}
                       alt="Preview"
                       className="w-full h-full object-cover"
                       onError={(e) => {

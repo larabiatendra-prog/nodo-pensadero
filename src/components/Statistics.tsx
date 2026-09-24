@@ -5,6 +5,7 @@ import {
 import { api } from '../services/api';
 import GraphView from './GraphView';
 import ProxiesPanel from './ProxiesPanel';
+import MomentosPanel from './MomentosPanel';
 import Avatar from './Avatar';
 import { MediaFile } from '../types';
 import { getFileSortDate } from '../utils/filenameParser';
@@ -575,6 +576,9 @@ export default function Statistics({
 
             {/* ── Vídeos preparados (proxies) ─────────────────────────────── */}
             <ProxiesPanel />
+
+            {/* ── Momentos de los videos (busqueda visual) ─────────────────── */}
+            <MomentosPanel />
 
             {/* ── Quién sale ──────────────────────────────────────────────── */}
             {resumen.gente.length > 0 && (

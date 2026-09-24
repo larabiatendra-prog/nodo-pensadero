@@ -60,6 +60,10 @@ export interface MediaFile {
   thumbnail: string;
   size: number;
   createdAt: Date;
+  /** Ultima modificacion del archivo en disco (la manda el servidor). */
+  modifiedAt?: Date | string;
+  /** Modelo de vision que describio el archivo (del catalogo del escaneo). */
+  vlm_model?: string;
   tags: string[];
   extractedDate?: Date; // Date extracted from filename (e.g., YY-MM-DD format)
   /**

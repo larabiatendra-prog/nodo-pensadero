@@ -29,7 +29,7 @@ const fallos = require('../utils/failureReason');
 // Extensiones que se aceptan como consulta. El nombre del archivo lo pone el
 // navegador: solo se usa para elegir la extension del temporal, y solo si es
 // una de estas (nada de rutas ni nombres raros en el disco).
-const EXT_IMAGEN = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff']);
+const EXT_IMAGEN = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.heic', '.heif']);
 const EXT_VIDEO = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.avi', '.webm', '.mts', '.m2ts', '.ts', '.mpg', '.mpeg', '.wmv', '.3gp', '.mxf', '.dv', '.vob', '.flv', '.ogv']);
 // Cuantos momentos de un video arrastrado se miran (repartidos del 5% al 95%).
 const FOTOGRAMAS_VIDEO = 6;
@@ -195,7 +195,7 @@ module.exports = function createColorSearchRoutes(deps) {
       if (huellas.length === 0) {
         return res.status(422).json({
           success: false,
-          error: consulta.tipo === 'video' ? 'No se ha podido analizar ese vídeo' : 'No se ha podido analizar esa imagen (¿formato HEIC u otro que no se lee?)',
+          error: consulta.tipo === 'video' ? 'No se ha podido analizar ese vídeo' : 'No se ha podido analizar esa imagen (¿está dañada o en un formato que no se lee?)',
         });
       }
 

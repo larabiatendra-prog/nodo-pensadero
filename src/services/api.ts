@@ -7,6 +7,8 @@ export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   message?: string;
+  /** El motivo cuando success es false (lo manda el servidor). */
+  error?: string;
   count?: number;
 }
 
@@ -121,6 +123,33 @@ export interface VlmModel {
 }
 
 /** Trabajos que puede hacer un escaneo (ver backend/services/escaneoConfig.js). */
+// Momentos de los vídeos (backend/services/momentosVideo.js).
+export interface MomentosTrabajo {
+  total: number;
+  hechos: number;
+  fallidos: number;
+  /** Huellas nuevas calculadas en este trabajo. */
+  momentos: number;
+  actual: string | null;
+  esperandoEscaneo: boolean;
+  terminado: boolean;
+  cancelado: boolean;
+  /** 'fallos' = demasiados seguidos (un disco que se desconectó); 'error' = se cortó. */
+  motivo: 'fallos' | 'error' | null;
+  inicio: string;
+  restanteSeg: number | null;
+}
+
+export interface MomentosEstado {
+  /** Vídeos de los discos conectados con huella visual (escaneados). */
+  videosConHuella: number;
+  completos: number;
+  pendientes: number;
+  estimacionSeg: number;
+  trabajo: MomentosTrabajo | null;
+  escaneoEnMarcha?: boolean;
+}
+
 export type CapacidadEscaneo = 'descripcion' | 'caras' | 'busquedaVisual' | 'movimiento' | 'proxies';
 
 export interface CapacidadInfo {
@@ -308,35 +337,49 @@ class ApiService {
     }
   }
 
-  // Descarga múltiple como ZIP
-  async downloadMultipleFiles(fileIds: string[]): Promise<Blob> {
-    try {
-      console.log('🌐 Descargando múltiples archivos como ZIP:', fileIds);
-
-      const response = await fetch(`${API_BASE_URL}/download/zip`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ fileIds }),
-      });
-
-      if (!response.ok) {
-        console.error(`❌ HTTP Error ${response.status}: ${response.statusText}`);
-        throw new Error(`HTTP error! status: ${response.status} - ${response.statusText}`);
-      }
-
-      const blob = await response.blob();
-      console.log('✅ ZIP descargado como blob, tamaño:', blob.size);
-      return blob;
-    } catch (error) {
-      if (error instanceof TypeError && error.message.includes('fetch')) {
-        console.error('🔌 Error de conexión: No se puede conectar al servidor. ¿Está el backend ejecutándose en puerto 5000?');
-      } else {
-        console.error('❌ ZIP Download Error:', error);
-      }
-      throw error;
+  /**
+   * Descarga varios archivos en un ZIP que el navegador va guardando en disco
+   * mientras llega (formulario a un marco oculto), con su barra de descarga
+   * de siempre. Antes se pedía con fetch y se guardaba ENTERO en memoria
+   * antes de ofrecerlo: con varios GB de vídeo la pestaña podía colgarse.
+   * Un fallo dentro del marco no se ve, así que antes se comprueba que hay
+   * algo que descargar y se lanza con el motivo si no.
+   * @returns cuántos archivos van en el ZIP y cuántos se pidieron
+   */
+  async descargarZip(fileIds: string[], nombre?: string): Promise<{ disponibles: number; total: number }> {
+    const r = await this.fetchWithErrorHandling<ApiResponse<{ disponibles: number; total: number }>>(
+      `${API_BASE_URL}/download/zip/comprobar`,
+      { method: 'POST', body: JSON.stringify({ fileIds }) },
+    );
+    const info = r.data || { disponibles: 0, total: fileIds.length };
+    if (info.disponibles === 0) {
+      throw new Error('Ninguno de esos archivos está disponible ahora (¿disco desconectado?)');
     }
+    const NOMBRE_MARCO = 'pensadero-descargas';
+    if (!document.querySelector(`iframe[name="${NOMBRE_MARCO}"]`)) {
+      const marco = document.createElement('iframe');
+      marco.name = NOMBRE_MARCO;
+      marco.style.display = 'none';
+      document.body.appendChild(marco);
+    }
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${API_BASE_URL}/download/zip`;
+    form.target = NOMBRE_MARCO;
+    form.style.display = 'none';
+    const campo = (name: string, value: string) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    };
+    campo('fileIds', JSON.stringify(fileIds));
+    if (nombre) campo('nombre', nombre);
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+    return info;
   }
 
 
@@ -353,6 +396,27 @@ class ApiService {
 
   async getStatistics() {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/statistics`);
+  }
+
+  // Momentos de los vídeos: varias huellas por clip para la búsqueda visual.
+  async getMomentosEstado() {
+    return this.fetchWithErrorHandling<ApiResponse<MomentosEstado>>(`${API_BASE_URL}/momentos/estado`);
+  }
+
+  /** Calcula en segundo plano los momentos que faltan. */
+  async empezarMomentos() {
+    return this.fetchWithErrorHandling<ApiResponse<MomentosEstado>>(
+      `${API_BASE_URL}/momentos/empezar`,
+      { method: 'POST' },
+    );
+  }
+
+  /** Para el cálculo en marcha. Lo hecho se queda hecho. */
+  async pararMomentos() {
+    return this.fetchWithErrorHandling<ApiResponse<MomentosEstado>>(
+      `${API_BASE_URL}/momentos/parar`,
+      { method: 'POST' },
+    );
   }
 
   // Vídeos preparados (proxies): cuánto ocupan por disco y contra qué tope.
@@ -792,153 +856,6 @@ class ApiService {
       method: 'PATCH',
       body: JSON.stringify({ model }),
     });
-  }
-
-  // =====================
-  // Image Similarity Search - Búsqueda por imagen
-  // =====================
-
-  /**
-   * Busca imágenes similares a la imagen proporcionada
-   * @param imageFile - Archivo de imagen a buscar
-   * @param options - Opciones de búsqueda
-   */
-  async imageSearch(
-    imageFile: File,
-    options: { topN?: number; useBlur?: boolean; minScore?: number } = {}
-  ): Promise<ApiResponse<ImageSearchResult[]>> {
-    try {
-      console.log('🔍 Image Search request:', imageFile.name);
-
-      const formData = new FormData();
-      formData.append('image', imageFile);
-
-      // Construir query string con opciones
-      const params = new URLSearchParams();
-      if (options.topN !== undefined) params.set('topN', String(options.topN));
-      if (options.useBlur !== undefined) params.set('useBlur', String(options.useBlur));
-      if (options.minScore !== undefined) params.set('minScore', String(options.minScore));
-
-      const queryString = params.toString();
-      const url = `${API_BASE_URL}/image-search${queryString ? `?${queryString}` : ''}`;
-
-      const response = await fetch(url, {
-        method: 'POST',
-        body: formData,
-        // No incluir Content-Type header - el browser lo añade automáticamente con boundary
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ message: response.statusText }));
-        throw new Error(errorData.message || `HTTP error ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('✅ Image Search completado:', data.count, 'resultados');
-      return data;
-    } catch (error) {
-      console.error('❌ Error en Image Search:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Construye el índice de embeddings para búsqueda por imagen
-   * Este proceso puede tardar varios minutos
-   */
-  async buildImageSearchIndex(): Promise<ApiResponse<ImageSearchIndexStats>> {
-    try {
-      console.log('🔄 Iniciando construcción de índice de embeddings...');
-      return await this.fetchWithErrorHandling<ApiResponse<ImageSearchIndexStats>>(
-        `${API_BASE_URL}/image-search/build-index`,
-        { method: 'POST' }
-      );
-    } catch (error) {
-      console.error('❌ Error construyendo índice:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obtiene estadísticas del índice de embeddings
-   */
-  async getImageSearchStats(): Promise<ApiResponse<ImageSearchIndexStats>> {
-    try {
-      return await this.fetchWithErrorHandling<ApiResponse<ImageSearchIndexStats>>(
-        `${API_BASE_URL}/image-search/stats`
-      );
-    } catch (error) {
-      console.error('❌ Error obteniendo estadísticas:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Limpia el índice de embeddings
-   */
-  async clearImageSearchIndex(): Promise<ApiResponse<void>> {
-    try {
-      return await this.fetchWithErrorHandling<ApiResponse<void>>(
-        `${API_BASE_URL}/image-search/index`,
-        { method: 'DELETE' }
-      );
-    } catch (error) {
-      console.error('❌ Error limpiando índice:', error);
-      throw error;
-    }
-  }
-
-  // =====================
-  // Background Removal - Quitar fondo de imágenes (beta)
-  // =====================
-
-  /**
-   * Obtiene el estado del servicio de eliminación de fondo
-   * @returns Estado de disponibilidad del servicio
-   */
-  async getBackgroundRemovalStatus(): Promise<ApiResponse<BackgroundRemovalStatus>> {
-    try {
-      return await this.fetchWithErrorHandling<ApiResponse<BackgroundRemovalStatus>>(
-        `${API_BASE_URL}/remove-background/status`
-      );
-    } catch (error) {
-      console.error('❌ Error obteniendo estado del servicio:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Elimina el fondo de una imagen
-   * @param fileId - ID del archivo de imagen
-   * @returns Información del archivo original y el nuevo archivo generado
-   */
-  async removeBackground(fileId: string): Promise<ApiResponse<BackgroundRemovalResult>> {
-    try {
-      console.log('🎨 Remove Background request para archivo:', fileId);
-      return await this.fetchWithErrorHandling<ApiResponse<BackgroundRemovalResult>>(
-        `${API_BASE_URL}/files/${fileId}/remove-background`,
-        { method: 'POST' }
-      );
-    } catch (error) {
-      console.error('❌ Error eliminando fondo:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Resetea el cache de disponibilidad del servicio de eliminación de fondo
-   * Útil si el usuario instala rembg mientras el servidor está corriendo
-   */
-  async resetBackgroundRemovalCache(): Promise<ApiResponse<void>> {
-    try {
-      return await this.fetchWithErrorHandling<ApiResponse<void>>(
-        `${API_BASE_URL}/remove-background/reset-cache`,
-        { method: 'POST' }
-      );
-    } catch (error) {
-      console.error('❌ Error reseteando cache:', error);
-      throw error;
-    }
   }
 
   // ============================================
@@ -1510,44 +1427,6 @@ class ApiService {
   }
 }
 
-// Tipos para Image Search
-export interface ImageSearchResult {
-  fileId: string;
-  similarityScore: number;
-  fileName: string;
-  file: any; // MediaFile completo
-}
-
-export interface ImageSearchIndexStats {
-  version: string;
-  modelType: string;
-  embeddingDim: number;
-  totalEntries: number;
-  lastFullBuild: string | null;
-}
-
-// Tipos para Background Removal
-export interface BackgroundRemovalStatus {
-  available: boolean;
-  method: string;
-  message: string;
-}
-
-export interface BackgroundRemovalResult {
-  message: string;
-  originalFile: {
-    id: string;
-    name: string;
-    path: string;
-  };
-  newFile: {
-    id: string;
-    name: string;
-    path: string;
-    size: number;
-  };
-}
-
 export const api = new ApiService();
 
 /**
@@ -1651,14 +1530,13 @@ export const getFavouritesByUser = async (_user_id?: string) => {
 };
 
 /**
- * Toggle de favorito. Antes alternaba en Supabase usando el path como
- * identificador; ahora delega al backend con el mismo identificador
- * (path normalizado), que es lo que el frontend ya tenía como `fullPath`.
+ * Alterna el favorito de un archivo en el servidor, identificado por su ruta
+ * normalizada (el `fullPath` que ya tiene el frontend).
  *
- * Mantiene la firma original; `user_id` se ignora.
- * Devuelve la lista actualizada de favoritos (mismos campos que antes).
+ * `_user_id` se ignora (single-user); se conserva la firma.
+ * Devuelve la lista actualizada de favoritos.
  */
-export const handleSupabaseFavourite = async (
+export const alternarFavorito = async (
   file: string,
   _user_id: string,
   userFavs: any[]
@@ -1718,7 +1596,9 @@ export const createCollection = async (newCollection: any, _user_id?: string) =>
     return { success: true, data: data?.data ?? data };
   } catch (error) {
     console.error('Error en createCollection:', error);
-    return { success: false, data: null };
+    // El motivo del servidor ("Ya existe una colección con ese nombre") viaja
+    // con el fallo: la pantalla lo enseña en vez de callarlo.
+    return { success: false, data: null, error: error instanceof Error ? error.message : String(error) };
   }
 };
 
@@ -1837,6 +1717,6 @@ export const deleteCollection = async (collectionId: string) => {
     return { success: true };
   } catch (error) {
     console.error('Error al eliminar la colección:', error);
-    return { success: false };
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 };

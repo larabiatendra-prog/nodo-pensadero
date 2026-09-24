@@ -115,6 +115,9 @@ function heredarYMarcar(entry, previa, hecho, esVideo) {
   if (previa) {
     if (!hecho.busquedaVisual) {
       if (previa.clip_embedding_b64 && !entry.clip_embedding_b64) entry.clip_embedding_b64 = previa.clip_embedding_b64;
+      // Los momentos de un video (huellas de otros instantes, ver clipIndex):
+      // re-describir sin busqueda visual no los tira.
+      if (Array.isArray(previa.clip_momentos) && !entry.clip_momentos) entry.clip_momentos = previa.clip_momentos;
       const espacios = previa.identity && previa.identity.spaces;
       if (Array.isArray(espacios) && espacios.length > 0) {
         entry.identity = entry.identity || {};
@@ -1016,6 +1019,20 @@ async function escanearCarpeta(folderPath, opts, job) {
                 if (clipEmb) {
                   entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
                   clipIndex.upsert(fileIdFor(filePath), clipEmb);
+                  // Momentos: la huella de los OTROS fotogramas que ya se han
+                  // sacado para describir el clip. Casi gratis (la GPU tarda
+                  // milisegundos) y con ellos una imagen de otro instante del
+                  // video lo encuentra (ver services/momentosVideo.js).
+                  const momentos = [];
+                  for (const fr of videoFrames) {
+                    if (fr === midFrame) continue;
+                    const emb = await clipSvc.embedImage(fr.path).catch(() => null);
+                    if (emb) momentos.push({ t: Math.round(fr.timestamp * 100) / 100, e: clipIndex.comprimirHuella(emb) });
+                  }
+                  if (momentos.length > 0) {
+                    entry.clip_momentos = momentos;
+                    clipIndex.setMomentos(fileIdFor(filePath), momentos);
+                  }
                   // Place recognition: matchear contra centroides de espacios
                   const match = spacesRegistry.identifySpace(clipEmb);
                   entry.identity = entry.identity || {};

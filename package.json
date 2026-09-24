@@ -9,6 +9,9 @@
     "start:dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test": "node --test \"backend/tests/*.test.js\" \"tests/*.test.ts\"",
+    "comprobar": "npm run typecheck && npm run lint && npm test",
     "preview": "vite preview",
     "start": "vite preview --port 5173 --host"
   },

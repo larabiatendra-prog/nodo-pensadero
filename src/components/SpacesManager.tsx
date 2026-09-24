@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { MapPin, Plus, Trash2, Upload, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, Sparkles } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { MapPin, Plus, Trash2, Upload, Star, X, ArrowLeft, ImagePlus, Brain, AlertTriangle, Sparkles } from 'lucide-react';
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -201,7 +201,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
     const id = newSpaceId.trim();
     const display = newDisplayName.trim();
     if (!id) { setError('space_id es requerido'); return; }
-    if (!/^[a-zA-Z0-9_\-]+$/.test(id)) { setError('space_id sólo letras, números, _ y -'); return; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) { setError('space_id sólo letras, números, _ y -'); return; }
     const aliases = newAliases.split(',').map(a => a.trim()).filter(Boolean);
     try {
       const res = await api.upsertSpace({ space_id: id, display_name: display || id, aliases });

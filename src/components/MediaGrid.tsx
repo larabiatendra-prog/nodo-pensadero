@@ -78,7 +78,6 @@ export default function MediaGrid({
   onEditSessionNote,
   onPlaySession,
   fileNotes,
-  isAdmin = false,
   updatingFavs = false,
   secondaryStartIndex
 }: MediaGridProps) {

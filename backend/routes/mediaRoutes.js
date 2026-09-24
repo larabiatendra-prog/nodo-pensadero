@@ -16,7 +16,8 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const mime = require('mime-types');
 const archiver = require('archiver');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
+const fallos = require('../utils/failureReason');
 
 const favoritesManager = require('../favoritesManager');
 const etiquetasManuales = require('../services/etiquetasManuales');
@@ -316,36 +317,33 @@ module.exports = function createMediaRoutes(deps) {
       const filePath = file.fullPath;
       console.log(`📂 Abriendo archivo seleccionado: ${filePath}`);
 
-      let command;
-      const platform = process.platform;
-
-      if (platform === 'win32') {
-        command = `explorer /select,"${filePath}"`;
-      } else if (platform === 'darwin') {
-        command = `open -R "${filePath}"`;
+      // Sin consola de comandos de por medio: antes era `exec` con la ruta
+      // metida en el texto del comando, y un % o un & en el nombre de un
+      // archivo cambiaba lo que se ejecutaba. explorer necesita las comillas
+      // pegadas a /select, asi que en Windows la linea se pasa tal cual
+      // (una ruta de Windows no puede llevar comillas).
+      let programa, args, opciones = {};
+      if (process.platform === 'win32') {
+        programa = 'explorer.exe';
+        args = [`/select,"${filePath}"`];
+        opciones = { windowsVerbatimArguments: true };
+      } else if (process.platform === 'darwin') {
+        programa = 'open';
+        args = ['-R', filePath];
       } else {
-        command = `nautilus --select "${filePath}" || xdg-open "${path.dirname(filePath)}"`;
+        programa = 'xdg-open';
+        args = [path.dirname(filePath)];
       }
 
-      exec(command, (error, stdout, stderr) => {
-        if (error && error.code !== 0 && !error.message.includes('Command failed: explorer /select')) {
-          console.error(`❌ Error abriendo carpeta: ${error.message}`);
-          return res.status(500).json({
-            success: false,
-            error: 'Error al abrir la carpeta'
-          });
-        }
-
-        if (stderr && error) {
-          console.warn(`⚠️  Advertencia al ejecutar comando: ${stderr}`);
-        }
-
-        console.log(`✅ Archivo seleccionado exitosamente: ${filePath}`);
-        res.json({
-          success: true,
-          message: 'Archivo seleccionado exitosamente',
-          path: filePath
-        });
+      // explorer termina con codigo 1 aunque abra bien: solo cuenta si se pudo lanzar.
+      const hijo = spawn(programa, args, { ...opciones, detached: true, stdio: 'ignore' });
+      hijo.once('error', (error) => {
+        const causa = fallos.record('abrir la carpeta del archivo', error, { path: filePath });
+        res.status(500).json({ success: false, error: `No se ha podido abrir la carpeta. ${causa.reason}` });
+      });
+      hijo.once('spawn', () => {
+        hijo.unref();
+        res.json({ success: true, path: filePath });
       });
 
     } catch (error) {
@@ -467,31 +465,34 @@ module.exports = function createMediaRoutes(deps) {
     const tagCounts = new Map(); // recuento de uso para topTags
     const years = new Set();
     const months = new Set();
-    const dates = [];
+    // Años, meses y rango salen de la fecha UNICA de cada archivo (`fechaDia`,
+    // utils/fechaArchivo.js), no de las etiquetas: lo fechado por la camara o
+    // por el disco no lleva etiqueta de año, y los años 19xx no casaban con
+    // /^20\d{2}$/. Asi la lista coincide con lo que filtra /api/search.
+    const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+    let diaMin = 0;
+    let diaMax = 0;
+    let conFecha = 0;
 
     mediaFiles.forEach(file => {
-      file.tags.forEach(tag => {
+      (file.tags || []).forEach(tag => {
         allTags.push(tag);
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
-
-        if (/^20\d{2}$/.test(tag)) {
-          years.add(tag);
-        }
-
-        const monthsSpanish = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
-          'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-        if (monthsSpanish.includes(tag.toLowerCase())) {
-          months.add(tag);
-        }
       });
 
-      if (file.extractedDate) {
-        dates.push({
-          date: file.extractedDate,
-          filename: file.name
-        });
+      const dia = Number(file.fechaDia) || 0;
+      if (dia) {
+        conFecha++;
+        years.add(String(Math.floor(dia / 10000)));
+        const mes = Math.floor(dia / 100) % 100;
+        if (mes >= 1 && mes <= 12) months.add(mes);
+        if (!diaMin || dia < diaMin) diaMin = dia;
+        if (dia > diaMax) diaMax = dia;
       }
     });
+    // 'AAAA-MM-DD', que es lo que entiende un <input type="date"> como min/max.
+    const aTexto = (d) => `${Math.floor(d / 10000)}-${String(Math.floor(d / 100) % 100).padStart(2, '0')}-${String(d % 100).padStart(2, '0')}`;
 
     const uniqueTags = [...new Set(allTags)].sort();
 
@@ -500,7 +501,7 @@ module.exports = function createMediaRoutes(deps) {
     const monthsSpanishLower = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
       'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
     const topTags = [...tagCounts.entries()]
-      .filter(([tag]) => !/^20\d{2}$/.test(tag) && !monthsSpanishLower.includes(tag.toLowerCase()))
+      .filter(([tag]) => !/^(19|20)\d{2}$/.test(tag) && !monthsSpanishLower.includes(tag.toLowerCase()))
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 12)
       .map(([tag, count]) => ({ tag, count }));
@@ -511,13 +512,10 @@ module.exports = function createMediaRoutes(deps) {
         allTags: uniqueTags,
         topTags,
         years: Array.from(years).sort(),
-        months: Array.from(months),
-        dateRange: dates.length > 0 ? {
-          earliest: new Date(Math.min(...dates.map(d => new Date(d.date)))),
-          latest: new Date(Math.max(...dates.map(d => new Date(d.date))))
-        } : null,
+        months: Array.from(months).sort((a, b) => a - b).map(m => MESES[m - 1]),
+        dateRange: diaMin ? { earliest: aTexto(diaMin), latest: aTexto(diaMax) } : null,
         totalFiles: mediaFiles.length,
-        filesWithDates: dates.length
+        filesWithDates: conFecha
       }
     });
   });
@@ -796,103 +794,97 @@ module.exports = function createMediaRoutes(deps) {
   });
 
   /**
-   * POST /api/download/zip
-   * Descarga múltiples archivos como ZIP
+   * Los archivos que pide una descarga ZIP y cuales estan en disco ahora.
+   * `fileIds` llega como array (JSON) o como texto JSON (formulario).
+   */
+  async function archivosParaZip(fileIdsCrudos) {
+    let fileIds = fileIdsCrudos;
+    if (typeof fileIds === 'string') {
+      try { fileIds = JSON.parse(fileIds); } catch { fileIds = fileIds.split(','); }
+    }
+    if (!Array.isArray(fileIds)) fileIds = [];
+    const porId = new Map(getMediaFiles().map(f => [f.id, f]));
+    const pedidos = fileIds.map(id => porId.get(id)).filter(Boolean);
+    const disponibles = [];
+    for (const file of pedidos) {
+      const filePath = file.fullPath || path.join(CONTENT_DIR, file.path);
+      try {
+        await fs.access(filePath);
+        disponibles.push({ ...file, fullPath: filePath });
+      } catch { /* disco desconectado o archivo movido: no entra */ }
+    }
+    return { total: fileIds.length, disponibles };
+  }
+
+  /**
+   * POST /api/download/zip/comprobar  body { fileIds }
+   * Cuantos de esos archivos iran en el ZIP. La descarga en si va por un
+   * formulario (el navegador la guarda en disco mientras llega) y un fallo
+   * alli no se ve: se comprueba antes para poder decirlo.
+   */
+  router.post('/download/zip/comprobar', async (req, res) => {
+    try {
+      const { total, disponibles } = await archivosParaZip((req.body || {}).fileIds);
+      res.json({ success: true, data: { total, disponibles: disponibles.length } });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  /**
+   * POST /api/download/zip   body { fileIds, nombre? } (JSON o formulario)
+   * Descarga varios archivos como un ZIP que se va enviando segun se crea.
+   * Sin comprimir: video y fotos ya van comprimidos y comprimirlos otra vez
+   * (antes a nivel 9) solo gastaba CPU y tiempo sin ganar espacio.
    */
   router.post('/download/zip', async (req, res) => {
     try {
-      const mediaFiles = getMediaFiles();
-      const { fileIds } = req.body;
-
-      if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Se requiere un array de IDs de archivos'
-        });
+      const { total, disponibles } = await archivosParaZip((req.body || {}).fileIds);
+      if (total === 0) {
+        return res.status(400).json({ success: false, message: 'Se requiere un array de IDs de archivos' });
       }
-
-      console.log(`📦 Creando ZIP con ${fileIds.length} archivos:`, fileIds);
-
-      const files = fileIds.map(id => mediaFiles.find(f => f.id === id)).filter(Boolean);
-
-      if (files.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'No se encontraron archivos válidos'
-        });
+      if (disponibles.length === 0) {
+        return res.status(404).json({ success: false, message: 'Ningún archivo está disponible físicamente' });
       }
+      console.log(`📦 ZIP con ${disponibles.length} de ${total} archivos pedidos`);
 
-      const existingFiles = [];
-      for (const file of files) {
-        try {
-          const filePath = file.fullPath || path.join(CONTENT_DIR, file.path);
-          await fs.access(filePath);
-          existingFiles.push({ ...file, fullPath: filePath });
-          console.log(`✅ Archivo encontrado: ${file.name} en ${filePath}`);
-        } catch (error) {
-          const attemptedPath = file.fullPath || path.join(CONTENT_DIR, file.path);
-          console.warn(`⚠️ Archivo no encontrado: ${file.name} en ${attemptedPath}`);
-        }
-      }
-
-      if (existingFiles.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Ningún archivo está disponible físicamente'
-        });
-      }
-
-      const zipFilename = `archivos_${new Date().toISOString().split('T')[0]}_${Date.now()}.zip`;
+      // Nombre del ZIP: el que pida la pantalla (el de la colección), sin
+      // caracteres que Windows no admite.
+      const base = String((req.body || {}).nombre || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 80)
+        || `archivos_${new Date().toISOString().split('T')[0]}`;
       res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(base)}.zip"; filename*=UTF-8''${encodeURIComponent(base)}.zip`);
 
-      const archive = archiver('zip', {
-        zlib: { level: 9 }
-      });
-
+      const archive = archiver('zip', { store: true });
+      archive.on('warning', (err) => console.warn('Aviso creando ZIP:', err.message));
       archive.on('error', (err) => {
         console.error('Error creando ZIP:', err);
         if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            message: 'Error creando archivo ZIP',
-            error: err.message
-          });
+          res.status(500).json({ success: false, message: 'Error creando archivo ZIP', error: err.message });
+        } else {
+          res.destroy(err);
         }
       });
-
+      // Si se cancela la descarga, dejar de leer los archivos.
+      res.on('close', () => { if (!res.writableFinished) archive.abort(); });
       archive.pipe(res);
 
-      let filesAdded = 0;
-      for (const file of existingFiles) {
-        try {
-          archive.file(file.fullPath, { name: file.name });
-          filesAdded++;
-          console.log(`📄 Añadido al ZIP: ${file.name}`);
-        } catch (error) {
-          console.warn(`⚠️ Error añadiendo ${file.name} al ZIP:`, error);
-        }
+      // Dos archivos con el mismo nombre (IMG_0001.JPG de dos moviles) no
+      // pueden ir con el mismo nombre: al descomprimir uno pisaria al otro.
+      const usados = new Map();
+      for (const file of disponibles) {
+        const clave = file.name.toLowerCase();
+        const n = (usados.get(clave) || 0) + 1;
+        usados.set(clave, n);
+        const ext = path.extname(file.name);
+        const nombre = n === 1 ? file.name : `${path.basename(file.name, ext)} (${n})${ext}`;
+        archive.file(file.fullPath, { name: nombre });
       }
-
-      if (filesAdded === 0) {
-        return res.status(500).json({
-          success: false,
-          message: 'No se pudieron añadir archivos al ZIP'
-        });
-      }
-
-      console.log(`✅ ZIP creado con ${filesAdded} archivos de ${files.length} solicitados`);
-
       await archive.finalize();
-
     } catch (error) {
       console.error('Error en descarga ZIP:', error);
       if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          message: 'Error interno del servidor',
-          error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error interno del servidor', error: error.message });
       }
     }
   });

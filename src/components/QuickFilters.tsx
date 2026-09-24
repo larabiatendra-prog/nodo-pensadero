@@ -1,4 +1,3 @@
-import React from 'react';
 import { Heart } from 'lucide-react';
 import DateRangeFilter from './DateRangeFilter';
 import ColorWheelFilter from './ColorWheelFilter';

@@ -129,6 +129,10 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
             videoCount: 0,
             hasContext: !!rc,
             context: rc,
+            // La raiz sin material directo: nada que contar ni escanear aqui.
+            folderName: null,
+            visualTotal: 0,
+            visualScanned: 0,
           });
         }
 

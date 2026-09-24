@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { Plus, X, Wand2 } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { X, Wand2 } from 'lucide-react';
 import { api } from '../services/api';
 
 /**

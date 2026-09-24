@@ -144,7 +144,9 @@ const CARPETA_TECNICA = /\.PRV$|Adobe Premiere|Video Previews|_AME$|\[project\]/
 function esTecnica(file: MediaFile): boolean {
   const fp = file.fullPath;
   if (!fp) return false;
-  return fp.split(/[\/]/).some(seg => CARPETA_TECNICA.test(seg));
+  // Por las dos barras: con solo "/" una ruta de Windows no se partia y
+  // `\.PRV$` / `_AME$` (que miran el final de cada carpeta) no casaban nunca.
+  return fp.split(/[\\/]/).some(seg => CARPETA_TECNICA.test(seg));
 }
 
 /** Quita de una etiqueta los trozos que sean un nombre de archivo. */

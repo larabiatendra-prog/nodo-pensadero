@@ -59,7 +59,6 @@ export const API_CONFIG = {
     // Búsqueda y AI
     search: `${API_URL}/api/search`,
     aiSearch: `${API_URL}/api/ai/search`,
-    imageSearch: `${API_URL}/api/image-search`,
 
     // Sistema
     scanPaths: `${API_URL}/api/scan-paths`,

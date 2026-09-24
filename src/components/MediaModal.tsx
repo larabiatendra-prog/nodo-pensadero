@@ -4,15 +4,9 @@ import {
   Lock,
   Download,
   Heart,
-  FileText,
-  Tag,
-  Share2,
-  Play,
   Volume2,
-  FolderPlus,
   ChevronLeft,
   ChevronRight,
-  Scissors,
   Loader2,
   Eye,
   EyeOff,
@@ -41,7 +35,6 @@ interface MediaModalProps {
   allFiles?: MediaFile[]; // Array de todos los archivos para encontrar relacionados
   onFileSelect?: (file: MediaFile) => void; // Callback para seleccionar archivo relacionado
   onTagClick?: (tag: string) => void; // Callback para filtrar por etiqueta
-  onBackgroundRemoved?: (newFileId: string, newFileName: string) => void; // Callback cuando se quita el fondo
   /**
    * Click en una cara o burbuja identificada: filtrar la galeria por esa
    * persona. Quien lo recibe CIERRA la ficha (navegando a /persona/:id). La
@@ -79,11 +72,9 @@ export default function MediaModal({
   onClose,
   onToggleFavorite,
   onDownload,
-  onAddToCollection,
   allFiles = [],
   onFileSelect,
   onTagClick,
-  onBackgroundRemoved,
   onPersonFilter,
   note,
   onSaveNote,
@@ -102,8 +93,6 @@ export default function MediaModal({
   });
 
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isRemovingBackground, setIsRemovingBackground] = useState(false);
-  const [backgroundRemovalError, setBackgroundRemovalError] = useState<string | null>(null);
 
   // Toggle de overlay de bboxes de caras — preferencia persistida en localStorage
   const [showFaceBoxes, setShowFaceBoxes] = useState<boolean>(() => {
@@ -548,47 +537,6 @@ export default function MediaModal({
     }
   };
 
-  // Función para quitar fondo de imagen
-  const handleRemoveBackground = async () => {
-    if (!file || file.type !== 'image') return;
-
-    setIsRemovingBackground(true);
-    setBackgroundRemovalError(null);
-
-    try {
-      const response = await api.removeBackground(file.id);
-
-      if (response.success && response.data) {
-        // Notificar al componente padre que se creó un nuevo archivo
-        if (onBackgroundRemoved) {
-          onBackgroundRemoved(response.data.newFile.id, response.data.newFile.name);
-        }
-
-        // Mostrar mensaje de éxito (el toast lo manejará el padre)
-        console.log('✅ Fondo eliminado:', response.data.newFile.name);
-
-        // Descargar automáticamente el archivo sin fondo
-        const blob = await api.downloadFile(response.data.newFile.id);
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = response.data.newFile.name;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-        console.log('📥 Descarga iniciada:', response.data.newFile.name);
-      } else {
-        throw new Error(response.message || 'Error desconocido');
-      }
-    } catch (error: any) {
-      console.error('❌ Error eliminando fondo:', error);
-      setBackgroundRemovalError(error.message || 'Error al procesar la imagen');
-    } finally {
-      setIsRemovingBackground(false);
-    }
-  };
 
   const hasDescription = fileHasVisualAnalysis(file);
 
@@ -935,25 +883,6 @@ export default function MediaModal({
                     <Lock className="w-4 h-4" />
                   </button>
                 )}
-                {file.type === 'image' && (
-                  <button
-                    onClick={handleRemoveBackground}
-                    disabled={isRemovingBackground}
-                    title={isRemovingBackground ? 'Procesando…' : 'Quitar fondo (beta) — genera una copia PNG transparente'}
-                    aria-label="Quitar fondo (beta)"
-                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors border ${
-                      isRemovingBackground
-                        ? 'bg-purple-100 text-purple-400 border-purple-200 cursor-wait'
-                        : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-200'
-                    }`}
-                  >
-                    {isRemovingBackground ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Scissors className="w-4 h-4" />
-                    )}
-                  </button>
-                )}
               </div>
 
               {/* Encadenar clips â mismo interruptor que "Agrupar por sesiones".
@@ -984,11 +913,6 @@ export default function MediaModal({
                   </div>
                   Encadenar clips
                 </button>
-              )}
-
-              {file.type === 'image' && backgroundRemovalError && (
-
-                <p className="text-xs text-red-500">{backgroundRemovalError}</p>
               )}
 
               {/* File info — sin encabezados redundantes, solo los valores */}

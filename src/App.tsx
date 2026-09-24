@@ -1,29 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Grid, List, LayoutGrid, LayoutList, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock, Loader2 } from 'lucide-react';
+import { List, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock, Loader2 } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { noteFor } from './utils/mediaNotes';
 import Ecos from './components/Ecos';
 import { calcularEcos, type Eco } from './utils/ecos';
 import { MediaFile, SearchFilters, Collection } from './types';
-import { addFilesToCollection, api, createCollection, deleteCollection, deleteFromCollection, getCollectionsByUser, getFavouritesByUser, handleSupabaseFavourite, updateCoverCollection, updateNameCollection } from './services/api';
+import { addFilesToCollection, api, createCollection, deleteCollection, deleteFromCollection, getCollectionsByUser, getFavouritesByUser, alternarFavorito, updateCoverCollection, updateNameCollection } from './services/api';
 import { useWebSocket } from './hooks/useWebSocket';
 import { actualizarGrupo, useGrupos } from './hooks/useGrupos';
 import { cumple, filtroDe, minimoDe, niveles, presenciaPorDia, type FiltroGrupo } from './utils/grupos';
 import { useSessionGroups, computeTotalSlots } from './hooks/useSessionGroups';
 import { config } from './config';
-import { cacheService } from './services/cacheService';
 
 import SearchBar, { SearchBarHandle } from './components/SearchBar';
 import TimelineWave, { monthIndexOf } from './components/TimelineWave';
 import { MoreOptionsMenu } from './components/MoreOptionsMenu';
 import { ScrollToTopButton } from './components/ScrollToTopButton';
-import { SelectionModeButton } from './components/SelectionModeButton';
 import QuickFilters from './components/QuickFilters';
 import MediaGrid from './components/MediaGrid';
 import MediaModal from './components/MediaModal';
 import SessionNoteModal from './components/SessionNoteModal';
-import { FolderScanner } from './components/FolderScanner';
 import { CreateCollectionModal } from './components/CreateCollectionModal';
 import { AddToCollectionModal } from './components/AddToCollectionModal';
 import Statistics from './components/Statistics';
@@ -47,11 +44,11 @@ import Portada, { type OpcionesEntrar } from './components/Portada';
 
 import { CoverImageSelector } from './components/CoverImageSelector';
 import { EditCollectionModal } from './components/EditCollectionModal';
-import ImageSearchView from './components/ImageSearchView';
 import { QuickPreviewOverlay } from './components/QuickPreviewOverlay';
 import { ConnectionBanner } from './components/ConnectionBanner';
 import { getFileSortDate } from './utils/filenameParser';
 import { normalizePath } from './utils/formatData';
+import { aTextoDiaLocal, finDelDia } from './utils/dateUtils';
 import { leerFrame, type ContextoLote, type Muestra, type VistaProgreso } from './utils/progresoProceso';
 
 // ── Routing por URL (Eje B) ────────────────────────────────────────────────
@@ -60,7 +57,7 @@ import { leerFrame, type ContextoLote, type Muestra, type VistaProgreso } from '
 const VIEW_TO_PATH: Record<string, string> = {
   home: '/', paths: '/rutas', persons: '/personas', spaces: '/espacios',
   collections: '/colecciones', statistics: '/estadisticas',
-  tags: '/etiquetas', synonyms: '/sinonimos', imageSearch: '/busqueda-imagen',
+  tags: '/etiquetas', synonyms: '/sinonimos',
   duplicates: '/gemelas',
   copias: '/gemelas/copias',
   ocultos: '/ocultos',
@@ -88,7 +85,6 @@ function viewFromPath(pathname: string): string {
   if (pathname.startsWith('/estadisticas')) return 'statistics';
   if (pathname.startsWith('/etiquetas')) return 'tags';
   if (pathname.startsWith('/sinonimos')) return 'synonyms';
-  if (pathname.startsWith('/busqueda-imagen')) return 'imageSearch';
   if (pathname.startsWith('/favoritos')) return 'home';      // home filtrado por favoritos
   if (pathname.startsWith('/archivo/')) return 'home';       // modal sobre home (refresh directo)
   if (pathname.startsWith('/admin')) return 'admin';
@@ -204,7 +200,7 @@ function App() {
   const abrirPorId = React.useCallback((id: string) => {
     navigate(`/archivo/${encodeURIComponent(id)}`, { state: { backgroundLocation: locationRef.current } });
   }, [navigate]);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [viewMode] = useState<'grid' | 'list'>('grid');
   const [selectedFile, setSelectedFile] = useState<MediaFile | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   // Modal por deep-link (/archivo/:id) cuando el archivo aun no esta en mediaFiles.
@@ -212,7 +208,6 @@ function App() {
   const [modalError, setModalError] = useState<string | null>(null);
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
   const [filteredFiles, setFilteredFiles] = useState<MediaFile[]>([]);
-  const [showFolderScanner, setShowFolderScanner] = useState(false);
   const [showCreateCollection, setShowCreateCollection] = useState(false);
   const [showAddToCollection, setShowAddToCollection] = useState(false);
   const [selectedFileForCollection, setSelectedFileForCollection] = useState<string>('');
@@ -222,7 +217,6 @@ function App() {
   const [downloadingFiles, setDownloadingFiles] = useState<Set<string>>(new Set());
   // IDs de archivos con un escaneo visual de un solo archivo en curso (boton de la tarjeta)
   const [scanningFiles, setScanningFiles] = useState<Set<string>>(new Set());
-  const [lastSync, setLastSync] = useState<Date | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [isDownloadingZip, setIsDownloadingZip] = useState(false);
@@ -681,7 +675,7 @@ function App() {
       personLife: 'Línea de vida · Pensadero',
       statistics: 'Estadísticas · Pensadero',
       tags: 'Etiquetas · Pensadero', synonyms: 'Sinónimos · Pensadero',
-      imageSearch: 'Búsqueda por imagen · Pensadero', admin: 'Admin · Pensadero',
+      admin: 'Admin · Pensadero',
       __notfound__: 'No encontrado · Pensadero',
     };
     document.title = titles[activeView] ?? 'Pensadero';
@@ -814,9 +808,11 @@ function App() {
         });
       }
       if (searchFilters.dateTo) {
+        // "Hasta el 10" incluye el 10 entero, tambien lo que no es medianoche.
+        const hasta = finDelDia(searchFilters.dateTo);
         filtered = filtered.filter(file => {
           const dateToCompare = file.extractedDate || file.createdAt;
-          return dateToCompare <= searchFilters.dateTo!;
+          return dateToCompare <= hasta;
         });
       }
       // Filtros de año y mes usando extractedDate
@@ -841,7 +837,7 @@ function App() {
     if (types && types.length > 0 && !types.includes('all')) {
       filtered = filtered.filter(file => {
         // Si hay tipos seleccionados, el archivo DEBE ser uno de esos tipos
-        return types.includes(file.type) || (types.includes('export') && file.type === 'document');
+        return types.includes(file.type);
       });
     }
 
@@ -989,35 +985,15 @@ function App() {
     };
   }, [isSelectionMode]);
 
-  // FIXED: Listener para swap de IDs temporales
+  // La copia de favoritos y colecciones que se guardaba en el navegador
+  // (cacheService) ya no existe: el servidor es la unica fuente. Se borra lo
+  // que dejo aqui para que no ocupe ni confunda.
   useEffect(() => {
-    const handleCollectionIdSwap = (event: CustomEvent) => {
-      const { tempId, serverId } = event.detail;
-      console.log(`🔄 Detectado swap de ID: ${tempId} -> ${serverId}`);
-
-      setCollections(prev => prev.map(col =>
-        col.id === tempId ? { ...col, id: serverId } : col
-      ));
-    };
-
-    window.addEventListener('collection-id-swap', handleCollectionIdSwap as EventListener);
-
-    return () => {
-      window.removeEventListener('collection-id-swap', handleCollectionIdSwap as EventListener);
-    };
-  }, []);
-
-  // Cache management on startup
-  useEffect(() => {
-    validateCache();
-    cleanupCache();
-
-    // Set up periodic cache cleanup (every 24 hours)
-    const cacheInterval = setInterval(() => {
-      cleanupCache();
-    }, 24 * 60 * 60 * 1000);
-
-    return () => clearInterval(cacheInterval);
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('pensadero_cache_') || k === 'favoritesCache' || k === 'collectionsCache') localStorage.removeItem(k);
+      }
+    } catch { /* sin almacenamiento local: nada que borrar */ }
   }, []);
 
   // Señal para que PersonBubbles vuelva a pedir /api/persons cuando el
@@ -1053,7 +1029,6 @@ function App() {
           personIds: selectedPersonIds
         });
         setFilteredFiles(filtered);
-        setLastSync(new Date());
         setPersonsRefreshKey(k => k + 1);
         console.log(`✅ ${files.length} archivos cargados después de sincronización`);
       }
@@ -1223,67 +1198,9 @@ function App() {
 
 
 
-        // FIXED: Restaurar favoritos usando sistema híbrido robusto
-        console.log('🔄 Restaurando favoritos desde múltiples fuentes...');
-
-        // 1. Verificar favoritos del servidor
-        const serverFavorites = files.filter(f => f.isFavorite).length;
-        console.log(`📊 Favoritos desde servidor: ${serverFavorites}`);
-
-        // 2. SIEMPRE verificar caché local para favoritos pendientes de sincronización
-        const cachedFavorites = cacheService.get('favorites');
-        if (cachedFavorites && cachedFavorites.length > 0) {
-          console.log(`📦 Cache local contiene ${cachedFavorites.length} favoritos`);
-
-          // Identificar favoritos pendientes de sincronización
-          const pendingFavorites = cachedFavorites.filter(
-            item => item.metadata.syncStatus === 'pending'
-          );
-
-          if (pendingFavorites.length > 0) {
-            console.log(`⏳ Detectados ${pendingFavorites.length} favoritos pendientes de sincronización`);
-
-            // Aplicar favoritos pendientes a los archivos localmente
-            const pendingIds = new Set(pendingFavorites.map(item => item.data.fileId));
-            let appliedCount = 0;
-
-            files.forEach(file => {
-              if (pendingIds.has(file.id) && !file.isFavorite) {
-                file.isFavorite = true;
-                appliedCount++;
-              }
-            });
-
-            if (appliedCount > 0) {
-              console.log(`✅ Aplicados ${appliedCount} favoritos pendientes localmente`);
-            }
-
-            // Sincronizar favoritos pendientes con servidor en segundo plano
-            syncLocalFavoritesToServer(pendingIds);
-          } else {
-            console.log('✅ No hay favoritos pendientes de sincronización');
-          }
-
-          // Si servidor no tenía favoritos pero cache local sí (recuperación total)
-          if (serverFavorites === 0 && cachedFavorites.length > 0) {
-            console.log('⚠️ Servidor sin favoritos, restaurando desde caché local completo');
-            const allCachedIds = new Set(cachedFavorites.map(item => item.data.fileId));
-            let restoredCount = 0;
-
-            files.forEach(file => {
-              if (allCachedIds.has(file.id)) {
-                file.isFavorite = true;
-                restoredCount++;
-              }
-            });
-
-            console.log(`✅ Restaurados ${restoredCount} favoritos desde caché local`);
-            syncLocalFavoritesToServer(allCachedIds);
-          }
-        } else {
-          console.log('📦 No hay caché local de favoritos');
-        }
-
+        // Los favoritos los dice el servidor y nadie mas. Aqui se leia ademas
+        // una copia antigua en el navegador que ya nunca se actualizaba: si el
+        // servidor no tenia ninguno, volvia a poner los de esa copia.
         setMediaFiles(files);
         // Apply active filters to new files
         const filtered = applyAllFilters(files, {
@@ -1295,7 +1212,6 @@ function App() {
           personIds: selectedPersonIds
         });
         setFilteredFiles(filtered);
-        setLastSync(new Date());
         setConnectionError(null); // Clear any previous errors
       } else {
         // Si no hay archivos, establecer arrays vacíos pero no mostrar error
@@ -1306,7 +1222,8 @@ function App() {
       console.error('Error cargando archivos:', error);
       setMediaFiles([]);
       setFilteredFiles([]);
-      if (error.message?.includes('fetch') || error.message?.includes('Failed')) {
+      const mensaje = error instanceof Error ? error.message : '';
+      if (mensaje.includes('fetch') || mensaje.includes('Failed')) {
         setConnectionError('No se puede conectar al servidor. Verifique que el backend esté ejecutándose.');
       } else {
         setConnectionError('Error al cargar archivos del servidor.');
@@ -1385,9 +1302,15 @@ function App() {
     }
   };
 
-  const handleCollectionsReorder = (reorderedCollections: Collection[]) => {
+  const handleCollectionsReorder = async (reorderedCollections: Collection[]) => {
     setCollections(reorderedCollections);
-    cacheService.set('collections', reorderedCollections, 'local');
+    // Antes el orden solo se guardaba en el navegador: al recargar, o desde
+    // otro navegador, volvia el de antes.
+    const r = await api.reorderCollections(reorderedCollections.map(c => c.id));
+    if (!r.success) {
+      toast.error('No se ha podido guardar el nuevo orden de las colecciones');
+      loadCollections();
+    }
   };
 
   // Event handlers
@@ -1414,8 +1337,9 @@ function App() {
           tags: filters.tags?.join(','),
           year: filters.year,
           month: filters.month,
-          dateFrom: filters.dateFrom?.toISOString().split('T')[0],
-          dateTo: filters.dateTo?.toISOString().split('T')[0],
+          // Dia LOCAL: toISOString daba el dia anterior (UTC) en España.
+          dateFrom: filters.dateFrom ? aTextoDiaLocal(filters.dateFrom) : undefined,
+          dateTo: filters.dateTo ? aTextoDiaLocal(filters.dateTo) : undefined,
           exports: filters.exports
         });
 
@@ -1486,7 +1410,7 @@ function App() {
 
       // Actualizar en backend (single-user)
       try {
-        const favs = await handleSupabaseFavourite(file.fullPath!, '', userFavsRef.current)
+        const favs = await alternarFavorito(file.fullPath!, '', userFavsRef.current)
         setUserFavs(favs ?? [])
 
       } catch {
@@ -1736,10 +1660,6 @@ function App() {
     console.log(`✅ Seleccionados ${loadedFiles.length} archivos cargados`);
   };
 
-  const clearAllSelections = () => {
-    setSelectedFiles(new Set());
-  };
-
   // Randomizer functions - Optimized to work with IDs instead of full objects
   const shuffleArray = <T,>(array: T[]): T[] => {
     const shuffled = [...array];
@@ -1859,21 +1779,11 @@ function App() {
       console.log(`📦 Iniciando descarga ZIP de ${selectedFiles.size} archivos`);
       setIsDownloadingZip(true);
 
-      const response = await api.downloadMultipleFiles(Array.from(selectedFiles));
-
-      // Create download link
-      const url = window.URL.createObjectURL(response);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `archivos_${new Date().toISOString().split('T')[0]}.zip`;
-      link.style.display = 'none';
-
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      window.URL.revokeObjectURL(url);
-      console.log(`✅ Descarga ZIP completada`);
+      // El navegador la guarda en disco mientras llega (ver api.descargarZip).
+      const { disponibles, total } = await api.descargarZip(Array.from(selectedFiles));
+      toast.success(disponibles < total
+        ? `Descargando ${disponibles} de ${total}: el resto no está disponible ahora`
+        : `Descargando ${disponibles} archivos en un ZIP`);
 
       // Clear selections after successful download
       setSelectedFiles(new Set());
@@ -1881,7 +1791,7 @@ function App() {
 
     } catch (error) {
       console.error('Error descargando archivos:', error);
-      alert('Error al crear el archivo ZIP. Por favor, intenta de nuevo.');
+      toast.error(`No se ha podido descargar: ${error instanceof Error ? error.message : 'error desconocido'}`);
     } finally {
       setIsDownloadingZip(false);
     }
@@ -1895,13 +1805,6 @@ function App() {
       downloadDoneTimerRef.current = null;
       setDownloadDone(false);
     }, 1600);
-  };
-
-  const handleFolderUpload = (files: any[]) => {
-    // Aquí procesaríamos los archivos seleccionados
-    console.log('Archivos para subir:', files);
-    alert(`Se han seleccionado ${files.length} archivos para procesar`);
-    setShowFolderScanner(false);
   };
 
   const handleCreateCollection = async (
@@ -1937,46 +1840,21 @@ function App() {
     const updatedCollections = [...collections, newCollection];
     setCollections(updatedCollections);
 
-    // Guardar en el servicio de caché unificado
-    // try {
-    //   console.log('🔍 Debug - Saving collection with cover:', {
-    //     id: newCollection.id,
-    //     name: newCollection.name,
-    //     coverImage: newCollection.coverImage,
-    //     coverType: newCollection.coverType
-    //   });
-    //   cacheService.updateItem('collections', newCollection.id, newCollection, 'local');
-    //   console.log(`💾 Colección "${name}" guardada en caché unificado`);
-    //   alert(`Colección "${name}" creada exitosamente`);
-    // } catch (error) {
-    //   console.error('Error guardando colección en caché unificado:', error);
-    // }
-
-    // FIXED: Try to sync with server (sin eliminar temporal si falla)
-    try {
-      const response = await createCollection(newCollection);
-      // if (response.success && response.data) {
-      //   // Replace temp collection with server response
-      //   const serverCollection = {
-      //     ...response.data,
-      //     createdAt: new Date(response.data.createdAt),
-      //     updatedAt: new Date(response.data.updatedAt),
-      //     isPublic: false,
-      //     createdBy: user?.id || ''
-      //   };
-
-      //   setCollections(prev => prev.map(col =>
-      //     col.id === newCollection.id ? serverCollection : col
-      //   ));
-
-      //   // FIXED: El swap de IDs lo hace automáticamente swapCollectionId en cacheService
-      //   // cuando syncPendingItems detecta un temp_ y lo sincroniza exitosamente
-
-      //   console.log(`✅ Colección "${name}" sincronizada con servidor (${serverCollection.id})`);
-      // }
-    } catch (error) {
-      console.warn('⚠️ Error sincronizando colección con servidor (quedará pendiente):', error);
-      // FIXED: NO eliminamos la temporal, queda como pending para reintentos
+    // La colección se crea en el servidor y la provisional (temp_) se cambia
+    // por la de verdad, con su id. Antes se quedaba la provisional hasta
+    // recargar la página: añadirle archivos, renombrarla o borrarla fallaba
+    // sin decir nada porque el servidor no conocía ese id.
+    const response = await createCollection(newCollection);
+    if (response.success && response.data && response.data.id) {
+      const creada = {
+        ...response.data,
+        createdAt: new Date(response.data.createdAt || Date.now()),
+        updatedAt: new Date(response.data.updatedAt || Date.now()),
+      };
+      setCollections(prev => prev.map(col => (col.id === clientTempId ? creada : col)));
+    } else {
+      setCollections(prev => prev.filter(col => col.id !== clientTempId));
+      toast.error(`No se ha podido crear la colección${response.error ? `: ${response.error}` : ''}`);
     }
   };
 
@@ -2148,41 +2026,14 @@ function App() {
         return;
       }
 
-      // Update toast with file count
-      toast.loading(`Comprimiendo ${collectionFiles.length} archivos...`, { id: collectionId });
-      console.log('🚀 Iniciando creación de ZIP...');
-
-      // Create a ZIP file with all collection files
+      // El navegador la guarda en disco mientras llega (ver api.descargarZip);
+      // el ZIP se llama como la colección.
       const fileIds = collectionFiles.map(f => f.id);
-      console.log('📋 IDs de archivos para ZIP:', fileIds);
-
-      const blob = await api.downloadMultipleFiles(fileIds);
-
-      console.log(`📦 ZIP creado, tamaño: ${blob.size} bytes`);
-
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      const filename = `${collection.name.replace(/[^a-z0-9\s]/gi, '_')}_collection.zip`;
-      link.download = filename;
-
-      console.log(`💾 Descargando como: ${filename}`);
-
-      // Trigger download
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      window.URL.revokeObjectURL(url);
-
-      console.log(`✅ Colección "${collection.name}" descargada exitosamente`);
+      const { disponibles, total } = await api.descargarZip(fileIds, collection.name);
       flashDownloadDone();
-
-      // Keep loading toast visible briefly before showing success
-      setTimeout(() => {
-        toast.success(`Colección "${collection.name}" descargada exitosamente`, { id: collectionId });
-      }, 100);
+      toast.success(disponibles < total
+        ? `Descargando "${collection.name}": ${disponibles} de ${total} (el resto no está disponible ahora)`
+        : `Descargando "${collection.name}" (${disponibles} ${disponibles === 1 ? 'archivo' : 'archivos'})`, { id: collectionId });
 
     } catch (error) {
       console.error('❌ Error descargando colección:', error);
@@ -2214,70 +2065,16 @@ function App() {
 
     if (!confirmDelete) return;
 
-    try {
-      // Delete from backend server
-      console.log(`🗑️ Intentando eliminar colección ${collectionId}...`);
-      const response = await deleteCollection(collectionId);
-
-      // // Remove from cache unificado
-      // cacheService.removeItem('collections', collectionId);
-      // console.log('✅ Colección eliminada del cache unificado');
-
-      // Remove from active collections
-      setCollections(collections.filter(c => c.id !== collectionId));
-
-      // If we were viewing this collection, go back to collections list
-      if (selectedCollectionId === collectionId) {
-        setSelectedCollectionId(null);
-      }
-
-      // // Clean up any localStorage references
-      // try {
-      //   const collectionsCache = JSON.parse(localStorage.getItem('collectionsCache') || '{}');
-      //   if (collectionsCache[collectionId]) {
-      //     delete collectionsCache[collectionId];
-      //     localStorage.setItem('collectionsCache', JSON.stringify(collectionsCache));
-      //   }
-      // } catch (err) {
-      //   console.warn('Error cleaning localStorage cache:', err);
-      // }
-
-      //console.log(`✅ Colección "${collection.name}" eliminada permanentemente`);
-
-    } catch (error) {
-      console.error('Error eliminando colección:', error);
-
-      // Si el servidor no responde, preguntar si eliminar localmente
-      const deleteLocally = window.confirm(
-        `No se pudo conectar con el servidor.\n\nPonte en contacto con un administrador de la plataforma`
-      );
-
-      // if (deleteLocally) {
-      //   // Remove from cache unificado
-      //   cacheService.removeItem('collections', collectionId);
-      //   console.log('⚠️ Colección eliminada localmente del cache unificado');
-
-      //   // Remove from active collections
-      //   setCollections(collections.filter(c => c.id !== collectionId));
-
-      //   // If we were viewing this collection, go back to collections list
-      //   if (selectedCollectionId === collectionId) {
-      //     setSelectedCollectionId(null);
-      //   }
-
-      //   // Clean up any localStorage references
-      //   try {
-      //     const collectionsCache = JSON.parse(localStorage.getItem('collectionsCache') || '{}');
-      //     if (collectionsCache[collectionId]) {
-      //       delete collectionsCache[collectionId];
-      //       localStorage.setItem('collectionsCache', JSON.stringify(collectionsCache));
-      //     }
-      //   } catch (err) {
-      //     console.warn('Error cleaning localStorage cache:', err);
-      //   }
-
-      //   console.log(`⚠️ Colección "${collection.name}" eliminada localmente (pendiente sincronización)`);
-      // }
+    // Solo se quita de la pantalla si el servidor la ha borrado: antes se
+    // quitaba siempre, y si el servidor fallaba volvia a aparecer al recargar.
+    const response = await deleteCollection(collectionId);
+    if (!response.success) {
+      toast.error(`No se ha podido borrar la colección "${collection.name}"${response.error ? `: ${response.error}` : ''}`);
+      return;
+    }
+    setCollections(prev => prev.filter(c => c.id !== collectionId));
+    if (selectedCollectionId === collectionId) {
+      setSelectedCollectionId(null);
     }
   };
 
@@ -2289,50 +2086,17 @@ function App() {
 
   const handleSaveCollectionName = async (collectionId: string, newName: string) => {
     const trimmedName = newName.trim();
-
-    try {
-      // Update in cache first (optimistic update)
-      const updatedCollections = collections.map(c =>
-        c.id === collectionId
-          ? { ...c, name: trimmedName, updatedAt: new Date() }
-          : c
-      );
-
-      // Update local state immediately
-      setCollections(updatedCollections);
-
-      // Update cache service
-      const updatedCollection = updatedCollections.find(c => c.id === collectionId);
-      if (updatedCollection) {
-        cacheService.updateItem('collections', collectionId, updatedCollection, 'local');
-      }
-
-      // Reset editing state
-      setEditingCollectionId(null);
-      setEditingCollectionName('');
-
-      console.log(`✅ Colección renombrada a "${trimmedName}"`);
-
-      // Try to update in backend (non-blocking)
-      try {
-        const response = await updateNameCollection(collectionId, trimmedName);
-        if (response.success) {
-          console.log('✅ Cambios sincronizados con el servidor');
-          // // Update cache service to mark as synced
-          // if (updatedCollection) {
-          //   cacheService.updateItem('collections', collectionId, updatedCollection, 'server');
-          // }
-        } else {
-          console.warn('Error actualizando el nomnbre de la colección:');
-        }
-      } catch (backendError) {
-        console.warn('Error actualizando el nomnbre de la colección:');
-        // The local change is still applied
-      }
-
-    } catch (error) {
-      console.error('Error actualizando nombre de colección:', error);
-      alert(`Error al actualizar el nombre de la colección`);
+    const previas = collections;
+    setCollections(prev => prev.map(c => (c.id === collectionId ? { ...c, name: trimmedName, updatedAt: new Date() } : c)));
+    setEditingCollectionId(null);
+    setEditingCollectionName('');
+    // Si el servidor no lo guarda se vuelve al nombre de antes y se dice.
+    // Antes solo salia un aviso en la consola y la pantalla enseñaba un
+    // nombre que al recargar desaparecia.
+    const response = await updateNameCollection(collectionId, trimmedName);
+    if (!response.success) {
+      setCollections(previas);
+      toast.error('No se ha podido renombrar la colección');
     }
   };
 
@@ -2507,62 +2271,6 @@ function App() {
 
 
   // Function to cleanup and validate cache
-  const cleanupCache = () => {
-    try {
-      // FIXED: Usar el servicio de caché unificado que ya tiene lógica TTL
-      cacheService.cleanup();
-      console.log('🧹 Cache unificado limpiado (TTL aplicado)');
-
-      // FIXED: Limpiar sistema legacy de una vez por todas
-      // Solo eliminar si existen, no intentar parsear
-      if (localStorage.getItem('favoritesCache')) {
-        localStorage.removeItem('favoritesCache');
-        console.log('🗑️ Sistema legacy de favoritos eliminado');
-      }
-
-      if (localStorage.getItem('collectionsCache')) {
-        localStorage.removeItem('collectionsCache');
-        console.log('🗑️ Sistema legacy de colecciones eliminado');
-      }
-
-      // Obtener estadísticas del nuevo sistema
-      const stats = cacheService.getStats();
-      console.log('📊 Estado del caché unificado:', stats);
-
-    } catch (error) {
-      console.error('Error cleaning cache:', error);
-      // Si hay error, limpiar todo para evitar corrupción
-      cacheService.clearAll();
-      localStorage.removeItem('favoritesCache');
-      localStorage.removeItem('collectionsCache');
-      console.log('🗑️ Todo el caché limpiado debido a error/corrupción');
-    }
-  };
-
-  // Función de validación delegada al servicio de caché unificado
-  const validateCache = () => {
-    try {
-      const stats = cacheService.getStats();
-
-      // Validar integridad de cada tipo de caché
-      Object.keys(stats).forEach(key => {
-        const items = cacheService.get(key);
-        if (items && items.some(item => !item.id || !item.metadata)) {
-          console.warn(`⚠️ Detectados items inválidos en ${key}, limpiando...`);
-          const validItems = items.filter(item => item.id && item.metadata);
-          cacheService.set(key, validItems.map(i => i.data), 'local');
-        }
-      });
-
-      console.log('✅ Caché unificado validado', stats);
-
-    } catch (error) {
-      console.error('❌ Validación del caché unificado falló:', error);
-      cacheService.clearAll();
-      console.log('🗑️ Caché unificado limpiado y será reconstruido');
-    }
-  };
-
   const handleTagClick = (tag: string) => {
     // Añadir etiqueta a las incluidas si no está ya en ninguna lista
     const isIncluded = includedTags.includes(tag);
@@ -2575,26 +2283,6 @@ function App() {
       console.log(`🏷️ Etiqueta "${tag}" añadida como INCLUIDA`);
     }
     // Si ya está activa, no hacemos nada desde handleTagClick (el ciclo se maneja en SearchBar)
-  };
-
-  // Función para sincronizar favoritos locales al servidor
-  const syncLocalFavoritesToServer = async (favoriteIds: Set<string>) => {
-    console.log('🔄 Sincronizando favoritos locales al servidor...');
-
-    let syncCount = 0;
-    const syncPromises = Array.from(favoriteIds).map(async (fileId) => {
-      try {
-        const response = await api.updateFile(fileId, { isFavorite: true });
-        if (response.success) {
-          syncCount++;
-        }
-      } catch (error) {
-        console.warn(`⚠️ Error sincronizando favorito ${fileId}:`, error);
-      }
-    });
-
-    await Promise.allSettled(syncPromises);
-    console.log(`✅ Sincronizados ${syncCount}/${favoriteIds.size} favoritos al servidor`);
   };
 
   const handleTagsChange = (tags: { included: string[]; excluded: string[] }) => {
@@ -2770,69 +2458,6 @@ function App() {
     searchBarRef.current?.reset();
 
     resetInfiniteScroll();
-  };
-
-  // Handler para resultados de búsqueda por IA (chatbot)
-  const handleAIFilters = (aiResponse: any) => {
-    console.log('🤖 Aplicando resultados de búsqueda IA:', aiResponse);
-
-    // Nueva estructura: aiResponse tiene { results, intent, metadata }
-    if (aiResponse.results?.length > 0) {
-      console.log(`🔍 Mostrando ${aiResponse.results.length} resultados de búsqueda IA`);
-
-      // Función para normalizar paths (extraer parte relativa después de "Biblioteca Clips\" o "Biblioteca Fotos\" etc.)
-      const normalizePath = (path: string): string => {
-        if (!path) return '';
-        // Buscar patrones comunes y extraer la parte relativa
-        const patterns = [
-          /Biblioteca Clips[\\\/](.+)$/i,
-          /Biblioteca Fotos[\\\/](.+)$/i,
-          /Biblioteca Exports[\\\/](.+)$/i,
-          /Biblioteca_Prueba_Pensadero[\\\/](.+)$/i
-        ];
-        for (const pattern of patterns) {
-          const match = path.match(pattern);
-          if (match) return match[1].replace(/\\/g, '/');
-        }
-        // Si no coincide ningún patrón, devolver el path normalizado
-        return path.replace(/\\/g, '/');
-      };
-
-      // Crear mapa de scores con paths normalizados
-      const scoreMap = new Map(
-        aiResponse.results.map((r: any) => [normalizePath(r.filePath), r.score])
-      );
-
-      // Filtrar mediaFiles comparando paths normalizados
-      const matches = mediaFiles
-        .filter(file => {
-          const normalizedPath = normalizePath(file.path);
-          return scoreMap.has(normalizedPath);
-        })
-        .sort((a, b) => {
-          const scoreA = scoreMap.get(normalizePath(a.path)) || 0;
-          const scoreB = scoreMap.get(normalizePath(b.path)) || 0;
-          return scoreB - scoreA;
-        });
-
-      console.log(`🔍 DEBUG: mediaFiles count: ${mediaFiles.length}, matches: ${matches.length}`);
-
-      if (matches.length > 0) {
-        // NO tocamos la barra de filtros, solo mostramos resultados
-        setFilteredFiles(matches);
-        resetInfiniteScroll();
-        console.log(`✅ Mostrando ${matches.length} archivos (ordenados por relevancia)`);
-      } else {
-        console.log('⚠️ No se encontraron coincidencias en mediaFiles');
-        // Mostrar array vacío para indicar "sin resultados"
-        setFilteredFiles([]);
-        resetInfiniteScroll();
-      }
-    } else {
-      console.log('⚠️ La búsqueda no devolvió resultados');
-      setFilteredFiles([]);
-      resetInfiniteScroll();
-    }
   };
 
   // Quick filters handlers
@@ -3077,23 +2702,6 @@ function App() {
     // Limit to loadedItemsCount with a maximum of MAX_LOADED_ITEMS
     const itemsToShow = Math.min(loadedItemsCount, MAX_LOADED_ITEMS);
     return allFiles.slice(0, itemsToShow);
-  };
-
-  const loadMoreItems = () => {
-    const allFiles = getAllDisplayFiles();
-    const useGrouping = groupingEnabled && viewMode === 'grid';
-    const totalSlots = useGrouping
-      ? computeTotalSlots(allFiles, expandedGroups, showAllGroups)
-      : allFiles.length;
-    if (loadedItemsCount < totalSlots && loadedItemsCount < MAX_LOADED_ITEMS) {
-      const newCount = Math.min(
-        loadedItemsCount + ITEMS_PER_LOAD,
-        totalSlots,
-        MAX_LOADED_ITEMS
-      );
-      setLoadedItemsCount(newCount);
-      console.log(`📜 Cargando más items: ${newCount} de ${totalSlots}`);
-    }
   };
 
   /**
@@ -3361,33 +2969,24 @@ function App() {
 
         case 'tags':
           // Single-user: TagManager siempre disponible
-          if (true) {
-            return (
-              <div>
-                <button
-                  onClick={() => setActiveView('home')}
-                  className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>Volver</span>
-                </button>
-                <TagManager
-                  mediaFiles={mediaFiles}
-                  onFilesUpdate={(updatedFiles) => {
-                    setMediaFiles(updatedFiles);
-                    setFilteredFiles(updatedFiles);
-                  }}
-                />
-              </div>
-            );
-          } else {
-            return (
-              <div className="text-center py-12">
-                <h3 className="text-lg font-medium text-marfil mb-2">Acceso Denegado</h3>
-                <p className="text-lavanda-archivo">No tienes permisos para acceder a la gestión de etiquetas</p>
-              </div>
-            );
-          }
+          return (
+            <div>
+              <button
+                onClick={() => setActiveView('home')}
+                className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Volver</span>
+              </button>
+              <TagManager
+                mediaFiles={mediaFiles}
+                onFilesUpdate={(updatedFiles) => {
+                  setMediaFiles(updatedFiles);
+                  setFilteredFiles(updatedFiles);
+                }}
+              />
+            </div>
+          );
 
         case 'synonyms':
           return <SynonymsManager onBack={() => setActiveView('home')} />;
@@ -3495,30 +3094,21 @@ function App() {
 
         case 'paths':
           // Single-user: PathManager siempre disponible
-          if (true) {
-            return (
-              <div>
-                <button
-                  onClick={() => setActiveView('home')}
-                  className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span>Volver</span>
-                </button>
-                <PathManager onSyncComplete={() => {
-                  console.log('🔄 Sincronización completada, recargando archivos...');
-                  loadFiles(false); // Recargar archivos sin forzar sincronización
-                }} />
-              </div>
-            );
-          } else {
-            return (
-              <div className="text-center py-12">
-                <h3 className="text-lg font-medium text-slate-900 mb-2">Acceso Denegado</h3>
-                <p className="text-slate-600">No tienes permisos para acceder a esta sección</p>
-              </div>
-            );
-          }
+          return (
+            <div>
+              <button
+                onClick={() => setActiveView('home')}
+                className="flex items-center gap-1 px-3 py-1.5 mb-4 text-sm font-medium text-lavanda hover:text-noche hover:bg-lavanda rounded-lg transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Volver</span>
+              </button>
+              <PathManager onSyncComplete={() => {
+                console.log('🔄 Sincronización completada, recargando archivos...');
+                loadFiles(false); // Recargar archivos sin forzar sincronización
+              }} />
+            </div>
+          );
 
         case 'admin':
           return (
@@ -3533,21 +3123,6 @@ function App() {
               <h1 className="text-2xl font-bold text-slate-900 mb-8">Panel de Administración</h1>
               <p className="text-slate-600">Gestiona usuarios, permisos y configuración del sistema</p>
             </div>
-          );
-
-        case 'imageSearch':
-          return (
-            <ImageSearchView
-              onFileClick={handleFileClick}
-              onToggleFavorite={handleToggleFavorite}
-              onDownload={handleDownload}
-              onAddToCollection={handleAddToCollection}
-              downloadingFiles={downloadingFiles}
-              isSelectionMode={isSelectionMode}
-              selectedFiles={selectedFiles}
-              isAdmin={true}
-              onBack={() => setActiveView('home')}
-            />
           );
 
         case '__notfound__':
@@ -3565,7 +3140,7 @@ function App() {
           );
 
         case 'home':
-        default:
+        default: {
           const displayFiles = getDisplayFiles();
           const title = '';
 
@@ -4043,6 +3618,7 @@ function App() {
               )}
             </div>
           );
+        }
       }
     } catch (error) {
       console.error('Error rendering main content:', error);
@@ -4298,20 +3874,6 @@ function App() {
           setSelectedPersonIds([personId]);
           navigate('/persona/' + encodeURIComponent(personId), { replace: true });
         }}
-        onBackgroundRemoved={async (newFileId, newFileName) => {
-          // Mostrar toast de éxito
-          toast.success(`Imagen sin fondo creada: ${newFileName}`, {
-            duration: 4000,
-            icon: '✂️'
-          });
-          // Recargar archivos para incluir el nuevo archivo
-          await loadFiles(false);
-          // Opcionalmente: mostrar el nuevo archivo
-          const newFile = mediaFiles.find(f => f.id === newFileId);
-          if (newFile) {
-            console.log('📸 Nuevo archivo disponible:', newFileName);
-          }
-        }}
       />
 
       {/* Estado de carga del modal cuando se abre por deep-link (/archivo/:id)
@@ -4335,12 +3897,6 @@ function App() {
         </div>
       )}
 
-      {showFolderScanner && (
-        <FolderScanner
-          onClose={() => setShowFolderScanner(false)}
-          onUpload={handleFolderUpload}
-        />
-      )}
 
       <CreateCollectionModal
         isOpen={showCreateCollection}
@@ -4464,7 +4020,7 @@ function App() {
       {!(
         isModalOpen || showPresentationMode || quickPreviewFile || modalLoading || modalError || isDraggingImage
         || showCreateCollection || editingCollectionId !== null || showCoverSelector
-        || showAddToCollection || showBulkAddToCollection || showFolderScanner
+        || showAddToCollection || showBulkAddToCollection
         || editingSessionNote || (isSelectionMode && selectedFiles.size > 0)
       ) && (
         <>

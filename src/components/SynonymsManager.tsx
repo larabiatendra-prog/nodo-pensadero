@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Languages, Sparkles, Plus, Trash2, Check, X, ArrowLeft, Edit3, RefreshCw, AlertCircle } from 'lucide-react';
 import { api } from '../services/api';
 

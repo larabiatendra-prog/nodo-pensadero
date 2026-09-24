@@ -132,28 +132,34 @@ module.exports = function createAiRoutes(deps) {
       });
     }
 
-    // Año extraído
+    // Año, mes y rango: por la fecha UNICA del archivo (`fechaDia`, AAAAMMDD,
+    // utils/fechaArchivo.js), la misma que usan la galeria y Estadisticas.
+    // Antes el año y el mes se buscaban en las etiquetas, y lo fechado por la
+    // camara o por el disco (las fotos de movil sin fecha en el nombre ni en
+    // la carpeta) no tenia etiqueta de año: desaparecia del filtro.
+    const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+    const diaDe = (file) => Number(file.fechaDia) || 0;
     if (year) {
-      results = results.filter(file =>
-        (file.tags || []).some(tag => tag === year || tag.includes(year))
-      );
+      const y = parseInt(year, 10);
+      results = results.filter(file => Math.floor(diaDe(file) / 10000) === y);
     }
-
-    // Mes extraído (accent-insensitive: "Abril" == "abril")
     if (month) {
-      const m = normalize(month);
-      results = results.filter(file =>
-        (file.tags || []).some(tag => normalize(tag) === m)
-      );
+      const mes = MESES.indexOf(normalize(month)) + 1 || parseInt(month, 10) || 0;
+      results = results.filter(file => Math.floor(diaDe(file) / 100) % 100 === mes);
     }
-
-    // Rango de fechas
+    // Rango: dias locales 'AAAA-MM-DD', los dos extremos incluidos. Antes se
+    // comparaban instantes (medianoche UTC contra medianoche local) y el
+    // primer dia quedaba fuera.
     if (dateFrom || dateTo) {
+      const aDia = (s) => Number(String(s || '').replace(/-/g, '').slice(0, 8)) || 0;
+      const desde = aDia(dateFrom);
+      const hasta = aDia(dateTo);
       results = results.filter(file => {
-        if (!file.extractedDate) return false;
-        const fileDate = new Date(file.extractedDate);
-        if (dateFrom && fileDate < new Date(dateFrom)) return false;
-        if (dateTo && fileDate > new Date(dateTo)) return false;
+        const dia = diaDe(file);
+        if (!dia) return false;
+        if (desde && dia < desde) return false;
+        if (hasta && dia > hasta) return false;
         return true;
       });
     }

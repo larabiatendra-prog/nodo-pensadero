@@ -2009,7 +2009,8 @@ const ocultosRoutes = createOcultosRoutes({
 app.use('/api', ocultosRoutes);
 
 // === VIDEOS PREPARADOS (estado y tope por disco) ===
-app.use('/api', createProxiesRoutes({ getMediaFiles: () => mediaFiles }));
+// Proxies: solo de lo que se ve (una copia exacta escondida no necesita el suyo).
+app.use('/api', createProxiesRoutes({ getMediaFiles: mediaFilesVisibles }));
 
 // === MOMENTOS DE LOS VIDEOS (varias huellas por clip para la busqueda visual) ===
 app.use('/api', createMomentosRoutes({ getMediaFiles: () => mediaFiles }));

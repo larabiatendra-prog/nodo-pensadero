@@ -28,6 +28,7 @@ const path = require('path');
 const videoProxyService = require('../services/videoProxyService');
 const fallos = require('../utils/failureReason');
 const { estimarLote } = require('../utils/estimarProxies');
+const descartesManager = require('../descartesManager');
 
 // Códecs que el navegador no abre, por mucho que el archivo sea pequeño.
 const CODECS_DUROS = /hevc|h265|prores|mjpeg|qtrle|dnxhd|cineform|wmv|vp6/i;
@@ -44,7 +45,13 @@ const mbpsDe = (f) => (f.duration > 0 && f.size > 0 ? (f.size * 8) / f.duration 
 module.exports = function createProxiesRoutes(deps = {}) {
   const router = express.Router();
   const { getMediaFiles } = deps;
-  const todos = () => (typeof getMediaFiles === 'function' ? getMediaFiles() : []);
+  // Lo que se ve en la galeria: server.js pasa lo visible (sin candado ni
+  // copias exactas sobrantes) y aqui se quitan las tomas gemelas apartadas.
+  // Antes era el catalogo entero y un video con su copia de seguridad
+  // conectada se preparaba dos veces.
+  const todos = () => (typeof getMediaFiles === 'function' ? getMediaFiles() : [])
+    .filter(f => f && !descartesManager.isDescartado(f.id));
+  const cargar = () => descartesManager.ensureLoaded().catch(() => {});
 
   /** ¿Este vídeo se vería mejor con una versión ligera y aún no la tiene? */
   const ganaria = (f) => {
@@ -109,6 +116,7 @@ module.exports = function createProxiesRoutes(deps = {}) {
 
   router.get('/proxies/estado', async (req, res) => {
     try {
+      await cargar();
       res.json({ success: true, data: await conFluidez() });
     } catch (err) {
       fallo(res, 'leer el estado de los vídeos preparados', err);
@@ -147,6 +155,7 @@ module.exports = function createProxiesRoutes(deps = {}) {
       if (enMarcha && !enMarcha.terminado) {
         return res.status(409).json({ success: false, error: 'ya hay una preparación en marcha' });
       }
+      await cargar();
       const lista = pendientes(null);
       if (lista.length === 0) {
         return res.json({ success: true, data: estimarLote([], null, {}, { bytesPorSegundo: BYTES_POR_SEGUNDO }) });
@@ -173,6 +182,7 @@ module.exports = function createProxiesRoutes(deps = {}) {
   router.post('/proxies/preparar', async (req, res) => {
     try {
       const raiz = ((req.body && req.body.raiz) || '').toUpperCase() || null;
+      await cargar();
       const lista = candidatos(raiz);
       if (lista.length === 0) {
         return res.json({ success: true, data: { total: 0, estado: await conFluidez() } });

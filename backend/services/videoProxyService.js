@@ -36,9 +36,10 @@
  *  - Indice durable en backend/video_proxies.json.
  *
  * Aprovecha el ffmpeg/ffprobe del SISTEMA (como visualScanService) para tener
- * la grafica NVIDIA. Se prepara por niveles, del mas rapido al que funciona en
- * cualquier equipo (ver `modosPara`): todo en la grafica, leer en la grafica,
- * solo codificar en la grafica y, sin NVIDIA, todo por el procesador.
+ * la grafica. Se prepara por niveles, del mas rapido al que funciona en
+ * cualquier equipo (ver `modosPara`): NVIDIA (todo en la grafica, leer en la
+ * grafica, solo codificar), AMD y luego Intel (leer y codificar, o solo
+ * codificar) y, al final, todo por el procesador.
  */
 
 const path = require('path');
@@ -82,9 +83,14 @@ const NATIVE_CONTAINERS = new Set(['mp4', 'mov', 'm4v', 'm4a', 'webm', '3gp', '3
 // === Estado en memoria ===
 let index = null;                 // fileId -> { kind, status, srcW, srcH, outW, outH, srcMtime, error }
 const inFlight = new Map();       // fileId -> Promise (generacion en curso)
-let nvencSupported = null;        // null=desconocido, true/false tras primer intento
-// ¿La grafica puede LEER (decodificar) video? null = aun no se sabe.
-let cudaDisponible = null;
+// Lo aprendido de este equipo, por marca de grafica (null = aun no se sabe):
+//  - codifica: su codificador funciona (NVENC, AMF, QSV).
+//  - lee: leer (decodificar) en esa grafica funciona.
+const aprendido = {
+  nvidia: { codifica: null, lee: null },
+  amd: { codifica: null, lee: null },
+  intel: { codifica: null, lee: null },
+};
 // Tipos de video (codec|pixfmt) con los que "todo en la grafica" ya fallo aqui:
 // no se vuelve a intentar con ellos (una GTX 1050 no lee el 4:2:2 de camara).
 const sinTodoGpu = new Set();
@@ -343,19 +349,54 @@ function drain() {
  * videos del movil (salen tumbados): solo se usa con los que no tienen giro.
  * 'gpu-lee' si gira, y si la grafica no sabe leer ese formato ffmpeg lo lee
  * por el procesador sin fallar.
+ *
+ * Sin NVIDIA, AMD y luego Intel, con la lectura de Windows (d3d11va), que
+ * tambien baja los fotogramas a memoria y gira bien:
+ *
+ *   'amf-lee'  leer en la grafica (d3d11va), codificar con AMF   1,5x con la Radeon integrada de un Ryzen
+ *   'amf'      leer aqui, codificar con AMF                      1,1x (ahi lo que manda es leer)
+ *   'qsv-lee'  leer en la grafica (d3d11va), codificar con QSV   sin probar: no habia Intel
+ *   'qsv'      leer aqui, codificar con QSV                      sin probar
+ *
+ * Con dos graficas, d3d11va puede leer en la que no es y el codificador
+ * falla: entonces se queda en 'amf'/'qsv', que tambien libera al procesador.
  */
+const FAMILIA = {
+  gpu: 'nvidia', 'gpu-lee': 'nvidia', nvenc: 'nvidia',
+  'amf-lee': 'amd', amf: 'amd',
+  'qsv-lee': 'intel', qsv: 'intel',
+  cpu: null,
+};
+// Por marca: el nivel de "solo codificar" y los de leer tambien en la grafica.
+const SOLO_CODIFICA = { nvidia: 'nvenc', amd: 'amf', intel: 'qsv' };
+const LEE = new Set(['gpu', 'gpu-lee', 'amf-lee', 'qsv-lee']);
+
 function modosPara(info) {
   const modos = [];
-  if (nvencSupported !== false) {
-    if (cudaDisponible !== false) {
+  const { nvidia, amd, intel } = aprendido;
+  if (nvidia.codifica !== false) {
+    if (nvidia.lee !== false) {
       const firma = `${info.vcodec || ''}|${info.pixfmt || ''}`;
       if (info.rotacion === 0 && info.width > 0 && info.height > 0 && !sinTodoGpu.has(firma)) modos.push('gpu');
       modos.push('gpu-lee');
     }
     modos.push('nvenc');
   }
+  if (amd.codifica !== false) {
+    if (amd.lee !== false) modos.push('amf-lee');
+    modos.push('amf');
+  }
+  if (intel.codifica !== false) {
+    if (intel.lee !== false) modos.push('qsv-lee');
+    modos.push('qsv');
+  }
   modos.push('cpu');
   return modos;
+}
+
+/** ¿Algun nivel con grafica ha funcionado aqui? (para decir "con la grafica"). */
+function usaGrafica() {
+  return Object.values(aprendido).some(m => m.codifica === true);
 }
 
 /**
@@ -372,11 +413,23 @@ async function conRespaldo(info, ejecutar) {
   for (const modo of modosPara(info)) {
     r = await ejecutar(modo);
     if (r.code === 0) {
-      if (modo !== 'cpu') nvencSupported = true;
-      if (modo === 'gpu' || modo === 'gpu-lee') cudaDisponible = true;
-      if (fallidos.includes('gpu')) sinTodoGpu.add(`${info.vcodec || ''}|${info.pixfmt || ''}`);
-      if (fallidos.includes('gpu-lee') && modo !== 'gpu-lee') cudaDisponible = false;
-      if (fallidos.includes('nvenc') && modo === 'cpu') { nvencSupported = false; cudaDisponible = false; }
+      const marca = FAMILIA[modo];
+      if (marca) {
+        aprendido[marca].codifica = true;
+        if (LEE.has(modo)) aprendido[marca].lee = true;
+      }
+      // "Todo en la grafica" fallo pero la misma grafica pudo: es ese tipo de video.
+      if (fallidos.includes('gpu') && marca === 'nvidia') sinTodoGpu.add(`${info.vcodec || ''}|${info.pixfmt || ''}`);
+      // Lo que fallo antes de un nivel que salio no es culpa del archivo.
+      for (const m of ['nvidia', 'amd', 'intel']) {
+        if (m === marca) {
+          // Su nivel de leer fallo y el de solo codificar salio: no lee.
+          if (modo === SOLO_CODIFICA[m] && fallidos.some(f => FAMILIA[f] === m && f !== 'gpu')) aprendido[m].lee = false;
+          continue;
+        }
+        // Una marca anterior fallo entera (hasta su "solo codificar"): no esta.
+        if (fallidos.includes(SOLO_CODIFICA[m])) { aprendido[m].codifica = false; aprendido[m].lee = false; }
+      }
       if (fallidos.length > 0) console.warn(`[videoProxy] ${fallidos.join(', ')} no pudo; preparado con '${modo}'`);
       return { r, modo };
     }
@@ -389,7 +442,8 @@ function buildArgs({ kind, input, output, dims, modo = 'nvenc' }) {
   // Leer en la grafica: con 'gpu' los fotogramas se quedan alli (para reducir
   // y codificar sin ir y volver); con 'gpu-lee' bajan a memoria.
   const leer = modo === 'gpu' ? ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda']
-    : modo === 'gpu-lee' ? ['-hwaccel', 'cuda'] : [];
+    : modo === 'gpu-lee' ? ['-hwaccel', 'cuda']
+      : (modo === 'amf-lee' || modo === 'qsv-lee') ? ['-hwaccel', 'd3d11va'] : [];
   // -dn/-sn: descartar streams de datos (timecode) y subtitulos que algunas
   // camaras incrustan y que no aportan a la reproduccion web.
   const common = ['-y', ...leer, '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-dn', '-sn'];
@@ -399,9 +453,19 @@ function buildArgs({ kind, input, output, dims, modo = 'nvenc' }) {
   // Calidad constante con techo de bitrate: en planos faciles pesa poco y en
   // los dificiles no se dispara.
   const techo = ['-maxrate', MAX_BITRATE, '-bufsize', String(parseInt(MAX_BITRATE, 10) * 2) + (MAX_BITRATE.replace(/[\d.]/g, '') || '')];
-  const venc = modo !== 'cpu'
+  // AMF y QSV no tienen un modo de calidad constante comun: bitrate variable
+  // con objetivo al 80 % del techo (4 Mbps con el techo de 5).
+  const objetivo = `${Math.round(parseFloat(MAX_BITRATE) * 0.8 * 10) / 10}${MAX_BITRATE.replace(/[\d.]/g, '') || ''}`;
+  const marca = FAMILIA[modo];
+  const venc = marca === 'nvidia'
     ? ['-c:v', 'h264_nvenc', '-preset', 'p5', '-rc', 'vbr', '-cq', '25', '-b:v', '0', ...techo]
-    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...techo];
+    : marca === 'amd'
+      ? ['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'vbr_peak', '-b:v', objetivo, ...techo]
+      : marca === 'intel'
+        ? ['-c:v', 'h264_qsv', '-preset', 'medium', '-b:v', objetivo, ...techo]
+        : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...techo];
+  // AMF y QSV quieren nv12 (8 bits 4:2:0, lo mismo que yuv420p pero entrelazado).
+  const pixfmt = marca === 'amd' || marca === 'intel' ? 'nv12' : 'yuv420p';
   if (modo === 'gpu') {
     // Reducir y pasar a 8 bits 4:2:0 en la grafica (siempre: un 10 bits que no
     // se reduce tambien hay que convertirlo). Medidas pares, como pide nv12.
@@ -410,7 +474,7 @@ function buildArgs({ kind, input, output, dims, modo = 'nvenc' }) {
     return [...common, ...venc, '-vf', `scale_cuda=${w}:${h}:format=nv12`, ...tail];
   }
   const scale = dims.downscaled ? ['-vf', `scale=${dims.outW}:${dims.outH}`] : [];
-  return [...common, ...venc, '-pix_fmt', 'yuv420p', ...scale, ...tail];
+  return [...common, ...venc, '-pix_fmt', pixfmt, ...scale, ...tail];
 }
 
 async function runFfmpeg(args, timeoutMs = 0) {
@@ -830,7 +894,8 @@ const TROZO_SEG = 5;
 let medida = null;
 
 async function medirVelocidad(muestras) {
-  if (medida && Date.now() - medida.en < 10 * 60 * 1000 && medida.nvenc === nvencSupported && medida.cuda === cudaDisponible) return medida;
+  const huellaEquipo = JSON.stringify(aprendido);
+  if (medida && Date.now() - medida.en < 10 * 60 * 1000 && medida.equipo === huellaEquipo) return medida;
   const porSegundo = [];
   const arranques = [];
   for (const f of muestras) {
@@ -871,11 +936,10 @@ async function medirVelocidad(muestras) {
   medida = {
     segPorSegundo: media(porSegundo),
     arranqueSeg: media(arranques),
-    encoder: nvencSupported === false ? 'procesador' : 'grafica',
+    encoder: usaGrafica() ? 'grafica' : 'procesador',
     muestras: porSegundo.length,
     en: Date.now(),
-    nvenc: nvencSupported,
-    cuda: cudaDisponible,
+    equipo: JSON.stringify(aprendido),
   };
   return medida;
 }
@@ -1008,7 +1072,11 @@ module.exports = {
   _modosPara: modosPara,
   _buildArgs: buildArgs,
   _conRespaldo: conRespaldo,
-  _reiniciarAprendido: () => { nvencSupported = null; cudaDisponible = null; sinTodoGpu.clear(); medida = null; },
+  _reiniciarAprendido: () => {
+    for (const m of Object.values(aprendido)) { m.codifica = null; m.lee = null; }
+    sinTodoGpu.clear();
+    medida = null;
+  },
   ALTO_COMODO,
   MBPS_COMODO,
   VERSION_CLASIFICACION,

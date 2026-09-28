@@ -8,7 +8,7 @@
 // arrays, devuelve strings y descriptores. La integración con la UI vive en
 // SearchBar.tsx; estas funciones no tocan estado.
 
-import { TAG_SYNONYM_GROUPS } from './tagSynonyms';
+import { TAG_SYNONYM_GROUPS } from './tagSynonyms.ts';
 
 // Normaliza para comparar: minúsculas, sin tildes, sin espacios extra.
 // "reunion", "Reunión" y "  reunión " colapsan al mismo valor.

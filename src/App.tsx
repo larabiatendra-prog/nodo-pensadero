@@ -49,6 +49,9 @@ import { ConnectionBanner } from './components/ConnectionBanner';
 import { getFileSortDate } from './utils/filenameParser';
 import { normalizePath } from './utils/formatData';
 import { aTextoDiaLocal, finDelDia } from './utils/dateUtils';
+import { etiquetasNormalizadas, frecuenciasCatalogo, llevaEtiquetaNormalizada, sugerirAcotar } from './utils/acotar';
+import { normalizeText } from './utils/smartTags';
+import type { Quitar, Valor } from './utils/pista';
 import { leerFrame, type ContextoLote, type Muestra, type VistaProgreso } from './utils/progresoProceso';
 
 // ── Routing por URL (Eje B) ────────────────────────────────────────────────
@@ -777,7 +780,7 @@ function App() {
       normalizaTexto(file.name).includes(q) ||
       normalizaTexto(file.displayName).includes(q) ||
       normalizaTexto(file.folderName).includes(q) ||
-      file.tags.some(tag => normalizaTexto(tag).includes(q));
+      etiquetasNormalizadas(file).some(tag => tag.includes(q));
 
     // 1. Búsqueda de texto suelta (query única; p.ej. fallback de natural).
     if (searchQuery && searchQuery.trim()) {
@@ -841,26 +844,16 @@ function App() {
       });
     }
 
-    // 4. Aplicar filtro de etiquetas incluidas - LÓGICA AND
+    // 4. Etiquetas incluidas (AND) y excluidas (NOT). Por trozo y sin tildes
+    // (llevaEtiqueta): "alegria" y "alegría" son la misma, y el embudo
+    // «Acotar» cuenta con este mismo filtro.
     if (tags && tags.length > 0) {
-      filtered = filtered.filter(file =>
-        tags.every(tag =>
-          file.tags.some(fileTag =>
-            fileTag.toLowerCase().includes(tag.toLowerCase())
-          )
-        )
-      );
+      const incluidas = tags.map(normalizeText);
+      filtered = filtered.filter(file => incluidas.every(tag => llevaEtiquetaNormalizada(file, tag)));
     }
-
-    // 4b. Aplicar filtro de etiquetas excluidas - LÓGICA NOT
     if (excludeTags && excludeTags.length > 0) {
-      filtered = filtered.filter(file =>
-        excludeTags.every(tag =>
-          !file.tags.some(fileTag =>
-            fileTag.toLowerCase().includes(tag.toLowerCase())
-          )
-        )
-      );
+      const excluidas = excludeTags.map(normalizeText);
+      filtered = filtered.filter(file => !excluidas.some(tag => llevaEtiquetaNormalizada(file, tag)));
     }
 
     // 5. Aplicar filtro de personas detectadas - LÓGICA AND
@@ -1375,12 +1368,15 @@ function App() {
       }
     }
 
-    // Búsqueda local usando la función centralizada
+    // Búsqueda local usando la función centralizada. Las excluidas van
+    // explicitas: sin ellas, añadir un texto dejaba de excluir hasta que se
+    // tocaba otra etiqueta.
     const filtered = applyAllFilters(mediaFiles, {
       searchQuery: query,
       searchTerms: terms,
       searchFilters: filters,
       tags: filters.tags,
+      excludeTags: excludedTags,
       types: selectedTypes,
     });
 
@@ -2610,6 +2606,65 @@ function App() {
 
   }, [filteredFiles, activeView, selectedCollectionId, optimizedNameCompare, imageSearchFileIds, naturalSearchIds]);
 
+  // ── «Acotar» y la pista de la barra ──────────────────────────────────────
+  // Todo el archivo esta en memoria y se filtra aqui, asi que el embudo se
+  // calcula en el cliente: medido sobre 16.283 archivos, de 2 a 16 ms.
+  const catalogoVisible = React.useMemo(
+    () => (descartadas.size > 0 ? mediaFiles.filter(f => !descartadas.has(f.id)) : mediaFiles),
+    [mediaFiles, descartadas],
+  );
+  const frecuenciasEtiquetas = React.useMemo(() => frecuenciasCatalogo(catalogoVisible), [catalogoVisible]);
+  // Dentro de una coleccion no: lo que se ve alli no es filteredFiles.
+  const sugerenciasAcotar = React.useMemo(() => (
+    activeView === 'home' && !selectedCollectionId
+      ? sugerirAcotar({
+        subconjunto: filteredFiles,
+        catalogo: catalogoVisible,
+        frecuencias: frecuenciasEtiquetas,
+        activas: [...includedTags, ...excludedTags],
+        textos: currentSearchTerms,
+        personas: selectedPersonIds,
+      })
+      : []
+  ), [activeView, selectedCollectionId, filteredFiles, catalogoVisible, frecuenciasEtiquetas, includedTags, excludedTags, currentSearchTerms, selectedPersonIds]);
+
+  /**
+   * Lo que se veria cambiando un termino por otro (quitar un texto o una
+   * etiqueta, poner una etiqueta, una persona o un texto), con el resto de
+   * filtros tal cual. Lo usa la barra para la promocion silenciosa y para el
+   * recuento de cada pista.
+   */
+  const probarCambio = React.useCallback((quitar: Quitar | null, poner: Valor | { clase: 'texto'; valor: string }) => {
+    let terms = currentSearchTerms;
+    let tags = includedTags;
+    let personIds = selectedPersonIds;
+    if (quitar?.clase === 'texto') terms = terms.filter(t => t !== quitar.valor);
+    if (quitar?.clase === 'etiqueta') tags = tags.filter(t => t !== quitar.valor);
+    if (poner.clase === 'texto') terms = [...terms, poner.valor];
+    if (poner.clase === 'etiqueta') tags = [...tags, poner.valor];
+    if (poner.clase === 'persona' && !personIds.includes(poner.id)) personIds = [...personIds, poner.id];
+    let base = mediaFiles;
+    if (selectedCollectionId) {
+      const col = collections.find(c => c.id === selectedCollectionId);
+      if (col) {
+        const claves = clavesDeColeccion(col);
+        base = mediaFiles.filter(f => estaEnColeccion(claves, f));
+      }
+    }
+    return applyAllFilters(base, {
+      searchQuery: currentSearchQuery,
+      searchTerms: terms,
+      searchFilters: currentSearchFilters || undefined,
+      tags,
+      excludeTags: excludedTags,
+      types: selectedTypes,
+      personIds,
+      favoritesOnly: showFavoritesOnly,
+    });
+    // Estable mientras no cambie ningun filtro: la barra recalcula la pista con esto.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaFiles, descartadas, collections, selectedCollectionId, currentSearchQuery, currentSearchTerms, currentSearchFilters, includedTags, excludedTags, selectedTypes, selectedPersonIds, filtrosGrupo, presenciaDia, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, ecoActivo]);
+
   // ── Timeline-onda (pasiva) del home ─────────────────────────────────────
   // Solo cuando el grid esta en orden cronologico real: home, sin coleccion,
   // sin orden aleatorio y sin busqueda (imagen/natural traen su propio orden).
@@ -3176,6 +3231,9 @@ function App() {
                         onAddGroup={(id) => setGruposActivos(prev => prev.includes(id) ? prev : [...prev, id])}
                         onRemoveGroup={(id) => setGruposActivos(prev => prev.filter(o => o !== id))}
                         contarGrupo={contarGrupo}
+                        acotar={sugerenciasAcotar}
+                        probar={probarCambio}
+                        totalResultados={filteredFiles.length}
                         onNaturalSearch={(fileIds, _intent, primaryCount) => {
                           setNaturalSearchIds(fileIds);
                           setNaturalSearchPrimaryCount(typeof primaryCount === 'number' ? primaryCount : (fileIds?.length ?? 0));

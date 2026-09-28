@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { X, Tag, Calendar, MinusCircle, Sparkles, Loader2, AtSign, User, Users, Search } from 'lucide-react';
 import { MentionsInput, Mention } from 'react-mentions';
-import { SearchFilters, Person, GrupoPersonas } from '../types';
+import { SearchFilters, Person, GrupoPersonas, MediaFile } from '../types';
 import GrupoChip, { GrupoAvatares, type NivelesGrupo } from './GrupoChip';
 import { minimoDe } from '../utils/grupos';
 import { buildApiUrl, API_CONFIG } from '../config';
@@ -10,6 +10,9 @@ import config from '../config';
 import { resolveEnterBehavior, normalizeText } from '../utils/smartTags';
 import { aTextoDiaLocal, deTextoDiaLocal } from '../utils/dateUtils';
 import { TAG_SYNONYM_GROUPS } from '../utils/tagSynonyms';
+import Acotar from './Acotar';
+import type { SugerenciaAcotar } from '../utils/acotar';
+import { decidirPista, prepararVocabulario, promocionSilenciosa, type Quitar, type Valor } from '../utils/pista';
 
 // Schema canónico del intent que devuelve el LLM (ver aiSearchService.js).
 export interface NaturalIntent {
@@ -64,6 +67,13 @@ interface SearchBarProps {
   onAddGroup?: (grupoId: string) => void;
   onRemoveGroup?: (grupoId: string) => void;
   contarGrupo?: (grupoId: string) => NivelesGrupo | null;
+  // «Acotar»: etiquetas por las que estrechar lo que se ve (las calcula App).
+  acotar?: SugerenciaAcotar[];
+  // Lo que se veria cambiando un termino por otro, con el resto de filtros:
+  // para la promocion silenciosa y el recuento de la pista.
+  probar?: (quitar: Quitar | null, poner: Valor | { clase: 'texto'; valor: string }) => MediaFile[];
+  // Cuantos resultados hay ahora (la errata solo se propone con 0).
+  totalResultados?: number;
 }
 
 /** Prefijo con el que un grupo viaja dentro del texto del modo natural. */
@@ -78,7 +88,7 @@ export interface SearchBarHandle {
   reset: () => void;
 }
 
-const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson, grupos = [], gruposActivos = [], onAddGroup, onRemoveGroup, contarGrupo }, ref) {
+const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar({ onSearch, includedTags = [], excludedTags = [], onTagsChange, onNaturalSearch, selectedPersonIds = [], onAddPerson, onRemovePerson, grupos = [], gruposActivos = [], onAddGroup, onRemoveGroup, contarGrupo, acotar = [], probar, totalResultados }, ref) {
   const [query, setQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -229,6 +239,27 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     normalizeString(tag).includes(normalizeString(query)) && !allActiveTags.includes(tag)
   ).slice(0, 8);
 
+  // Etiquetas y personas normalizadas una vez, para la pista y la promocion.
+  const vocabulario = useMemo(
+    () => prepararVocabulario(tagsData?.allTags || [], persons),
+    [tagsData, persons],
+  );
+
+  // Pista bajo la barra (una sola, por prioridad): ver utils/pista.ts. Habla
+  // del ultimo texto enviado, que ya es una ficha: el campo queda vacio.
+  const pista = useMemo(() => {
+    if (!probar || isNatural) return null;
+    return decidirPista({
+      textos: localTextTerms,
+      incluidas: localIncludedTags,
+      etiquetasActivas: [...localIncludedTags, ...localExcludedTags],
+      personasActivas: selectedPersonIds,
+      vocabulario,
+      resultados: totalResultados ?? 1,
+      contar: (quitar, poner) => probar(quitar, poner).length,
+    });
+  }, [probar, isNatural, localTextTerms, localIncludedTags, localExcludedTags, selectedPersonIds, vocabulario, totalResultados]);
+
   // Fetch available tags from backend
   const fetchTags = async () => {
     try {
@@ -297,12 +328,55 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
       emitSearch();
       return;
     }
-    // Si coincide EXACTO con un tag existente -> chip lavanda (tag). Si no ->
-    // chip gris (texto). Misma decision que el Enter, para que el boton Buscar
-    // sea coherente.
-    const exact = (tagsData?.allTags || []).find(t => normalizeString(t) === normalizeString(q));
-    if (exact) addTag(exact);
-    else addTextTerm(q);
+    // Misma decision que el Enter, para que el boton Buscar sea coherente.
+    enviarTexto(q);
+  };
+
+  /**
+   * Lo escrito nunca queda suelto: acaba como ficha. Si se llama exactamente
+   * como una etiqueta o una persona y filtrar por ella deja LOS MISMOS
+   * archivos que buscarlo como texto, pasa a esa ficha sin preguntar. Si
+   * costaria aunque sea un resultado, se queda como texto y la pista de debajo
+   * ofrece la otra via con su recuento.
+   */
+  const enviarTexto = (texto: string) => {
+    const t = texto.trim();
+    if (!t) return;
+    if (!probar) {
+      const exact = (tagsData?.allTags || []).find(tag => normalizeString(tag) === normalizeString(t));
+      if (exact) addTag(exact); else addTextTerm(t);
+      return;
+    }
+    const comoTexto = new Set(probar(null, { clase: 'texto', valor: t }).map(f => f.id));
+    const valor = promocionSilenciosa(t, vocabulario, { etiquetas: allActiveTags, personas: selectedPersonIds }, poner => {
+      const con = probar(null, poner);
+      return con.length === comoTexto.size && con.every(f => comoTexto.has(f.id));
+    });
+    if (valor?.clase === 'etiqueta') addTag(valor.valor);
+    else if (valor?.clase === 'persona' && onAddPerson) addPerson(valor.id);
+    else addTextTerm(t);
+  };
+
+  // Aceptar la pista: cambia un termino por otro (nunca los suma: con AND
+  // saldria la interseccion, menos que cualquiera de los dos).
+  const aceptarPista = (p: NonNullable<typeof pista>) => {
+    let terms = localTextTerms;
+    let included = localIncludedTags;
+    if (p.quitar.clase === 'texto') terms = terms.filter(x => x !== p.quitar.valor);
+    else included = included.filter(x => x !== p.quitar.valor);
+    const poner = p.poner;
+    if (poner.clase === 'etiqueta') {
+      const ya = [...included, ...localExcludedTags].some(x => normalizeString(x) === normalizeString(poner.valor));
+      if (!ya) included = [...included, poner.valor];
+    } else if (!selectedPersonIds.includes(poner.id)) {
+      onAddPerson?.(poner.id);
+    }
+    setLocalTextTerms(terms);
+    if (included !== localIncludedTags) {
+      setLocalIncludedTags(included);
+      onTagsChange?.({ included, excluded: localExcludedTags });
+    }
+    emitSearch(terms, included);
   };
 
   // Lanza búsqueda en lenguaje natural contra Ollama (vía /api/ai/search).
@@ -496,7 +570,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
           suggestionsAlreadyShown: showSmartSuggestions,
         });
         if (action.kind === 'addTag') {
-          addTag(action.tag);
+          enviarTexto(query.trim());
         } else if (action.kind === 'showSuggestions') {
           // Primer Enter sin match exacto pero con sinónimos: ofrecerlos.
           setSmartSuggestions(action.suggestions);
@@ -505,9 +579,9 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
           setSelectedSuggestionIndex(-1);
           setPendingFreeSearchQuery(query.trim());
         } else {
-          // Búsqueda de texto libre (incluye el "segundo Enter"): se promueve a
-          // chip gris en vez de quedarse suelta en el input.
-          addTextTerm(query.trim());
+          // Búsqueda de texto libre (incluye el "segundo Enter"): acaba como
+          // ficha, de texto o, si no cambia nada, de persona.
+          enviarTexto(query.trim());
         }
       }
     } else if (e.key === 'ArrowDown') {
@@ -554,7 +628,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     setTimeout(() => { inputRef.current?.focus(); }, 50);
   };
 
-  const addTag = (tag: string) => {
+  const addTag = (tag: string, enfocar = true) => {
     if (!allActiveTags.includes(tag)) {
       const newIncluded = [...localIncludedTags, tag];
       setLocalIncludedTags(newIncluded);
@@ -566,9 +640,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
       setSelectedSuggestionIndex(-1);
 
       // Delay focus to give React time to update the query state
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 0);
+      if (enfocar) setTimeout(() => { inputRef.current?.focus(); }, 0);
 
       // Notify parent about tags change
       onTagsChange?.({ included: newIncluded, excluded: localExcludedTags });
@@ -677,6 +749,9 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
   };
 
   useImperativeHandle(ref, () => ({ reset: resetInternal }), []);
+
+  const desplegableAbierto = showFilters || (showSmartSuggestions && smartSuggestions.length > 0)
+    || (showSuggestions && (isPersonMention || suggestions.length > 0));
 
 
   return (
@@ -937,6 +1012,26 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
         </div>
 
       </div>
+
+      {/* Pista: frase gris + accion subrayada. Se esconde mientras hay un
+          desplegable abierto (tapaba lo mismo que ofrece). */}
+      <div aria-live="polite">
+        {pista && !desplegableAbierto && (
+          <div className="mt-2 px-4 text-xs text-humo flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span>{pista.frase}</span>
+            <button
+              type="button"
+              onClick={() => aceptarPista(pista)}
+              className="text-lavanda underline underline-offset-2 hover:text-lavanda-claro transition-colors"
+            >
+              {pista.accion}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* «Acotar»: no se esconde al escribir, que haria saltar la barra. */}
+      <Acotar sugerencias={acotar} onElegir={tag => addTag(tag, false)} />
 
       {/* Banner del intent extraído por el LLM (modo Natural) */}
       {isNatural && (naturalIntent || naturalNotice) && (

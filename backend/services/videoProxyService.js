@@ -36,7 +36,9 @@
  *  - Indice durable en backend/video_proxies.json.
  *
  * Aprovecha el ffmpeg/ffprobe del SISTEMA (como visualScanService) para tener
- * h264_nvenc; si NVENC falla, cae a libx264 (CPU) automaticamente.
+ * la grafica NVIDIA. Se prepara por niveles, del mas rapido al que funciona en
+ * cualquier equipo (ver `modosPara`): todo en la grafica, leer en la grafica,
+ * solo codificar en la grafica y, sin NVIDIA, todo por el procesador.
  */
 
 const path = require('path');
@@ -81,6 +83,11 @@ const NATIVE_CONTAINERS = new Set(['mp4', 'mov', 'm4v', 'm4a', 'webm', '3gp', '3
 let index = null;                 // fileId -> { kind, status, srcW, srcH, outW, outH, srcMtime, error }
 const inFlight = new Map();       // fileId -> Promise (generacion en curso)
 let nvencSupported = null;        // null=desconocido, true/false tras primer intento
+// ¿La grafica puede LEER (decodificar) video? null = aun no se sabe.
+let cudaDisponible = null;
+// Tipos de video (codec|pixfmt) con los que "todo en la grafica" ya fallo aqui:
+// no se vuelve a intentar con ellos (una GTX 1050 no lee el 4:2:2 de camara).
+const sinTodoGpu = new Set();
 let active = 0;
 const queue = [];
 
@@ -218,7 +225,7 @@ function runProcess(cmd, args, timeoutMs = 0) {
 async function probe(filePath) {
   const args = [
     '-v', 'error', '-show_entries',
-    'format=format_name,duration,bit_rate:stream=codec_type,codec_name,pix_fmt,width,height,channels',
+    'format=format_name,duration,bit_rate:stream=codec_type,codec_name,pix_fmt,width,height,channels:stream_side_data=rotation:stream_tags=rotate',
     '-of', 'json', filePath,
   ];
   const r = await runProcess('ffprobe', args, 30000);
@@ -230,8 +237,12 @@ async function probe(filePath) {
   const a = streams.find(s => s.codec_type === 'audio');
   if (!v) return null;
   const fmt = data.format || {};
+  // Giro del movil (matriz de visualizacion, o la etiqueta "rotate" antigua).
+  const giro = (v.side_data_list || []).find(d => d && d.rotation !== undefined);
+  const rotacion = Math.abs(parseInt(giro ? giro.rotation : (v.tags && v.tags.rotate), 10) || 0) % 360;
   return {
     container: fmt.format_name || '',
+    rotacion,
     duracion: parseFloat(fmt.duration) || 0,
     bitrate: parseInt(fmt.bit_rate, 10) || 0,
     vcodec: v.codec_name || '',
@@ -319,19 +330,85 @@ function drain() {
 // ---------------------------------------------------------------------------
 // Generacion del proxy
 // ---------------------------------------------------------------------------
-function buildArgs({ kind, input, output, dims, useNvenc }) {
+/**
+ * Los niveles, del mas rapido al que funciona en cualquier equipo. Medido el
+ * 28/09/2026 con 20 s de 4K de camara (RTX 5070 Ti), velocidad sobre tiempo real:
+ *
+ *   'gpu'      leer, reducir y codificar en la grafica  4,9x (H.264 4:2:2 10 bits) / 6,0x (HEVC 10 bits)
+ *   'gpu-lee'  leer en la grafica, reducir aqui         2,9x / 4,6x
+ *   'nvenc'    leer y reducir aqui, codificar alli      1,6x / 1,4x   (lo de antes)
+ *   'cpu'      todo por el procesador                   1,3x / 1,6x
+ *
+ * Mismo resultado (PSNR 44 dB entre 'gpu' y 'nvenc'). Pero 'gpu' NO gira los
+ * videos del movil (salen tumbados): solo se usa con los que no tienen giro.
+ * 'gpu-lee' si gira, y si la grafica no sabe leer ese formato ffmpeg lo lee
+ * por el procesador sin fallar.
+ */
+function modosPara(info) {
+  const modos = [];
+  if (nvencSupported !== false) {
+    if (cudaDisponible !== false) {
+      const firma = `${info.vcodec || ''}|${info.pixfmt || ''}`;
+      if (info.rotacion === 0 && info.width > 0 && info.height > 0 && !sinTodoGpu.has(firma)) modos.push('gpu');
+      modos.push('gpu-lee');
+    }
+    modos.push('nvenc');
+  }
+  modos.push('cpu');
+  return modos;
+}
+
+/**
+ * Prueba los niveles en orden hasta que uno sale, y aprende de lo que falla
+ * para no volver a intentarlo en este equipo: sin NVIDIA, solo el primer video
+ * paga los intentos. Si fallan todos, el problema es el archivo y no se aprende
+ * nada (antes, un solo video roto apagaba la grafica para siempre).
+ * @param {object} info  probe del video
+ * @param {(modo: string) => Promise<{code:number}>} ejecutar
+ */
+async function conRespaldo(info, ejecutar) {
+  const fallidos = [];
+  let r = null;
+  for (const modo of modosPara(info)) {
+    r = await ejecutar(modo);
+    if (r.code === 0) {
+      if (modo !== 'cpu') nvencSupported = true;
+      if (modo === 'gpu' || modo === 'gpu-lee') cudaDisponible = true;
+      if (fallidos.includes('gpu')) sinTodoGpu.add(`${info.vcodec || ''}|${info.pixfmt || ''}`);
+      if (fallidos.includes('gpu-lee') && modo !== 'gpu-lee') cudaDisponible = false;
+      if (fallidos.includes('nvenc') && modo === 'cpu') { nvencSupported = false; cudaDisponible = false; }
+      if (fallidos.length > 0) console.warn(`[videoProxy] ${fallidos.join(', ')} no pudo; preparado con '${modo}'`);
+      return { r, modo };
+    }
+    fallidos.push(modo);
+  }
+  return { r, modo: null };
+}
+
+function buildArgs({ kind, input, output, dims, modo = 'nvenc' }) {
+  // Leer en la grafica: con 'gpu' los fotogramas se quedan alli (para reducir
+  // y codificar sin ir y volver); con 'gpu-lee' bajan a memoria.
+  const leer = modo === 'gpu' ? ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda']
+    : modo === 'gpu-lee' ? ['-hwaccel', 'cuda'] : [];
   // -dn/-sn: descartar streams de datos (timecode) y subtitulos que algunas
   // camaras incrustan y que no aportan a la reproduccion web.
-  const common = ['-y', '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-dn', '-sn'];
+  const common = ['-y', ...leer, '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-dn', '-sn'];
   // -ac 2: downmix a estereo. El AAC 5.1 no suena en navegadores; el estereo
   // es universalmente reproducible (suficiente para previsualizacion).
   const tail = ['-c:a', 'aac', '-ac', '2', '-b:a', '160k', '-movflags', '+faststart', output];
   // Calidad constante con techo de bitrate: en planos faciles pesa poco y en
   // los dificiles no se dispara.
   const techo = ['-maxrate', MAX_BITRATE, '-bufsize', String(parseInt(MAX_BITRATE, 10) * 2) + (MAX_BITRATE.replace(/[\d.]/g, '') || '')];
-  const venc = useNvenc
+  const venc = modo !== 'cpu'
     ? ['-c:v', 'h264_nvenc', '-preset', 'p5', '-rc', 'vbr', '-cq', '25', '-b:v', '0', ...techo]
     : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', ...techo];
+  if (modo === 'gpu') {
+    // Reducir y pasar a 8 bits 4:2:0 en la grafica (siempre: un 10 bits que no
+    // se reduce tambien hay que convertirlo). Medidas pares, como pide nv12.
+    const w = Math.floor((dims.outW || 0) / 2) * 2;
+    const h = Math.floor((dims.outH || 0) / 2) * 2;
+    return [...common, ...venc, '-vf', `scale_cuda=${w}:${h}:format=nv12`, ...tail];
+  }
   const scale = dims.downscaled ? ['-vf', `scale=${dims.outW}:${dims.outH}`] : [];
   return [...common, ...venc, '-pix_fmt', 'yuv420p', ...scale, ...tail];
 }
@@ -508,30 +585,19 @@ async function generate(file, kind, info) {
   loc = await ensureDir(loc, file);
   if (!loc) throw new Error('no se pudo crear el directorio de proxies');
 
+  // Lo clasificado antes de que se mirara el giro no lo sabe: sin saberlo no
+  // se usa 'gpu' (un video del movil saldria tumbado), asi que se pregunta.
+  if (info.rotacion === undefined || info.vcodec === undefined) {
+    const p = await probe(file.fullPath);
+    if (p) info = { ...info, ...p };
+  }
   const dims = dimsForKind(kind, info.width, info.height);
   const tmp = `${loc.proxyPath}.tmp.mp4`;
 
-  const attempt = async (useNvenc) => {
+  const { r } = await conRespaldo(info, async (modo) => {
     try { await fsp.unlink(tmp); } catch {}
-    const args = buildArgs({ kind, input: file.fullPath, output: tmp, dims, useNvenc });
-    const r = await runFfmpeg(args);
-    return r;
-  };
-
-  let r;
-  if (nvencSupported !== false) {
-    r = await attempt(true);
-    if (r.code === 0) {
-      nvencSupported = true;
-    } else {
-      // NVENC no disponible/fallo -> CPU
-      console.warn(`[videoProxy] NVENC fallo en ${file.name || file.id}; reintentando con libx264 (CPU)`);
-      nvencSupported = false;
-      r = await attempt(false);
-    }
-  } else {
-    r = await attempt(false);
-  }
+    return runFfmpeg(buildArgs({ kind, input: file.fullPath, output: tmp, dims, modo }));
+  });
 
   if (r.code !== 0) {
     try { await fsp.unlink(tmp); } catch {}
@@ -594,7 +660,7 @@ async function getPlayable(file, opts = {}) {
   let kind, info;
   if (cached && cached.srcMtime === srcMtime && cached.kind && cached.v === VERSION_CLASIFICACION) {
     kind = cached.kind;
-    info = { width: cached.srcW, height: cached.srcH, bitrate: cached.bitrate };
+    info = { width: cached.srcW, height: cached.srcH, bitrate: cached.bitrate, rotacion: cached.rot, vcodec: cached.vcodec, pixfmt: cached.pixfmt };
   } else {
     const probed = await probe(file.fullPath);
     if (!probed) return { status: 'error', error: 'no se pudo analizar el video' };
@@ -613,6 +679,9 @@ async function getPlayable(file, opts = {}) {
       srcW: probed.width, srcH: probed.height, srcMtime,
       bitrate: probed.bitrate || 0,
       dur: probed.duracion || 0,
+      rot: probed.rotacion,
+      vcodec: probed.vcodec,
+      pixfmt: probed.pixfmt,
     };
     scheduleSave();
     cached = index[file.id];
@@ -761,7 +830,7 @@ const TROZO_SEG = 5;
 let medida = null;
 
 async function medirVelocidad(muestras) {
-  if (medida && Date.now() - medida.en < 10 * 60 * 1000 && medida.nvenc === nvencSupported) return medida;
+  if (medida && Date.now() - medida.en < 10 * 60 * 1000 && medida.nvenc === nvencSupported && medida.cuda === cudaDisponible) return medida;
   const porSegundo = [];
   const arranques = [];
   for (const f of muestras) {
@@ -775,22 +844,18 @@ async function medirVelocidad(muestras) {
     const desde = dur > trozo * 3 ? Math.floor(dur * 0.2) : 0;
     const salida = path.join(os.tmpdir(), `pensadero-medida-${process.pid}-${Date.now()}.mp4`);
     const dims = dimsForKind('transcode', info.width, info.height);
-    const cronometrar = async (useNvenc) => {
-      const args = buildArgs({ kind: 'transcode', input: f.fullPath, output: salida, dims, useNvenc });
+    // Con los mismos niveles que el lote: se mide lo que de verdad va a pasar.
+    let seg = 0;
+    const { r } = await conRespaldo(info, async (modo) => {
+      const args = buildArgs({ kind: 'transcode', input: f.fullPath, output: salida, dims, modo });
       // -ss/-t antes de -i: solo se lee y se prepara ese trozo.
       args.splice(1, 0, '-ss', String(desde), '-t', String(trozo));
       const inicio = Date.now();
-      const r = await runFfmpeg(args, 120000);
-      return { r, seg: (Date.now() - inicio) / 1000 };
-    };
-    let m = await cronometrar(nvencSupported !== false);
-    if (m.r.code !== 0 && nvencSupported !== false) {
-      const cpu = await cronometrar(false);
-      // Solo si por el procesador sale, la culpa era de la grafica (y no del archivo).
-      if (cpu.r.code === 0) { nvencSupported = false; m = cpu; }
-    } else if (m.r.code === 0 && nvencSupported === null) {
-      nvencSupported = true;
-    }
+      const res = await runFfmpeg(args, 120000);
+      seg = (Date.now() - inicio) / 1000;
+      return res;
+    });
+    const m = { r, seg };
     try { await fsp.unlink(salida); } catch { /* no llego a crearse */ }
     if (m.r.code !== 0) continue;
     // ffmpeg dice a que velocidad ha ido ("speed=6.2x") sin contar lo que
@@ -810,6 +875,7 @@ async function medirVelocidad(muestras) {
     muestras: porSegundo.length,
     en: Date.now(),
     nvenc: nvencSupported,
+    cuda: cudaDisponible,
   };
   return medida;
 }
@@ -938,6 +1004,11 @@ module.exports = {
   cancelarLote,
   medirVelocidad,
   presupuestoDe,
+  // Para pruebas: los niveles y los argumentos de ffmpeg.
+  _modosPara: modosPara,
+  _buildArgs: buildArgs,
+  _conRespaldo: conRespaldo,
+  _reiniciarAprendido: () => { nvencSupported = null; cudaDisponible = null; sinTodoGpu.clear(); medida = null; },
   ALTO_COMODO,
   MBPS_COMODO,
   VERSION_CLASIFICACION,

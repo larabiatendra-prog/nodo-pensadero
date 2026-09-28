@@ -162,6 +162,7 @@ function Confirmar({ e, onEmpezar, onAjustes, onCancelar }: {
   e: ProxiesEstimacion; onEmpezar: () => void; onAjustes: () => void; onCancelar: () => void;
 }) {
   const topados = e.discos.filter(d => d.fuera > 0);
+  const alSistema = e.discos.filter(d => (d.alSistema || 0) > 0);
   const titulo = e.n === 0
     ? 'No cabe ninguno'
     : e.segundos !== null ? `Tardaría ${aproximado(e.segundos)}` : 'No se ha podido medir el tiempo';
@@ -203,16 +204,25 @@ function Confirmar({ e, onEmpezar, onAjustes, onCancelar }: {
           {e.encoder && <> · {e.encoder === 'grafica' ? 'con la gráfica' : 'por el procesador'}</>}.
         </>
       )}
+      {alSistema.map(d => (
+        <span key={`s-${d.raiz}`} className="block mt-1">
+          {' '}A {d.raiz} le queda poco sitio: {numero(d.alSistema || 0)} se guardarán en {e.raizSistema || 'el disco del sistema'}, en la carpeta de Pensadero.
+        </span>
+      ))}
       {topados.map(d => (
         <span key={d.raiz} className="block mt-1 text-melocoton">
-          En {d.raiz} {numero(d.fuera)} se quedarían sin preparar:{' '}
-          {d.limite === 'sitio' ? 'no queda sitio en el disco.' : `llega a su tope de ${numero(d.topeGB)} GB.`}
+          {' '}En {d.raiz} {numero(d.fuera)} se quedarían sin preparar:{' '}
+          {d.limite === 'sitio'
+            ? 'no queda sitio ni ahí ni en el disco del sistema.'
+            : d.limite === 'tope-sistema'
+              ? `${e.raizSistema || 'el disco del sistema'} llega a su tope de ${numero(d.topeGB)} GB.`
+              : `llega a su tope de ${numero(d.topeGB)} GB.`}
         </span>
       ))}
       {e.sinMedir > 0 && (
-        <span className="block mt-1">{numero(e.sinMedir)} sin duración conocida: el tiempo es aproximado.</span>
+        <span className="block mt-1"> {numero(e.sinMedir)} sin duración conocida: el tiempo es aproximado.</span>
       )}
-      {e.n > 0 && <span className="block mt-1">Se puede parar cuando quieras: lo hecho se queda.</span>}
+      {e.n > 0 && <span className="block mt-1"> Se puede parar cuando quieras: lo hecho se queda.</span>}
     </Tarjeta>
   );
 }
@@ -243,7 +253,7 @@ function EnMarcha({ lote, estimado, parando, onParar, onCerrar }: {
       <span className="block h-1.5 my-1.5 rounded-full bg-pizarra overflow-hidden">
         <span className="block h-full rounded-full bg-lavanda transition-all" style={{ width: `${hecho * 100}%` }} />
       </span>
-      {restante !== null && <span className="block">Quedan {aproximado(restante)}.</span>}
+      {restante !== null && <span className="block">Terminará en {aproximado(restante)}.</span>}
       <span className="block truncate">{lote.actual || 'en cola…'}</span>
     </Tarjeta>
   );

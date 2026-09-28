@@ -948,7 +948,19 @@ async function medirVelocidad(muestras) {
 async function presupuestoDe(raiz) {
   await loadIndex();
   const r = raizDe(raiz);
-  return { topeBytes: topeDe(r), ocupadoBytes: ocupado(r), libreGB: await gbLibres(r), minLibreGB: MIN_LIBRE_GB };
+  return {
+    topeBytes: topeDe(r), ocupadoBytes: ocupado(r), libreGB: await gbLibres(r),
+    minLibreGB: MIN_LIBRE_GB, alLlegar: ajustes().alLlegar,
+  };
+}
+
+/**
+ * El disco de la carpeta de Pensadero: donde van los proxies de un disco al
+ * que le queda poco sitio (ver ubicacionConSitio).
+ */
+function raizSistema() {
+  const legacy = pathsConfig.resolveProxyLocation({ fullPath: 'x', fileId: 'x', legacy: true });
+  return raizDe(legacy.proxyDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,6 +1080,9 @@ module.exports = {
   cancelarLote,
   medirVelocidad,
   presupuestoDe,
+  raizSistema,
+  // Lo ya preparado (yaListo) solo se sabe con el indice cargado.
+  cargarIndice: loadIndex,
   // Para pruebas: los niveles y los argumentos de ffmpeg.
   _modosPara: modosPara,
   _buildArgs: buildArgs,

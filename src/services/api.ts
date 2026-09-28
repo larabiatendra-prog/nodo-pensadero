@@ -111,7 +111,16 @@ export interface ProxiesEstimacion {
   sinMedir: number;
   /** null si no se pudo medir el equipo. */
   segundos: number | null;
-  discos: Array<{ raiz: string; n: number; fuera: number; bytes: number; limite: 'tope' | 'sitio' | null; topeGB: number }>;
+  /** El disco de la carpeta de Pensadero: ahí van los de un disco con poco sitio. */
+  raizSistema?: string | null;
+  discos: Array<{
+    raiz: string; n: number; fuera: number; bytes: number;
+    /** De los que se preparan, cuántos van al disco del sistema por falta de sitio en el suyo. */
+    alSistema?: number;
+    /** Qué los deja fuera: su tope, el sitio, o el tope del disco del sistema. */
+    limite: 'tope' | 'sitio' | 'tope-sistema' | null;
+    topeGB: number;
+  }>;
   encoder: 'grafica' | 'procesador' | null;
   muestras: number;
 }

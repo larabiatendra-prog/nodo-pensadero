@@ -1,7 +1,7 @@
 // Textos de los videos preparados (src/utils/proxies.ts).
 import test from 'node:test';
 import assert from 'node:assert';
-import { aproximado, tiempo, textoSinPrevisualizar } from '../src/utils/proxies.ts';
+import { aproximado, tamaño, tiempo, textoSinPrevisualizar } from '../src/utils/proxies.ts';
 
 test('una estimacion se dice redondeada', () => {
   assert.strictEqual(aproximado(20), 'menos de un minuto');
@@ -11,6 +11,19 @@ test('una estimacion se dice redondeada', () => {
   assert.strictEqual(aproximado(2 * 3600 + 58 * 60), 'unas 3 h');
   assert.strictEqual(aproximado(14 * 3600 + 20 * 60), 'unas 14 h 30 min');
   assert.strictEqual(aproximado(52 * 3600), 'unos 2 días y 4 h');
+});
+
+test('una hora y un minuto se dicen en singular', () => {
+  assert.strictEqual(aproximado(65), 'un minuto');
+  assert.strictEqual(aproximado(58 * 60), 'una hora');
+  assert.strictEqual(aproximado(61 * 60), 'una hora');
+  assert.strictEqual(aproximado(80 * 60), 'una hora y 20 minutos');
+  assert.strictEqual(aproximado(57 * 60), 'unos 55 minutos');
+});
+
+test('tamaños con coma decimal', () => {
+  assert.strictEqual(tamaño(3.03 * 1073741824), '3,03 GB');
+  assert.strictEqual(tamaño(228 * 1048576), '228 MB');
 });
 
 test('la duracion exacta sigue como estaba', () => {

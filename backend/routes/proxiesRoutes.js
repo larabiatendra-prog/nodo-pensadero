@@ -51,7 +51,12 @@ module.exports = function createProxiesRoutes(deps = {}) {
   // conectada se preparaba dos veces.
   const todos = () => (typeof getMediaFiles === 'function' ? getMediaFiles() : [])
     .filter(f => f && !descartesManager.isDescartado(f.id));
-  const cargar = () => descartesManager.ensureLoaded().catch(() => {});
+  // Las tomas apartadas y el indice de lo ya preparado: sin el indice, recien
+  // arrancado, todo contaba como pendiente (tambien lo ya hecho).
+  const cargar = () => Promise.all([
+    descartesManager.ensureLoaded().catch(() => {}),
+    videoProxyService.cargarIndice(),
+  ]);
 
   /** ¿Este vídeo se vería mejor con una versión ligera y aún no la tiene? */
   const ganaria = (f) => {
@@ -164,11 +169,13 @@ module.exports = function createProxiesRoutes(deps = {}) {
       const muestras = [...new Set([0.2, 0.5, 0.8]
         .map(q => porBitrate[Math.min(porBitrate.length - 1, Math.floor(q * porBitrate.length))]))];
       const velocidad = await videoProxyService.medirVelocidad(muestras);
+      // Tambien el disco del sistema: ahi van los de un disco con poco sitio.
+      const sistema = videoProxyService.raizSistema();
       const presupuestos = {};
-      for (const raiz of new Set(lista.map(raizDe))) presupuestos[raiz] = await videoProxyService.presupuestoDe(raiz);
+      for (const raiz of new Set([...lista.map(raizDe), sistema])) presupuestos[raiz] = await videoProxyService.presupuestoDe(raiz);
       const estimacion = estimarLote(
         lista.map(f => ({ raiz: raizDe(f), duration: f.duration })),
-        velocidad, presupuestos, { bytesPorSegundo: BYTES_POR_SEGUNDO },
+        velocidad, presupuestos, { bytesPorSegundo: BYTES_POR_SEGUNDO, raizSistema: sistema },
       );
       res.json({
         success: true,

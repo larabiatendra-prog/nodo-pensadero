@@ -94,6 +94,26 @@ export interface ProxiesLote {
   motivo: string | null;
   raiz: string | null;
   restanteSeg: number | null;
+  /** Discos que se pararon por su tope o por sitio (el lote sigue con los demás). */
+  topes?: Array<{ raiz: string; motivo: 'tope' | 'espacio' }>;
+  /** Los que se quedaron sin preparar por eso. */
+  sinSitio?: number;
+}
+
+/** Cuánto tardaría y ocuparía preparar todos: se mide este equipo con muestras. */
+export interface ProxiesEstimacion {
+  total: number;
+  /** Los que se prepararían. */
+  n: number;
+  /** Los que se quedarían sin preparar por el tope o el sitio de su disco. */
+  fuera: number;
+  bytes: number;
+  sinMedir: number;
+  /** null si no se pudo medir el equipo. */
+  segundos: number | null;
+  discos: Array<{ raiz: string; n: number; fuera: number; bytes: number; limite: 'tope' | 'sitio' | null; topeGB: number }>;
+  encoder: 'grafica' | 'procesador' | null;
+  muestras: number;
 }
 
 export interface ProxiesEstado {
@@ -436,7 +456,15 @@ class ApiService {
     );
   }
 
-  /** Prepara de una vez todos los que ganarían fluidez en ese disco. */
+  /** Cuánto tardaría preparar todos (mide el equipo con unas muestras; no prepara nada). */
+  async estimarProxies() {
+    return this.fetchWithErrorHandling<ApiResponse<ProxiesEstimacion>>(
+      `${API_BASE_URL}/proxies/estimar`,
+      { method: 'POST' },
+    );
+  }
+
+  /** Prepara de una vez todos los que ganarían fluidez en ese disco (sin raiz: todos). */
   async prepararProxies(raiz?: string) {
     return this.fetchWithErrorHandling<ApiResponse<{ total: number; estado: ProxiesEstado }>>(
       `${API_BASE_URL}/proxies/preparar`,

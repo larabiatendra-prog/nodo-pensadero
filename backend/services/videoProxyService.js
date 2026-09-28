@@ -40,6 +40,7 @@
  */
 
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 const fsp = fs.promises;
 const { spawn } = require('child_process');
@@ -335,11 +336,11 @@ function buildArgs({ kind, input, output, dims, useNvenc }) {
   return [...common, ...venc, '-pix_fmt', 'yuv420p', ...scale, ...tail];
 }
 
-async function runFfmpeg(args) {
+async function runFfmpeg(args, timeoutMs = 0) {
   // Preferir ffmpeg del sistema (con NVENC). Si no existe, caer al de installer.
-  let r = await runProcess('ffmpeg', args);
+  let r = await runProcess('ffmpeg', args, timeoutMs);
   if (r.code === -1 && installerFfmpeg) {
-    r = await runProcess(installerFfmpeg, args);
+    r = await runProcess(installerFfmpeg, args, timeoutMs);
   }
   return r;
 }
@@ -742,6 +743,85 @@ function prewarm(file) {
 }
 
 // ---------------------------------------------------------------------------
+// Cuanto tarda este equipo
+// ---------------------------------------------------------------------------
+/**
+ * Mide cuanto tarda ESTE equipo en preparar un video: se prepara de verdad un
+ * trozo corto de unos pocos videos de muestra (a la carpeta temporal, y se
+ * borra) y se cronometra. Con la grafica un 4K va varias veces mas rapido que
+ * el propio video; por el procesador puede ir mas lento que el video, y eso es
+ * justo lo que hay que saber antes de lanzar horas de trabajo.
+ *
+ * Devuelve { segPorSegundo, arranqueSeg, encoder, muestras }: lo que se tarda
+ * en preparar un segundo de video y lo que cuesta cada archivo aparte
+ * (analizarlo y arrancar ffmpeg), que en clips cortos pesa. O null si no pudo
+ * medir nada.
+ */
+const TROZO_SEG = 5;
+let medida = null;
+
+async function medirVelocidad(muestras) {
+  if (medida && Date.now() - medida.en < 10 * 60 * 1000 && medida.nvenc === nvencSupported) return medida;
+  const porSegundo = [];
+  const arranques = [];
+  for (const f of muestras) {
+    const t0 = Date.now();
+    const info = await probe(f.fullPath);
+    if (!info) continue;
+    const analizar = (Date.now() - t0) / 1000;
+    const dur = info.duracion || 0;
+    const trozo = dur > 0 ? Math.min(TROZO_SEG, dur) : TROZO_SEG;
+    // Desde el 20 % del video: el principio suele ser un plano quieto y engaña.
+    const desde = dur > trozo * 3 ? Math.floor(dur * 0.2) : 0;
+    const salida = path.join(os.tmpdir(), `pensadero-medida-${process.pid}-${Date.now()}.mp4`);
+    const dims = dimsForKind('transcode', info.width, info.height);
+    const cronometrar = async (useNvenc) => {
+      const args = buildArgs({ kind: 'transcode', input: f.fullPath, output: salida, dims, useNvenc });
+      // -ss/-t antes de -i: solo se lee y se prepara ese trozo.
+      args.splice(1, 0, '-ss', String(desde), '-t', String(trozo));
+      const inicio = Date.now();
+      const r = await runFfmpeg(args, 120000);
+      return { r, seg: (Date.now() - inicio) / 1000 };
+    };
+    let m = await cronometrar(nvencSupported !== false);
+    if (m.r.code !== 0 && nvencSupported !== false) {
+      const cpu = await cronometrar(false);
+      // Solo si por el procesador sale, la culpa era de la grafica (y no del archivo).
+      if (cpu.r.code === 0) { nvencSupported = false; m = cpu; }
+    } else if (m.r.code === 0 && nvencSupported === null) {
+      nvencSupported = true;
+    }
+    try { await fsp.unlink(salida); } catch { /* no llego a crearse */ }
+    if (m.r.code !== 0) continue;
+    // ffmpeg dice a que velocidad ha ido ("speed=6.2x") sin contar lo que
+    // tardo en arrancar; la diferencia es el coste fijo de cada archivo.
+    const velocidades = (m.r.stderr || '').match(/speed=\s*[\d.]+x/g) || [];
+    const velocidad = velocidades.length ? parseFloat(velocidades[velocidades.length - 1].replace(/[^\d.]/g, '')) : 0;
+    const soloTrozo = velocidad > 0 ? trozo / velocidad : m.seg;
+    porSegundo.push(soloTrozo / trozo);
+    arranques.push(Math.max(0, m.seg - soloTrozo) + analizar);
+  }
+  if (porSegundo.length === 0) return null;
+  const media = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  medida = {
+    segPorSegundo: media(porSegundo),
+    arranqueSeg: media(arranques),
+    encoder: nvencSupported === false ? 'procesador' : 'grafica',
+    muestras: porSegundo.length,
+    en: Date.now(),
+    nvenc: nvencSupported,
+  };
+  return medida;
+}
+
+/** Tope de un disco (bytes; 0 = sin tope), lo que ya ocupan sus proxies y su sitio libre. */
+async function presupuestoDe(raiz) {
+  await loadIndex();
+  const r = raizDe(raiz);
+  return { topeBytes: topeDe(r), ocupadoBytes: ocupado(r), libreGB: await gbLibres(r), minLibreGB: MIN_LIBRE_GB };
+}
+
+// ---------------------------------------------------------------------------
 // Preparar en lote
 // ---------------------------------------------------------------------------
 /**
@@ -757,8 +837,10 @@ function yaListo(id) {
 }
 
 /**
- * Prepara una lista de videos, uno detras de otro. Se para solo si el disco
- * llega a su tope: ahi la decision es del usuario, no del lote.
+ * Prepara una lista de videos, uno detras de otro. Un disco que llega a su
+ * tope (o se queda sin sitio) deja de prepararse y el lote sigue con los
+ * demas: ahi la decision es del usuario, no del lote. Con un lote de todos los
+ * discos, parar entero al llenarse el primero dejaba el resto sin hacer.
  * @param {Array<{id,fullPath,name}>} files
  */
 async function prepararLote(files, meta = {}) {
@@ -768,18 +850,31 @@ async function prepararLote(files, meta = {}) {
     total: files.length, hechos: 0, saltados: 0, fallos: 0, bytes: 0,
     desde: Date.now(), terminado: false, cancelado: false,
     actual: null, motivo: null, raiz: meta.raiz || null,
+    // Discos que se pararon (tope o sitio) y cuantos se quedaron sin preparar.
+    topes: [], sinSitio: 0,
   };
   const mio = lote;
+  const parados = new Set(); // raiz del original
 
   (async () => {
     for (const f of files) {
       if (mio.cancelado) { mio.motivo = 'cancelado'; break; }
       if (yaListo(f.id)) { mio.saltados++; continue; }
+      const deDisco = raizDe(f.fullPath);
+      if (parados.has(deDisco)) { mio.sinSitio++; continue; }
       mio.actual = f.name || f.id;
       try {
         const r = await getPlayable(f);
-        if (r.status === 'error' && r.motivo === 'tope') { mio.motivo = 'tope'; mio.raiz = r.raiz; break; }
-        if (r.status === 'error' && r.motivo === 'espacio') { mio.motivo = 'espacio'; break; }
+        const lleno = r.status === 'error' && (r.motivo === 'tope' || r.motivo === 'espacio');
+        if (lleno || r.enSuTope) {
+          const motivo = r.motivo === 'espacio' ? 'espacio' : 'tope';
+          parados.add(deDisco);
+          mio.topes.push({ raiz: r.raiz || deDisco, motivo });
+          // Compatibilidad: el primero que se paro, como antes.
+          if (!mio.motivo) { mio.motivo = motivo; mio.raiz = r.raiz || deDisco; }
+          mio.sinSitio++;
+          continue;
+        }
         const enCurso = inFlight.get(f.id);
         if (enCurso) await enCurso;
         const e = index[f.id];
@@ -841,6 +936,8 @@ module.exports = {
   prepararLote,
   estadoLote,
   cancelarLote,
+  medirVelocidad,
+  presupuestoDe,
   ALTO_COMODO,
   MBPS_COMODO,
   VERSION_CLASIFICACION,

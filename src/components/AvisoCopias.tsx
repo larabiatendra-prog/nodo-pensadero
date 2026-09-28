@@ -5,7 +5,8 @@ import type { CopiasResumen } from '../types';
 import { limpiarCopiasConDeshacer, textoDuplicados } from '../utils/copias';
 
 /**
- * Aviso de copias exactas, abajo a la izquierda de la home.
+ * Aviso de copias exactas, abajo a la izquierda de la home (la columna de
+ * avisos la pone App, junto al de vídeos sin versión ligera).
  *
  * Sale cuando el mismo archivo esta a la vista en mas de un sitio y nadie ha
  * decidido cual se queda: lo tipico al conectar un disco junto a su copia de
@@ -58,7 +59,7 @@ export default function AvisoCopias({ recarga, onRevisar }: Props) {
   return (
     <div
       role="status"
-      className="fixed bottom-6 left-6 z-40 w-[calc(100vw-3rem)] max-w-[340px] rounded-2xl bg-tinta/95 backdrop-blur-sm border border-borde-sutil shadow-2xl p-4"
+      className="rounded-2xl bg-tinta/95 backdrop-blur-sm border border-borde-sutil shadow-2xl p-4"
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 w-8 h-8 rounded-full bg-pizarra text-lavanda flex items-center justify-center shrink-0">

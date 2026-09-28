@@ -37,6 +37,7 @@ import PersonLife from './components/PersonLife';
 import DuplicatesView from './components/DuplicatesView';
 import CopiasExactas from './components/CopiasExactas';
 import AvisoCopias from './components/AvisoCopias';
+import AvisoProxies from './components/AvisoProxies';
 import Carta from './components/Carta';
 import OcultosView from './components/OcultosView';
 import PapeleraView from './components/PapeleraView';
@@ -4082,10 +4083,14 @@ function App() {
         || editingSessionNote || (isSelectionMode && selectedFiles.size > 0)
       ) && (
         <>
-        {/* Copias exactas por decidir: abajo a la izquierda, solo en la home.
-            Se esconde con los mismos overlays que la burbuja de la derecha. */}
+        {/* Avisos de abajo a la izquierda, solo en la home: copias exactas por
+            decidir y videos sin version ligera. Apilados (el primero, abajo).
+            Se esconden con los mismos overlays que la burbuja de la derecha. */}
         {activeView === 'home' && !portada && (
-          <AvisoCopias recarga={mediaFiles} onRevisar={() => navigate('/gemelas/copias')} />
+          <div className="fixed bottom-6 left-6 z-40 w-[calc(100vw-3rem)] max-w-[340px] flex flex-col-reverse gap-3">
+            <AvisoCopias recarga={mediaFiles} onRevisar={() => navigate('/gemelas/copias')} />
+            <AvisoProxies recarga={mediaFiles} onAjustes={() => navigate(VIEW_TO_PATH.statistics)} />
+          </div>
         )}
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
           {/* Scroll to Top Button — solo en home */}

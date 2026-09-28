@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Loader2, Zap } from 'lucide-react';
 import { api, ProxiesDisco, ProxiesEstado, ProxiesFluidez, ProxiesLote } from '../services/api';
+import { completar, numero, tamaño, tiempo } from '../utils/proxies';
 
 /**
  * Vídeos preparados (proxies) — panel de Estadísticas.
@@ -20,52 +21,9 @@ import { api, ProxiesDisco, ProxiesEstado, ProxiesFluidez, ProxiesLote } from '.
  * LaCie de 8 TB no es nada.
  */
 
-const numero = (n: number) => n.toLocaleString('es-ES');
 const gbTexto = (n: number) => n.toLocaleString('es-ES', { maximumFractionDigits: 1 });
 
-function tamaño(bytes: number): string {
-  if (!bytes) return '0 B';
-  const k = 1024;
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.min(u.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(i >= 3 ? 2 : 0))} ${u[i]}`;
-}
-
-function tiempo(seg: number): string {
-  if (seg < 90) return `${Math.max(1, Math.round(seg))} s`;
-  const m = Math.round(seg / 60);
-  if (m < 90) return `${m} min`;
-  const h = Math.floor(m / 60);
-  const resto = m % 60;
-  return resto > 0 ? `${h} h ${resto} min` : `${h} h`;
-}
-
 const GB = 1073741824;
-
-/**
- * Deja el estado completo aunque el backend sea de una version anterior (justo
- * despues de actualizar, con el servidor viejo aun en marcha): mejor un panel
- * a cero que una pagina de estadisticas rota.
- */
-function completar(d: ProxiesEstado): ProxiesEstado {
-  // El payload puede venir incompleto aunque el tipo diga que no: por eso Partial.
-  const p = (d || {}) as Partial<ProxiesEstado>;
-  return {
-    ...d,
-    discos: p.discos || [],
-    fluidez: p.fluidez || [],
-    lote: p.lote || null,
-    totales: {
-      listos: 0, bytes: 0, pendientes: 0, errores: 0, nativos: 0, forzados: 0, antiguos: 0,
-      ...((p.totales || {}) as Partial<ProxiesEstado['totales']>),
-    },
-    ajustes: {
-      topeGB: 40, porDisco: {}, alLlegar: 'preguntar',
-      ...((p.ajustes || {}) as Partial<ProxiesEstado['ajustes']>),
-    },
-    minLibreGB: typeof p.minLibreGB === 'number' ? p.minLibreGB : 30,
-  };
-}
 
 export default function ProxiesPanel() {
   const [estado, setEstado] = useState<ProxiesEstado | null>(null);
@@ -358,7 +316,9 @@ function Resultado({ lote }: { lote: ProxiesLote }) {
   const cortado = lote.motivo === 'tope' || lote.motivo === 'espacio';
   return (
     <p className={`mb-7 text-[12px] leading-snug ${cortado ? 'text-melocoton' : 'text-humo'}`}>
-      {lote.motivo === 'tope'
+      {lote.topes && lote.topes.length > 0 && !lote.cancelado
+        ? `${numero(lote.hechos)} listos (${tamaño(lote.bytes)}). ${lote.topes.map(t => t.raiz).join(', ')} ${lote.topes.length === 1 ? 'llegó' : 'llegaron'} a su tope o se quedó sin sitio: ${numero(lote.sinSitio || 0)} sin preparar.`
+        : lote.motivo === 'tope'
         ? `La preparación se paró: ${lote.raiz || 'el disco'} llegó a su tope. ${numero(lote.hechos)} listos (${tamaño(lote.bytes)}).`
         : lote.motivo === 'espacio'
           ? `La preparación se paró: no queda sitio en disco. ${numero(lote.hechos)} listos.`

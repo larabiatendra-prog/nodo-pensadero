@@ -9,7 +9,11 @@
  *                                             fluidez y el lote en marcha
  *  - PATCH /api/proxies/ajustes            -> body { topeGB?, alLlegar?, porDisco? }
  *  - POST  /api/proxies/liberar            -> body { raiz } libera los menos vistos
+ *  - POST  /api/proxies/estimar            -> cuánto tardaría y ocuparía preparar
+ *                                             todos (mide este equipo con unas
+ *                                             muestras; no prepara nada)
  *  - POST  /api/proxies/preparar           -> body { raiz } prepara los que ganarían
+ *                                             (sin raiz: todos los discos conectados)
  *  - POST  /api/proxies/preparar/cancelar  -> para el lote en marcha
  *
  * El resumen de fluidez se calcula aquí y no en el servicio porque hace falta
@@ -23,6 +27,7 @@ const fs = require('fs');
 const path = require('path');
 const videoProxyService = require('../services/videoProxyService');
 const fallos = require('../utils/failureReason');
+const { estimarLote } = require('../utils/estimarProxies');
 
 // Códecs que el navegador no abre, por mucho que el archivo sea pequeño.
 const CODECS_DUROS = /hevc|h265|prores|mjpeg|qtrle|dnxhd|cineform|wmv|vp6/i;
@@ -50,10 +55,26 @@ module.exports = function createProxiesRoutes(deps = {}) {
       || CODECS_DUROS.test(String(f.codec || ''));
   };
 
-  /** Candidatos de un disco (o de todos), ya en la forma que espera el servicio. */
-  const candidatos = (raiz) => todos()
-    .filter(f => ganaria(f) && (!raiz || path.parse(f.fullPath).root.toUpperCase() === raiz))
-    .map(f => ({ id: f.id, fullPath: f.fullPath, name: f.name }));
+  const raizDe = (f) => path.parse(f.fullPath).root.toUpperCase();
+
+  /**
+   * Los que ganarian fluidez, de un disco o de todos los CONECTADOS (lo de un
+   * disco desenchufado no se puede preparar: el lote solo sumaria fallos). En
+   * el orden del catalogo, que es el del lote: la estimacion cuenta con el.
+   */
+  const pendientes = (raiz) => {
+    const conectado = new Map();
+    return todos().filter(f => {
+      if (!ganaria(f)) return false;
+      const r = raizDe(f);
+      if (raiz) return r === raiz;
+      if (!conectado.has(r)) conectado.set(r, fs.existsSync(r));
+      return conectado.get(r);
+    });
+  };
+
+  /** Candidatos ya en la forma que espera el servicio. */
+  const candidatos = (raiz) => pendientes(raiz).map(f => ({ id: f.id, fullPath: f.fullPath, name: f.name }));
 
   /**
    * Cuántos vídeos ganarían fluidez, por disco. Solo discos conectados: lo que
@@ -112,6 +133,40 @@ module.exports = function createProxiesRoutes(deps = {}) {
       res.json({ success: true, data: { liberados, estado: await conFluidez() } });
     } catch (err) {
       fallo(res, 'liberar vídeos preparados', err);
+    }
+  });
+
+  /**
+   * Antes de preparar todo: cuanto tardaria en ESTE equipo y cuanto ocuparia.
+   * Se mide de verdad con tres muestras (poco, medio y mucho bitrate): segun
+   * haya grafica o no, lo mismo son veinte minutos que una noche entera.
+   */
+  router.post('/proxies/estimar', async (req, res) => {
+    try {
+      const enMarcha = videoProxyService.estadoLote();
+      if (enMarcha && !enMarcha.terminado) {
+        return res.status(409).json({ success: false, error: 'ya hay una preparación en marcha' });
+      }
+      const lista = pendientes(null);
+      if (lista.length === 0) {
+        return res.json({ success: true, data: estimarLote([], null, {}, { bytesPorSegundo: BYTES_POR_SEGUNDO }) });
+      }
+      const porBitrate = [...lista].sort((a, b) => mbpsDe(a) - mbpsDe(b));
+      const muestras = [...new Set([0.2, 0.5, 0.8]
+        .map(q => porBitrate[Math.min(porBitrate.length - 1, Math.floor(q * porBitrate.length))]))];
+      const velocidad = await videoProxyService.medirVelocidad(muestras);
+      const presupuestos = {};
+      for (const raiz of new Set(lista.map(raizDe))) presupuestos[raiz] = await videoProxyService.presupuestoDe(raiz);
+      const estimacion = estimarLote(
+        lista.map(f => ({ raiz: raizDe(f), duration: f.duration })),
+        velocidad, presupuestos, { bytesPorSegundo: BYTES_POR_SEGUNDO },
+      );
+      res.json({
+        success: true,
+        data: { ...estimacion, encoder: velocidad ? velocidad.encoder : null, muestras: velocidad ? velocidad.muestras : 0 },
+      });
+    } catch (err) {
+      fallo(res, 'calcular cuánto tardaría preparar los vídeos', err);
     }
   });
 

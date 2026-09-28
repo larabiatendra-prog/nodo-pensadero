@@ -94,3 +94,18 @@ test('con "liberar" el tope no para: se borra lo menos visto y se sigue', () => 
   const r = estimarLote([{ raiz: F, duration: 100 }, { raiz: F, duration: 100 }], null, presupuestos, { bytesPorSegundo: MB_S });
   assert.deepStrictEqual([r.n, r.fuera], [2, 0]);
 });
+
+test('sin permiso para el disco del sistema, lo de un disco sin sitio no se prepara (y se dice por que)', () => {
+  const presupuestos = {
+    [F]: { topeBytes: 0, ocupadoBytes: 0, libreGB: 17, minLibreGB: 30 },
+    [C]: { topeBytes: 0, ocupadoBytes: 0, libreGB: 360, minLibreGB: 30 },
+  };
+  const videos = [{ raiz: F, duration: 100 }, { raiz: F, duration: 100 }, { raiz: C, duration: 50 }];
+  const opts = { bytesPorSegundo: MB_S, raizSistema: C };
+  const si = estimarLote(videos, { segPorSegundo: 1, arranqueSeg: 0 }, presupuestos, { ...opts, permitirSistema: () => true });
+  const no = estimarLote(videos, { segPorSegundo: 1, arranqueSeg: 0 }, presupuestos, { ...opts, permitirSistema: (r) => r !== F });
+  const fSi = si.discos.find(d => d.raiz === F);
+  assert.deepStrictEqual([si.n, fSi.alSistema, fSi.segundosSistema, fSi.bytesSistema], [3, 2, 200, Math.round(200 * MB_S)]);
+  const fNo = no.discos.find(d => d.raiz === F);
+  assert.deepStrictEqual([no.n, no.fuera, no.segundos, fNo.limite], [1, 2, 50, 'sin-permiso']);
+});

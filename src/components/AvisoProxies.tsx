@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Film, Loader2, X, Zap } from 'lucide-react';
-import { api, ProxiesEstado, ProxiesEstimacion, ProxiesLote } from '../services/api';
+import { Film, HardDrive, Loader2, X, Zap } from 'lucide-react';
+import { api, ProxiesConsentir, ProxiesEstado, ProxiesEstimacion, ProxiesLote } from '../services/api';
 import { aproximado, completar, numero, tamaño, textoSinPrevisualizar } from '../utils/proxies';
 
 /**
@@ -15,6 +15,10 @@ import { aproximado, completar, numero, tamaño, textoSinPrevisualizar } from '.
  *
  * Cerrarlo no lo silencia para siempre: vuelve si hay MÁS que al cerrarlo,
  * como el aviso de copias exactas.
+ *
+ * Nada se guarda en el disco del sistema sin permiso: si a un disco le falta
+ * sitio y sus proxies irían allí, se pregunta (en la confirmación, o aquí si
+ * hay vídeos esperando esa decisión).
  */
 
 const CLAVE_CERRADO = 'pensadero.proxies.avisoCerradoCon';
@@ -42,6 +46,12 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
   const [seguido, setSeguido] = useState<number | null>(null);
   const [escondido, setEscondido] = useState(false);
   const [parando, setParando] = useState(false);
+  // Lo elegido en la confirmación: disco sin sitio -> si puede ir al del sistema.
+  const [permitir, setPermitir] = useState<Record<string, boolean>>({});
+  // Lo estimado para lo que se ha elegido, para el "Terminará en" del principio.
+  const [estimado, setEstimado] = useState<number | null>(null);
+  // Pregunta del disco del sistema dejada para luego (hasta recargar).
+  const [aplazadas, setAplazadas] = useState<string[]>([]);
   const vivo = useRef(true);
 
   const pedir = useCallback(() => {
@@ -53,6 +63,12 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
 
   useEffect(() => { vivo.current = true; return () => { vivo.current = false; }; }, []);
   useEffect(pedir, [recarga, pedir]);
+  // Sin lote tambien se vuelve a mirar de vez en cuando: al abrir un video de
+  // un disco sin sitio sale una pregunta, y tiene que llegar aqui sin recargar.
+  useEffect(() => {
+    const t = setInterval(pedir, 30000);
+    return () => clearInterval(t);
+  }, [pedir]);
 
   // Con un lote en marcha (lanzado aquí o desde Estadísticas), se sigue.
   const lote = estado?.lote ?? null;
@@ -74,6 +90,8 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
       if (!vivo.current) return;
       if (!r.success || !r.data) throw new Error(r.error || 'no se pudo calcular');
       setEstimacion(r.data);
+      // De fabrica, NO al disco del sistema: hay que marcarlo.
+      setPermitir(Object.fromEntries((r.data.preguntar || []).map(q => [q.raiz, false])));
       setFase('confirmar');
     } catch (e) {
       if (!vivo.current) return;
@@ -82,9 +100,15 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
     }
   };
 
-  const empezar = async () => {
+  const empezar = async (elegido: Cifras) => {
     setError(null);
     try {
+      // Lo contestado vale para ese disco desde ya (tambien al abrir un video suelto).
+      const preguntar = estimacion?.preguntar || [];
+      if (preguntar.length > 0) {
+        await api.setProxiesAjustes({ alSistema: Object.fromEntries(preguntar.map(q => [q.raiz, !!permitir[q.raiz]])) });
+      }
+      setEstimado(elegido.segundos);
       const r = await api.prepararProxies();
       if (r.success && r.data) {
         setEstado(completar(r.data.estado));
@@ -115,7 +139,7 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
   if (!estado || escondido) return null;
 
   if (corriendo && lote) {
-    return <EnMarcha lote={lote} estimado={estimacion?.segundos ?? null} parando={parando} onParar={parar} onCerrar={() => setEscondido(true)} />;
+    return <EnMarcha lote={lote} estimado={estimado} parando={parando} onParar={parar} onCerrar={() => setEscondido(true)} />;
   }
 
   if (lote && lote.terminado && seguido === lote.desde) {
@@ -131,7 +155,29 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
   }
 
   if (fase === 'confirmar' && estimacion) {
-    return <Confirmar e={estimacion} onEmpezar={empezar} onAjustes={onAjustes} onCancelar={() => { setFase('reposo'); setEstimacion(null); }} />;
+    return (
+      <Confirmar
+        e={estimacion}
+        permitir={permitir}
+        onPermitir={(raiz, si) => setPermitir(p => ({ ...p, [raiz]: si }))}
+        onEmpezar={empezar}
+        onAjustes={onAjustes}
+        onCancelar={() => { setFase('reposo'); setEstimacion(null); }}
+      />
+    );
+  }
+
+  // Videos esperando a que se decida si pueden ir al disco del sistema.
+  const pregunta = (estado.consentir || []).find(c => !aplazadas.includes(c.raiz));
+  if (pregunta) {
+    return (
+      <PreguntaSistema
+        c={pregunta}
+        raizSistema={estado.raizSistema || 'C:\\'}
+        onResuelto={pedir}
+        onAplazar={() => setAplazadas(a => [...a, pregunta.raiz])}
+      />
+    );
   }
 
   if (n === 0 || n <= cerradoCon) return null;
@@ -157,15 +203,50 @@ export default function AvisoProxies({ recarga, onAjustes }: Props) {
   );
 }
 
-/** Antes de empezar: cuánto tardaría, cuánto ocuparía y qué no cabría. */
-function Confirmar({ e, onEmpezar, onAjustes, onCancelar }: {
-  e: ProxiesEstimacion; onEmpezar: () => void; onAjustes: () => void; onCancelar: () => void;
+interface Cifras { n: number; fuera: number; bytes: number; segundos: number | null }
+
+/**
+ * Las cifras segun lo elegido para los discos sin sitio. La estimacion viene
+ * como si se dijera que si a todos y con la variante de decir que no a todos;
+ * si se elige distinto para cada disco, se restan los que no.
+ */
+function cifrasElegidas(e: ProxiesEstimacion, permitir: Record<string, boolean>): Cifras {
+  const preguntar = e.preguntar || [];
+  const no = preguntar.filter(q => !permitir[q.raiz]);
+  if (no.length === 0) return { n: e.n, fuera: e.fuera, bytes: e.bytes, segundos: e.segundos };
+  if (no.length === preguntar.length && e.sinSistema) return e.sinSistema;
+  const menos = (k: 'n' | 'bytes' | 'segundos') => no.reduce((a, q) => a + (q[k] || 0), 0);
+  return {
+    n: e.n - menos('n'),
+    fuera: e.fuera + menos('n'),
+    bytes: e.bytes - menos('bytes'),
+    segundos: e.segundos !== null ? e.segundos - menos('segundos') : null,
+  };
+}
+
+/** Antes de empezar: cuánto tardaría, cuánto ocuparía, qué no cabría y a dónde iría. */
+function Confirmar({ e, permitir, onPermitir, onEmpezar, onAjustes, onCancelar }: {
+  e: ProxiesEstimacion;
+  permitir: Record<string, boolean>;
+  onPermitir: (raiz: string, si: boolean) => void;
+  onEmpezar: (elegido: Cifras) => void;
+  onAjustes: () => void;
+  onCancelar: () => void;
 }) {
+  const c = cifrasElegidas(e, permitir);
+  const preguntar = e.preguntar || [];
+  const aPreguntar = new Set(preguntar.map(q => q.raiz));
+  const sistema = e.raizSistema || 'el disco del sistema';
   const topados = e.discos.filter(d => d.fuera > 0);
-  const alSistema = e.discos.filter(d => (d.alSistema || 0) > 0);
-  const titulo = e.n === 0
-    ? 'No cabe ninguno'
-    : e.segundos !== null ? `Tardaría ${aproximado(e.segundos)}` : 'No se ha podido medir el tiempo';
+  // Los que ya tenian permiso: se dice a donde van, sin preguntar.
+  const alSistema = e.discos.filter(d => (d.alSistema || 0) > 0 && !aPreguntar.has(d.raiz));
+  // Nada que hacer solo porque falta el permiso: no es el tope, es decidir.
+  const faltaDecidir = c.n === 0 && preguntar.length > 0;
+  const titulo = faltaDecidir
+    ? `Sin sitio en ${preguntar.map(q => q.raiz).join(', ')}`
+    : c.n === 0
+      ? 'No cabe ninguno'
+      : c.segundos !== null ? `Tardaría ${aproximado(c.segundos)}` : 'No se ha podido medir el tiempo';
   return (
     <Tarjeta
       icono={<Zap className="w-4 h-4" />}
@@ -174,10 +255,12 @@ function Confirmar({ e, onEmpezar, onAjustes, onCancelar }: {
       tituloCerrar="Ahora no"
       acciones={
         <>
-          {e.n > 0 ? (
+          {c.n > 0 || faltaDecidir ? (
             <button
-              onClick={onEmpezar}
-              className="flex-1 px-3 py-2 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors"
+              onClick={() => onEmpezar(c)}
+              disabled={c.n === 0}
+              title={c.n === 0 ? 'Marca la casilla para poder empezar' : undefined}
+              className="flex-1 px-3 py-2 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Empezar
             </button>
@@ -198,15 +281,30 @@ function Confirmar({ e, onEmpezar, onAjustes, onCancelar }: {
         </>
       }
     >
-      {e.n > 0 && (
+      {c.n > 0 && (
         <>
-          {numero(e.n)} {e.n === 1 ? 'vídeo' : 'vídeos'} · unos {tamaño(e.bytes)} en disco
+          {numero(c.n)} {c.n === 1 ? 'vídeo' : 'vídeos'} · unos {tamaño(c.bytes)} en disco
           {e.encoder && <> · {e.encoder === 'grafica' ? 'con la gráfica' : 'por el procesador'}</>}.
         </>
       )}
+      {/* Discos sin sitio sin decidir: sin marcar, no se escribe nada en el del sistema */}
+      {preguntar.map(q => (
+        <label key={`q-${q.raiz}`} className="flex items-start gap-2 mt-2 p-2 rounded-lg bg-pizarra/60 text-niebla cursor-pointer">
+          <input
+            type="checkbox"
+            checked={!!permitir[q.raiz]}
+            onChange={(ev) => onPermitir(q.raiz, ev.target.checked)}
+            className="mt-0.5 accent-lavanda"
+          />
+          <span>
+            A {q.raiz} le queda poco sitio. Guardar sus {numero(q.n)} vídeos preparados (unos {tamaño(q.bytes)}) en {sistema}, en la carpeta de Pensadero.
+            {!permitir[q.raiz] && <span className="block text-humo">Sin marcar, esos no se preparan.</span>}
+          </span>
+        </label>
+      ))}
       {alSistema.map(d => (
         <span key={`s-${d.raiz}`} className="block mt-1">
-          {' '}A {d.raiz} le queda poco sitio: {numero(d.alSistema || 0)} se guardarán en {e.raizSistema || 'el disco del sistema'}, en la carpeta de Pensadero.
+          {' '}A {d.raiz} le queda poco sitio: {numero(d.alSistema || 0)} se guardarán en {sistema}, en la carpeta de Pensadero (lo permitiste para ese disco).
         </span>
       ))}
       {topados.map(d => (
@@ -214,15 +312,17 @@ function Confirmar({ e, onEmpezar, onAjustes, onCancelar }: {
           {' '}En {d.raiz} {numero(d.fuera)} se quedarían sin preparar:{' '}
           {d.limite === 'sitio'
             ? 'no queda sitio ni ahí ni en el disco del sistema.'
-            : d.limite === 'tope-sistema'
-              ? `${e.raizSistema || 'el disco del sistema'} llega a su tope de ${numero(d.topeGB)} GB.`
-              : `llega a su tope de ${numero(d.topeGB)} GB.`}
+            : d.limite === 'sin-permiso'
+              ? `le queda poco sitio y elegiste no usar ${sistema} (se cambia en Estadísticas).`
+              : d.limite === 'tope-sistema'
+                ? `${sistema} llega a su tope de ${numero(d.topeGB)} GB.`
+                : `llega a su tope de ${numero(d.topeGB)} GB.`}
         </span>
       ))}
       {e.sinMedir > 0 && (
         <span className="block mt-1"> {numero(e.sinMedir)} sin duración conocida: el tiempo es aproximado.</span>
       )}
-      {e.n > 0 && <span className="block mt-1"> Se puede parar cuando quieras: lo hecho se queda.</span>}
+      {c.n > 0 && <span className="block mt-1"> Se puede parar cuando quieras: lo hecho se queda.</span>}
     </Tarjeta>
   );
 }
@@ -283,10 +383,46 @@ function Resultado({ lote, onAjustes, onCerrar }: { lote: ProxiesLote; onAjustes
       {lote.cancelado && <span className="block mt-1">Lo hecho se queda hecho.</span>}
       {topes.length > 0 && (
         <span className="block mt-1 text-melocoton">
-          {numero(lote.sinSitio || 0)} sin preparar: {topes.map(t => t.raiz).join(', ')}{' '}
-          {topes.length === 1 ? 'llegó' : 'llegaron'} a su tope o se quedó sin sitio.
+          {numero(lote.sinSitio || 0)} sin preparar:{' '}
+          {topes.map(t => `${t.raiz} ${t.motivo === 'tope' ? 'llegó a su tope' : t.motivo === 'sistema' ? 'espera a que decidas si puede usar el disco del sistema' : 'se quedó sin sitio'}`).join('; ')}.
         </span>
       )}
+    </Tarjeta>
+  );
+}
+
+/** Hay vídeos esperando: ¿sus proxies pueden ir al disco del sistema? */
+function PreguntaSistema({ c, raizSistema, onResuelto, onAplazar }: {
+  c: ProxiesConsentir; raizSistema: string; onResuelto: () => void; onAplazar: () => void;
+}) {
+  const [ocupado, setOcupado] = useState(false);
+  const decidir = async (si: boolean) => {
+    setOcupado(true);
+    try { await api.setProxiesAjustes({ alSistema: { [c.raiz]: si } }); } catch { /* sigue la pregunta */ }
+    setOcupado(false);
+    onResuelto();
+  };
+  const boton = 'flex-1 px-3 py-2 rounded-full text-xs font-medium transition-colors disabled:opacity-60';
+  return (
+    <Tarjeta
+      icono={<HardDrive className="w-4 h-4" />}
+      titulo={`¿Guardar en ${raizSistema} los vídeos preparados de ${c.raiz}?`}
+      onCerrar={onAplazar}
+      tituloCerrar="Ahora no"
+      acciones={
+        <>
+          <button onClick={() => decidir(true)} disabled={ocupado} className={`${boton} bg-lavanda text-noche hover:bg-lavanda-claro`}>
+            Sí, en {raizSistema}
+          </button>
+          <button onClick={() => decidir(false)} disabled={ocupado} className={`${boton} bg-pizarra text-niebla hover:text-marfil`}>
+            No
+          </button>
+        </>
+      }
+    >
+      A {c.raiz} le queda poco sitio{typeof c.libreGB === 'number' ? ` (${numero(Math.round(c.libreGB))} GB libres)` : ''}
+      {c.esperando > 0 ? ` y ${numero(c.esperando)} ${c.esperando === 1 ? 'vídeo espera' : 'vídeos esperan'}` : ''}.
+      Irían a la carpeta de Pensadero. Se decide una vez para todo ese disco y se puede cambiar en Estadísticas.
     </Tarjeta>
   );
 }

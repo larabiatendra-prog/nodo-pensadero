@@ -23,7 +23,7 @@ import { slugifyPersonId } from '../utils/persons';
 import { resolvePlayable, PlayableInfo } from '../utils/playable';
 // El volumen es comun a los dos reproductores (ver utils/volumen.ts).
 import { guardarVolumen, leerVolumen } from '../utils/volumen';
-import { AvisoTope } from './ProxiesPanel';
+import { AvisoSistema, AvisoTope } from './ProxiesPanel';
 
 interface MediaModalProps {
   file: MediaFile | null;
@@ -580,6 +580,18 @@ export default function MediaModal({
                     <AvisoTope
                       raiz={playable.raiz}
                       topeGB={playable.topeGB}
+                      onResuelto={() => {
+                        const id = file.id;
+                        setPlayable({ status: 'generating' });
+                        resolvePlayable(id, { onUpdate: (info) => setPlayable(info) })
+                          .catch(() => setPlayable({ status: 'error', error: 'no se pudo preparar el vídeo' }));
+                      }}
+                    />
+                  ) : playable.motivo === 'sistema' && playable.raiz ? (
+                    // Iria al disco del sistema: se pregunta antes de escribir alli.
+                    <AvisoSistema
+                      raiz={playable.raiz}
+                      raizSistema={playable.raizSistema || 'C:\\'}
                       onResuelto={() => {
                         const id = file.id;
                         setPlayable({ status: 'generating' });

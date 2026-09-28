@@ -50,6 +50,21 @@ export interface ProxiesAjustes {
   porDisco: Record<string, number>;
   /** Al llegar al tope: preguntar (no borra nada) o liberar los menos vistos. */
   alLlegar: 'preguntar' | 'liberar';
+  /**
+   * Por disco del vídeo: si, cuando le falta sitio, sus proxies pueden ir al
+   * disco de la carpeta de Pensadero. Sin entrada = aún no se ha decidido
+   * (y mientras tanto no se escribe nada allí).
+   */
+  alSistema?: Record<string, boolean>;
+}
+
+/** Un disco sin sitio que espera a que se decida si sus proxies pueden ir al del sistema. */
+export interface ProxiesConsentir {
+  raiz: string;
+  desde: number;
+  esperando: number;
+  ultimo?: string;
+  libreGB?: number;
 }
 
 export interface ProxiesDisco {
@@ -94,8 +109,8 @@ export interface ProxiesLote {
   motivo: string | null;
   raiz: string | null;
   restanteSeg: number | null;
-  /** Discos que se pararon por su tope o por sitio (el lote sigue con los demás). */
-  topes?: Array<{ raiz: string; motivo: 'tope' | 'espacio' }>;
+  /** Discos que se pararon por su tope, por sitio o por no poder usar el del sistema (el lote sigue con los demás). */
+  topes?: Array<{ raiz: string; motivo: 'tope' | 'espacio' | 'sistema' }>;
   /** Los que se quedaron sin preparar por eso. */
   sinSitio?: number;
 }
@@ -117,10 +132,20 @@ export interface ProxiesEstimacion {
     raiz: string; n: number; fuera: number; bytes: number;
     /** De los que se preparan, cuántos van al disco del sistema por falta de sitio en el suyo. */
     alSistema?: number;
-    /** Qué los deja fuera: su tope, el sitio, o el tope del disco del sistema. */
-    limite: 'tope' | 'sitio' | 'tope-sistema' | null;
+    bytesSistema?: number;
+    segundosSistema?: number;
+    /** Qué los deja fuera: su tope, el sitio, el tope del disco del sistema o no tener permiso para usarlo. */
+    limite: 'tope' | 'sitio' | 'tope-sistema' | 'sin-permiso' | null;
     topeGB: number;
   }>;
+  /**
+   * Discos sin sitio cuyos proxies irían al del sistema y aún no se ha
+   * decidido si pueden: hay que preguntarlo antes de empezar. Los números de
+   * arriba cuentan como si dijera que sí.
+   */
+  preguntar?: Array<{ raiz: string; n: number; bytes: number; segundos: number }>;
+  /** Cómo quedaría diciendo que no a todos los de `preguntar`. */
+  sinSistema?: { n: number; fuera: number; bytes: number; segundos: number | null } | null;
   encoder: 'grafica' | 'procesador' | null;
   muestras: number;
 }
@@ -131,6 +156,10 @@ export interface ProxiesEstado {
   discos: ProxiesDisco[];
   fluidez: ProxiesFluidez[];
   lote: ProxiesLote | null;
+  /** El disco de la carpeta de Pensadero. */
+  raizSistema?: string;
+  /** Discos sin sitio pendientes de decidir. */
+  consentir?: ProxiesConsentir[];
   totales: {
     listos: number; bytes: number; pendientes: number; errores: number; nativos: number; forzados: number;
     /** Preparados con la regla vieja: no se pueden medir ni cuentan para el tope. */
@@ -458,6 +487,8 @@ class ApiService {
     topeGB?: number;
     alLlegar?: 'preguntar' | 'liberar';
     porDisco?: Record<string, number | null>;
+    /** `{ "F:\\": true }`: sus proxies pueden ir al disco del sistema; null = volver a preguntar. */
+    alSistema?: Record<string, boolean | null>;
   }) {
     return this.fetchWithErrorHandling<ApiResponse<{ ajustes: ProxiesAjustes; estado: ProxiesEstado }>>(
       `${API_BASE_URL}/proxies/ajustes`,

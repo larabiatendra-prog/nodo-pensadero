@@ -149,6 +149,19 @@ export default function ProxiesPanel() {
         </div>
       ))}
 
+      {/* Discos sin sitio: sus proxies irían al del sistema, pero solo si lo decides */}
+      {(estado.consentir || []).map(c => (
+        <div key={`sistema-${c.raiz}`} className="mb-5 p-3.5 rounded-lg bg-melocoton/10 border border-melocoton/30">
+          <AvisoSistema
+            raiz={c.raiz}
+            raizSistema={estado.raizSistema || 'C:\\'}
+            esperando={c.esperando}
+            alineado="izquierda"
+            onResuelto={() => { cargar(); }}
+          />
+        </div>
+      ))}
+
       {discos.length === 0 ? (
         <p className="text-[12px] text-humo mb-7">
           Ningún vídeo ha necesitado prepararse todavía. Se preparan al abrirlos, sin que tengas
@@ -217,6 +230,44 @@ export default function ProxiesPanel() {
               ? 'No se borra nada: se deja de preparar en ese disco hasta que decidas.'
               : 'Se borran solos los que hace más que no ves. Son regenerables: al volver a abrir uno, se prepara otra vez.'}
           </p>
+        </div>
+
+        <div className="sm:col-span-2">
+          <p className="font-mono text-[10px] tracking-wider uppercase text-humo mb-2">
+            Discos sin sitio · guardar en {estado.raizSistema || 'el disco del sistema'}
+          </p>
+          {Object.keys(ajustes.alSistema || {}).length === 0 ? (
+            <p className="text-[11px] text-humo leading-snug">
+              Cuando a un disco le quede poco sitio, se te preguntará si sus vídeos preparados pueden
+              guardarse en {estado.raizSistema || 'el disco del sistema'}, en la carpeta de Pensadero. Mientras no
+              lo decidas, allí no se escribe nada.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {Object.entries(ajustes.alSistema || {}).map(([raiz, si]) => (
+                <div key={raiz} className="flex items-center gap-3 flex-wrap">
+                  <span className="font-mono text-[12px] text-marfil w-10">{raiz}</span>
+                  <div className="inline-flex items-center gap-1 rounded-full bg-grafito/70 p-1">
+                    {([[true, 'Sí'], [false, 'No'], [null, 'Preguntar']] as const).map(([valor, txt]) => (
+                      <button
+                        key={txt}
+                        onClick={() => guardar({ alSistema: { [raiz]: valor } }, `sistema:${raiz}`)}
+                        disabled={ocupado === `sistema:${raiz}`}
+                        className={`h-7 px-3 rounded-full text-[11px] font-medium transition-colors ${
+                          si === valor ? 'bg-lavanda text-noche' : 'text-niebla hover:text-marfil'
+                        }`}
+                      >
+                        {txt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <p className="text-[11px] text-humo leading-snug">
+                Si a ese disco le falta sitio, sus vídeos preparados van (sí) o no (no) a la carpeta de Pensadero.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </section>
@@ -317,7 +368,7 @@ function Resultado({ lote }: { lote: ProxiesLote }) {
   return (
     <p className={`mb-7 text-[12px] leading-snug ${cortado ? 'text-melocoton' : 'text-humo'}`}>
       {lote.topes && lote.topes.length > 0 && !lote.cancelado
-        ? `${numero(lote.hechos)} listos (${tamaño(lote.bytes)}). ${lote.topes.map(t => t.raiz).join(', ')} ${lote.topes.length === 1 ? 'llegó' : 'llegaron'} a su tope o se quedó sin sitio: ${numero(lote.sinSitio || 0)} sin preparar.`
+        ? `${numero(lote.hechos)} listos (${tamaño(lote.bytes)}). ${numero(lote.sinSitio || 0)} sin preparar: ${lote.topes.map(t => `${t.raiz} ${t.motivo === 'tope' ? 'llegó a su tope' : t.motivo === 'sistema' ? 'espera a que decidas si puede usar el disco del sistema' : 'se quedó sin sitio'}`).join('; ')}.`
         : lote.motivo === 'tope'
         ? `La preparación se paró: ${lote.raiz || 'el disco'} llegó a su tope. ${numero(lote.hechos)} listos (${tamaño(lote.bytes)}).`
         : lote.motivo === 'espacio'
@@ -446,6 +497,60 @@ function CampoGB({ valor, guardando, onGuardar }: { valor: number; guardando: bo
  * sin preparar y ese disco ya está en su tope. Solo sale en ese caso: si el
  * original se puede abrir, se abre y no se pregunta nada.
  */
+/**
+ * A un disco le falta sitio y sus proxies irían al disco de la carpeta de
+ * Pensadero: se pregunta, una vez por disco. Mientras no se decida, allí no
+ * se escribe nada. Se usa en el reproductor y en este panel.
+ */
+export function AvisoSistema({ raiz, raizSistema, esperando, alineado = 'centro', onResuelto }: {
+  raiz: string;
+  raizSistema: string;
+  esperando?: number;
+  alineado?: 'centro' | 'izquierda';
+  onResuelto: (si: boolean) => void;
+}) {
+  const [ocupado, setOcupado] = useState<'si' | 'no' | null>(null);
+  const decidir = async (si: boolean) => {
+    setOcupado(si ? 'si' : 'no');
+    try {
+      const r = await api.setProxiesAjustes({ alSistema: { [raiz]: si } });
+      if (r.success) onResuelto(si);
+    } catch { /* sigue la pregunta */ }
+    finally { setOcupado(null); }
+  };
+  const centro = alineado === 'centro';
+  return (
+    <div className={`flex flex-col gap-3 ${centro ? 'items-center text-center max-w-[420px]' : 'items-start'}`}>
+      <p className="text-sm text-niebla">
+        A <span className="font-mono text-marfil">{raiz}</span> le queda poco sitio para sus vídeos preparados.
+        {esperando && esperando > 0 ? ` ${numero(esperando)} ${esperando === 1 ? 'espera' : 'esperan'}.` : ''}
+      </p>
+      <p className="text-xs text-humo leading-snug">
+        ¿Guardarlos en <span className="font-mono text-niebla">{raizSistema}</span>, en la carpeta de Pensadero?
+        Se decide una vez para todo ese disco y se puede cambiar en Estadísticas.
+      </p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => decidir(true)}
+          disabled={ocupado !== null}
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-lavanda text-noche text-xs font-medium hover:bg-lavanda-claro transition-colors disabled:opacity-50"
+        >
+          {ocupado === 'si' && <Loader2 className="w-3 h-3 animate-spin" />}
+          Sí, en {raizSistema}
+        </button>
+        <button
+          onClick={() => decidir(false)}
+          disabled={ocupado !== null}
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-grafito hover:bg-pizarra text-marfil text-xs transition-colors disabled:opacity-50"
+        >
+          {ocupado === 'no' && <Loader2 className="w-3 h-3 animate-spin" />}
+          No
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AvisoTope({ raiz, topeGB, onResuelto }: { raiz: string; topeGB?: number; onResuelto: () => void }) {
   const actual = topeGB && topeGB > 0 ? topeGB : 40;
   const [gb, setGb] = useState(String(Math.round(actual + 50)));

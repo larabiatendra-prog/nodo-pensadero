@@ -19,10 +19,14 @@ export interface PlayableInfo {
    * Por qué no se pudo preparar, cuando `status` es 'error':
    *  - 'tope'    el disco llegó al tope de vídeos preparados y espera decisión
    *  - 'espacio' no queda sitio en ningún disco donde escribirlo
+   *  - 'sistema' a su disco le falta sitio e iría al del sistema, pero aún no
+   *              se ha decidido si puede (se pregunta en el reproductor)
    */
-  motivo?: 'tope' | 'espacio';
-  /** Disco al que afecta el aviso ("F:\\"). Solo con motivo 'tope'. */
+  motivo?: 'tope' | 'espacio' | 'sistema';
+  /** Disco al que afecta el aviso ("F:\\"). Con motivo 'tope' o 'sistema'. */
   raiz?: string;
+  /** Con motivo 'sistema': el disco de la carpeta de Pensadero, adonde iría. */
+  raizSistema?: string;
   topeGB?: number;
   /**
    * Se está sirviendo el original (se puede ver ya) mientras por detrás se

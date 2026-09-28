@@ -7,7 +7,9 @@
  *  - GET   /api/proxies/estado             -> cuánto ocupan por disco, contra qué
  *                                             tope, qué queda libre, qué ganaría
  *                                             fluidez y el lote en marcha
- *  - PATCH /api/proxies/ajustes            -> body { topeGB?, alLlegar?, porDisco? }
+ *  - PATCH /api/proxies/ajustes            -> body { topeGB?, alLlegar?, porDisco?, alSistema? }
+ *                                             (alSistema: { "F:\\": true|false|null }, si los
+ *                                             proxies de un disco sin sitio pueden ir al del sistema)
  *  - POST  /api/proxies/liberar            -> body { raiz } libera los menos vistos
  *  - POST  /api/proxies/estimar            -> cuánto tardaría y ocuparía preparar
  *                                             todos (mide este equipo con unas
@@ -130,8 +132,8 @@ module.exports = function createProxiesRoutes(deps = {}) {
 
   router.patch('/proxies/ajustes', async (req, res) => {
     try {
-      const { topeGB, alLlegar, porDisco } = req.body || {};
-      const ajustes = await videoProxyService.setAjustes({ topeGB, alLlegar, porDisco });
+      const { topeGB, alLlegar, porDisco, alSistema } = req.body || {};
+      const ajustes = await videoProxyService.setAjustes({ topeGB, alLlegar, porDisco, alSistema });
       res.json({ success: true, data: { ajustes, estado: await conFluidez() } });
     } catch (err) {
       fallo(res, 'guardar los ajustes de los vídeos preparados', err);
@@ -173,13 +175,26 @@ module.exports = function createProxiesRoutes(deps = {}) {
       const sistema = videoProxyService.raizSistema();
       const presupuestos = {};
       for (const raiz of new Set([...lista.map(raizDe), sistema])) presupuestos[raiz] = await videoProxyService.presupuestoDe(raiz);
-      const estimacion = estimarLote(
-        lista.map(f => ({ raiz: raizDe(f), duration: f.duration })),
-        velocidad, presupuestos, { bytesPorSegundo: BYTES_POR_SEGUNDO, raizSistema: sistema },
+      const videos = lista.map(f => ({ raiz: raizDe(f), duration: f.duration }));
+      const opts = { bytesPorSegundo: BYTES_POR_SEGUNDO, raizSistema: sistema };
+      // Como si dijera que si a lo que aun no ha decidido: asi se ve lo que
+      // supondria. Lo que ya dijo que no, no.
+      const estimacion = estimarLote(videos, velocidad, presupuestos,
+        { ...opts, permitirSistema: (r) => (presupuestos[r] || {}).alSistema !== false });
+      // Lo que hay que preguntarle antes de empezar: discos sin sitio, sin decidir.
+      const preguntar = estimacion.discos
+        .filter(d => d.alSistema > 0 && (presupuestos[d.raiz] || {}).alSistema === undefined)
+        .map(d => ({ raiz: d.raiz, n: d.alSistema, bytes: d.bytesSistema, segundos: d.segundosSistema }));
+      // Y como quedaria si dice que no a todo.
+      const sinSistema = preguntar.length === 0 ? null : (({ n, fuera, bytes, segundos }) => ({ n, fuera, bytes, segundos }))(
+        estimarLote(videos, velocidad, presupuestos, { ...opts, permitirSistema: (r) => (presupuestos[r] || {}).alSistema === true }),
       );
       res.json({
         success: true,
-        data: { ...estimacion, encoder: velocidad ? velocidad.encoder : null, muestras: velocidad ? velocidad.muestras : 0 },
+        data: {
+          ...estimacion, preguntar, sinSistema,
+          encoder: velocidad ? velocidad.encoder : null, muestras: velocidad ? velocidad.muestras : 0,
+        },
       });
     } catch (err) {
       fallo(res, 'calcular cuánto tardaría preparar los vídeos', err);

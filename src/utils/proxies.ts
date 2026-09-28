@@ -64,12 +64,13 @@ export function completar(d: ProxiesEstado): ProxiesEstado {
     discos: p.discos || [],
     fluidez: p.fluidez || [],
     lote: p.lote || null,
+    consentir: p.consentir || [],
     totales: {
       listos: 0, bytes: 0, pendientes: 0, errores: 0, nativos: 0, forzados: 0, antiguos: 0,
       ...((p.totales || {}) as Partial<ProxiesEstado['totales']>),
     },
     ajustes: {
-      topeGB: 40, porDisco: {}, alLlegar: 'preguntar',
+      topeGB: 40, porDisco: {}, alLlegar: 'preguntar', alSistema: {},
       ...((p.ajustes || {}) as Partial<ProxiesEstado['ajustes']>),
     },
     minLibreGB: typeof p.minLibreGB === 'number' ? p.minLibreGB : 30,

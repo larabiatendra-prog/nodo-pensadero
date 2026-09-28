@@ -31,6 +31,10 @@
  *  - Nada se genera en un disco con poco espacio libre, y cada disco tiene un
  *    tope (ajustable, ver "Ajustes"). Al llegar al tope no se borra nada a
  *    espaldas del usuario: se para y se pregunta.
+ *  - Si al disco del video le queda poco sitio, sus proxies pueden ir al de la
+ *    carpeta de Pensadero (el del sistema), pero SOLO si el usuario lo ha
+ *    consentido para ese disco (`alSistema`). Mientras no lo decida, no se
+ *    escribe nada alli: se pregunta.
  *  - Generacion idempotente y persistente: una vez hecho, se reutiliza. Cola con
  *    concurrencia limitada y dedupe por fileId para no saturar la GPU.
  *  - Indice durable en backend/video_proxies.json.
@@ -116,6 +120,11 @@ const AL_LLEGAR = new Set(['preguntar', 'liberar']);
  *  pregunta vuelve sola. */
 const avisos = new Map();
 
+/** Discos sin sitio cuyos proxies podrian ir al del sistema y nadie ha
+ *  decidido si pueden: raiz -> { desde, esperando, ultimo }. En memoria, como
+ *  los de tope: si se reinicia y sigue haciendo falta, la pregunta vuelve. */
+const consentir = new Map();
+
 function ajustes() {
   const g = runtime.get('proxies', {}) || {};
   const porDisco = {};
@@ -124,10 +133,17 @@ function ajustes() {
     if (Number.isFinite(n) && n >= 0) porDisco[raizDe(raiz)] = n;
   }
   const tope = parseFloat(g.topeGB);
+  // Por disco del video: true = sus proxies pueden ir al disco del sistema si
+  // al suyo le falta sitio; false = no; sin entrada = aun no se ha decidido.
+  const alSistema = {};
+  for (const [raiz, si] of Object.entries(g.alSistema || {})) {
+    if (typeof si === 'boolean') alSistema[raizDe(raiz)] = si;
+  }
   return {
     topeGB: Number.isFinite(tope) && tope >= 0 ? tope : TOPE_GB_FABRICA,
     porDisco,
     alLlegar: AL_LLEGAR.has(g.alLlegar) ? g.alLlegar : 'preguntar',
+    alSistema,
   };
 }
 
@@ -167,6 +183,18 @@ async function setAjustes(parcial = {}) {
       if (Number.isFinite(n) && n >= 0) pd[clave] = n;
     }
     nuevo.porDisco = pd;
+  }
+  // `alSistema: { "F:\\": true|false|null }`; null vuelve a "sin decidir".
+  if (parcial.alSistema && typeof parcial.alSistema === 'object') {
+    const as = { ...(nuevo.alSistema || {}) };
+    for (const [raiz, si] of Object.entries(parcial.alSistema)) {
+      const clave = raizDe(raiz);
+      if (si === null) delete as[clave];
+      else if (typeof si === 'boolean') as[clave] = si;
+      // Decidido (sea lo que sea): la pregunta de ese disco ya no tiene sentido.
+      consentir.delete(clave);
+    }
+    nuevo.alSistema = as;
   }
   await runtime.set('proxies', nuevo);
   // Subir el tope ES la respuesta: el aviso de ese disco deja de tener sentido.
@@ -524,8 +552,29 @@ async function ubicacionConSitio(file) {
   if (libresJunto === null || libresJunto >= MIN_LIBRE_GB) return junto;
   const sistema = pathsConfig.resolveProxyLocation({ fullPath: file.fullPath, fileId: file.id, legacy: true });
   const libresSistema = await gbLibres(sistema.proxyDir);
-  if (libresSistema !== null && libresSistema >= MIN_LIBRE_GB) {
-    console.warn(`[videoProxy] ${raizDe(junto.proxyDir)} solo tiene ${libresJunto.toFixed(0)} GB libres; el proxy va a ${sistema.proxyDir}`);
+  const origen = raizDe(junto.proxyDir);
+  const destinoSistema = raizDe(sistema.proxyDir);
+  if (destinoSistema !== origen && libresSistema !== null && libresSistema >= MIN_LIBRE_GB) {
+    // Escribir en el disco del sistema solo con permiso para ESTE disco.
+    const permiso = ajustes().alSistema[origen];
+    if (permiso !== true) {
+      if (permiso === undefined) {
+        // Videos distintos, no peticiones: abrir el mismo tres veces es uno.
+        const p = consentir.get(origen) || { desde: Date.now(), ids: new Set() };
+        p.ids.add(file.id);
+        p.ultimo = file.name || file.id;
+        p.libreGB = libresJunto;
+        consentir.set(origen, p);
+      }
+      const err = new Error(permiso === false
+        ? `A ${origen} le queda poco sitio (${libresJunto.toFixed(0)} GB libres) y se eligió no guardar sus vídeos preparados en ${destinoSistema}.`
+        : `A ${origen} le queda poco sitio (${libresJunto.toFixed(0)} GB libres). ¿Guardar sus vídeos preparados en ${destinoSistema}, en la carpeta de Pensadero?`);
+      err.code = permiso === false ? 'ENOSPC' : 'CONSENTIR';
+      err.origen = origen;
+      err.sistema = destinoSistema;
+      throw err;
+    }
+    console.warn(`[videoProxy] ${origen} solo tiene ${libresJunto.toFixed(0)} GB libres; el proxy va a ${sistema.proxyDir} (permitido)`);
     return sistema;
   }
   const err = new Error(`Sin espacio para preparar el vídeo: ${raizDe(junto.proxyDir)} tiene ${libresJunto.toFixed(0)} GB libres (mínimo ${MIN_LIBRE_GB} GB)`);
@@ -624,7 +673,14 @@ async function estado() {
     });
   }
   lista.sort((x, y) => y.bytes - x.bytes);
-  return { ajustes: a, minLibreGB: MIN_LIBRE_GB, discos: lista, totales, lote: estadoLote() };
+  // Discos que esperan a que se decida si sus proxies pueden ir al del sistema.
+  const preguntas = [...consentir.entries()]
+    .filter(([raiz]) => a.alSistema[raiz] === undefined)
+    .map(([raiz, p]) => ({ raiz, desde: p.desde, esperando: p.ids.size, ultimo: p.ultimo, libreGB: p.libreGB }));
+  return {
+    ajustes: a, minLibreGB: MIN_LIBRE_GB, discos: lista, totales, lote: estadoLote(),
+    raizSistema: raizSistema(), consentir: preguntas,
+  };
 }
 
 /** Ruta del proxy si existe en disco: la anotada, junto al archivo o la del sistema. */
@@ -800,12 +856,27 @@ async function getPlayable(file, opts = {}) {
 
   // Antes de preparar nada: ¿donde iria y cabe ahi? Preguntarlo ahora evita
   // encolar un trabajo que iba a morir al final, y da una respuesta util.
+  // El original se puede servir mientras tanto... salvo si se pide la version
+  // ligera forzada: eso es que el navegador NO ha podido con el original, y
+  // devolverselo otra vez lo dejaba sin video.
+  const originalSirve = cached.original === 'playable' && !opts.forzar;
+
   let destino;
   try {
     destino = await ubicacionConSitio(file);
   } catch (err) {
-    index[file.id] = { ...cached, status: 'error', error: err.message };
-    scheduleSave();
+    // Esperando a que el usuario decida si puede ir al disco del sistema: no
+    // es un fallo del video, asi que no se apunta como tal.
+    const pregunta = err.code === 'CONSENTIR' ? { raiz: err.origen, raizSistema: err.sistema } : null;
+    if (!pregunta) {
+      index[file.id] = { ...cached, status: 'error', error: err.message };
+      scheduleSave();
+    }
+    // Si el original se puede ver, se ve: la version ligera era un extra.
+    if (originalSirve) {
+      return { status: 'native', url: pathsConfig.getStreamUrl(file.id), ligero: false, ...(pregunta ? { pideSistema: pregunta } : { sinSitio: true }) };
+    }
+    if (pregunta) return { status: 'error', motivo: 'sistema', ...pregunta, error: err.message, kind };
     return { status: 'error', motivo: 'espacio', error: err.message, kind };
   }
   const raiz = raizDe(destino.proxyDir);
@@ -814,7 +885,7 @@ async function getPlayable(file, opts = {}) {
   const enSuTope = limite > 0 && ocupado(raiz) >= limite && a.alLlegar === 'preguntar';
   if (enSuTope) {
     // Con el original reproducible no hay nada que preguntar: se ve y ya.
-    if (cached.original === 'playable') {
+    if (originalSirve) {
       return { status: 'native', url: pathsConfig.getStreamUrl(file.id), ligero: false, enSuTope: true, raiz };
     }
     const aviso = avisos.get(raiz) || { desde: Date.now(), esperando: 0 };
@@ -833,7 +904,7 @@ async function getPlayable(file, opts = {}) {
 
   // Si el original se puede ver, se ve AHORA: la version ligera es para la
   // proxima vez. Nadie mira una rueda girar por un video que ya funcionaba.
-  if (cached.original === 'playable') {
+  if (originalSirve) {
     return { status: 'native', url: pathsConfig.getStreamUrl(file.id), ligero: false, preparando: true };
   }
 
@@ -951,6 +1022,8 @@ async function presupuestoDe(raiz) {
   return {
     topeBytes: topeDe(r), ocupadoBytes: ocupado(r), libreGB: await gbLibres(r),
     minLibreGB: MIN_LIBRE_GB, alLlegar: ajustes().alLlegar,
+    // true / false / undefined (sin decidir): si sus proxies pueden ir al disco del sistema.
+    alSistema: ajustes().alSistema[r],
   };
 }
 
@@ -1007,9 +1080,12 @@ async function prepararLote(files, meta = {}) {
       mio.actual = f.name || f.id;
       try {
         const r = await getPlayable(f);
-        const lleno = r.status === 'error' && (r.motivo === 'tope' || r.motivo === 'espacio');
-        if (lleno || r.enSuTope) {
-          const motivo = r.motivo === 'espacio' ? 'espacio' : 'tope';
+        const lleno = r.status === 'error' && (r.motivo === 'tope' || r.motivo === 'espacio' || r.motivo === 'sistema');
+        if (lleno || r.enSuTope || r.pideSistema || r.sinSitio) {
+          // 'sistema': iria al disco del sistema y nadie lo ha permitido. Se
+          // para ese disco (no se pregunta mil veces) y queda la pregunta.
+          const motivo = r.motivo === 'sistema' || r.pideSistema ? 'sistema'
+            : r.motivo === 'espacio' || r.sinSitio ? 'espacio' : 'tope';
           parados.add(deDisco);
           mio.topes.push({ raiz: r.raiz || deDisco, motivo });
           // Compatibilidad: el primero que se paro, como antes.

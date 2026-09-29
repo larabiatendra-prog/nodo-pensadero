@@ -32,10 +32,29 @@ const folderContext = require('../services/folderContext');
 const folderNames = require('../folderNames');
 const pathsConfig = require('../config/paths');
 const escaneoConfig = require('../services/escaneoConfig');
+const copiasExactas = require('../services/copiasExactas');
 const fallos = require('../utils/failureReason');
 
 module.exports = function createScanRoutes(deps) {
   const { broadcastProgress, syncFiles, loadScanPaths, refreshDir, refreshDirs, getMediaFiles } = deps || {};
+
+  /**
+   * De una ruta, las rutas de sus copias exactas (por contenido, ver
+   * services/copiasExactas.js), con el catalogo de ahora. Con esto el escaneo
+   * copia la entrada de una copia ya escaneada en vez de rehacerla con la
+   * grafica (utils/reaprovecharCopias.js).
+   */
+  function copiasDeAhora() {
+    const media = typeof getMediaFiles === 'function' ? getMediaFiles() : [];
+    if (!media.length) return undefined;
+    const { copiasDe } = copiasExactas.indiceDeCopias(media);
+    const porRuta = new Map();
+    for (const f of media) if (f && f.fullPath) porRuta.set(f.fullPath.toLowerCase(), f);
+    return (ruta) => {
+      const f = porRuta.get(String(ruta).toLowerCase());
+      return f ? copiasDe(f).map(x => x.fullPath) : [];
+    };
+  }
 
   // Normaliza una ruta para comparación: absoluta, minúsculas, sin separador
   // final. En Windows el FS es case-insensitive, así que comparar en minúsculas
@@ -259,6 +278,7 @@ module.exports = function createScanRoutes(deps) {
         broadcastProgress: broadcastProgress || (() => {}),
         jobId,
         capacidades,
+        copiasDe: copiasDeAhora(),
       }).then(async (result) => {
         // Tras escanear, refrescar en memoria SOLO las carpetas escritas para
         // que el frontend vea la metadata sin pulsar "sincronizar" (antes se
@@ -493,6 +513,8 @@ module.exports = function createScanRoutes(deps) {
               // Se relee al llegar a cada ruta: si cambias un interruptor a
               // mitad del lote, la siguiente ruta ya lo respeta.
               capacidades: await capacidadesPara(p.path),
+              // Tambien las copias: lo escaneado en la ruta anterior ya cuenta.
+              copiasDe: copiasDeAhora(),
             });
           } catch (err) {
             console.error(`[scan-all] error en ruta ${p.path}:`, err.message);

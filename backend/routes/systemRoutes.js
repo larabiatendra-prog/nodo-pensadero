@@ -29,6 +29,7 @@ const runtime = require('../config/runtime');
 const fallos = require('../utils/failureReason');
 const escaneoConfig = require('../services/escaneoConfig');
 const scanOrchestrator = require('../services/scanOrchestrator');
+const copiasExactas = require('../services/copiasExactas');
 const volumen = require('../utils/volumen');
 const { planRecolocar } = require('../utils/recolocar');
 
@@ -576,12 +577,20 @@ module.exports = function createSystemRoutes(deps) {
       // Normaliza para comparar prefijos en Windows: barras unificadas a "\",
       // minusculas y sin barra final.
       const norm = (s) => (s || '').replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+      // De lo pendiente, lo que es copia exacta de algo ya escaneado (un disco
+      // de backup junto al original): el escaneo lo copia sin grafica
+      // (utils/reaprovecharCopias.js). Se dice para que "0 % descrito" no
+      // parezca horas de trabajo que en realidad son segundos.
+      const { copiasDe } = copiasExactas.indiceDeCopias(media);
+      const bibliotecaDe = (f) => f.libraryId || (typeof f.mediaKey === 'string' && f.mediaKey.includes(':') ? f.mediaKey.split(':')[0] : null);
       const enriched = paths.map((p) => {
         const base = norm(p.path);
         const caps = escaneoConfig.deRuta(p);
         let visualTotal = 0;
         let visualScanned = 0;
         let pendientes = 0;
+        let conCopia = 0;
+        const copiaEn = new Map();
         if (base) {
           for (const f of media) {
             const fp = norm(f.fullPath);
@@ -591,10 +600,21 @@ module.exports = function createSystemRoutes(deps) {
             if (typeof f.visual_description === 'string' && f.visual_description.trim()) {
               visualScanned++;
             }
-            if (scanOrchestrator.archivoPendiente(f, caps)) pendientes++;
+            if (scanOrchestrator.archivoPendiente(f, caps)) {
+              pendientes++;
+              const hecha = copiasDe(f).find(t => t.has_catalog && !scanOrchestrator.archivoPendiente(t, caps));
+              if (hecha) {
+                conCopia++;
+                const lib = bibliotecaDe(hecha) || '?';
+                copiaEn.set(lib, (copiaEn.get(lib) || 0) + 1);
+              }
+            }
           }
         }
-        return { ...p, visualTotal, visualScanned, pendientes, escaneoEfectivo: caps };
+        const copiasHechas = conCopia > 0
+          ? { n: conCopia, en: [...copiaEn].map(([id, n]) => ({ id, n })).sort((a, b) => b.n - a.n) }
+          : null;
+        return { ...p, visualTotal, visualScanned, pendientes, copiasHechas, escaneoEfectivo: caps };
       });
       res.json({
         success: true,

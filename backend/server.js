@@ -1722,8 +1722,9 @@ async function refrescarCarpetas(dirs) {
  * llevandose lo que depende de la ruta absoluta: la cache (para no reindexar
  * ni rehacer miniaturas), el nombre de las miniaturas (llevan el id de ruta),
  * el indice visual, y favoritos, notas, colecciones y candado guardados por id
- * de ruta. Lo guardado por mediaKey no cambia: el id de la biblioteca se
- * conserva. Los proxies no se mueven: se preparan otra vez al abrir el video.
+ * de ruta, y (desde el 29/09/2026) las tomas apartadas y los proxies, que se
+ * renombran al id nuevo junto al video. Lo guardado por mediaKey no cambia:
+ * el id de la biblioteca se conserva.
  */
 async function remapearBiblioteca(libraryId, vieja, nueva) {
   const raizVieja = path.resolve(vieja);

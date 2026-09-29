@@ -678,6 +678,34 @@ async function olvidar(huellasAQuitar, { lote = null } = {}) {
   return { quitadas, ...resumen() };
 }
 
+/**
+ * Las copias exactas de cada archivo entre `files` (por la huella ya
+ * calculada y al dia, ver `huellaDe`; lo que no tiene huella no tiene copia).
+ * Para no volver a escanear lo que ya esta escaneado en otra copia
+ * (utils/reaprovecharCopias.js) y decirlo en Rutas. No lee nada del disco.
+ * @param {Array} files - el catalogo entero (tambien lo escondido)
+ * @returns {{ copiasDe: (f) => Array }} las OTRAS copias de un archivo
+ */
+function indiceDeCopias(files) {
+  cargarHuellas();
+  const porHuella = new Map();
+  for (const f of files || []) {
+    const h = huellaDe(f);
+    if (!h) continue;
+    const l = porHuella.get(h);
+    if (l) l.push(f); else porHuella.set(h, [f]);
+  }
+  return {
+    copiasDe(f) {
+      const h = huellaDe(f);
+      const l = h ? porHuella.get(h) : null;
+      if (!l || l.length < 2) return [];
+      const yo = String(f.fullPath || '').toLowerCase();
+      return l.filter(x => x !== f && String(x.fullPath || '').toLowerCase() !== yo);
+    },
+  };
+}
+
 module.exports = {
   configurar,
   actualizar,
@@ -689,6 +717,7 @@ module.exports = {
   limpiar,
   decidir,
   olvidar,
+  indiceDeCopias,
   // Para pruebas y herramientas
   _proponer: proponer,
   _calcularHuella: calcularHuella,

@@ -45,6 +45,11 @@ interface ScanPath {
   visualScanned?: number;   // de esos, cuantos tienen descripcion visual
   pendientes?: number;      // a cuantos les falta algun trabajo encendido ahora
   /**
+   * De los pendientes, los que son copia exacta de algo ya escaneado (en
+   * `en`, por biblioteca): el escaneo los copia en segundos, sin grafica.
+   */
+  copiasHechas?: { n: number; en: Array<{ id: string; n: number }> } | null;
+  /**
    * El disco de esta biblioteca esta ahora en otra ruta (otra letra). Si esa
    * ruta la tiene otra biblioteca: `mismoDisco` dice si es de verdad el mismo
    * disco y, si no, `suDisco` donde esta ahora el de la otra (letras cruzadas).
@@ -1036,8 +1041,20 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
   const vlmCaido = !!vlmHealth && (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable);
 
+  /**
+   * Nombre de una biblioteca para un texto, entre comillas. Si hay otra que se
+   * llama igual (dos discos con la misma carpeta), con el nombre de su disco.
+   */
+  const nombreDeBiblioteca = (id: string) => {
+    const p = paths.find(q => q.id === id);
+    if (!p) return 'otra biblioteca';
+    const nombre = p.displayName || p.path;
+    const repetido = paths.some(q => q.id !== id && nombreNorm(q) === nombreNorm(p));
+    return `«${repetido && p.disco?.etiqueta && !nombre.includes(p.disco.etiqueta) ? `${nombre} · ${p.disco.etiqueta}` : nombre}»`;
+  };
+
   const totales = useMemo(() => {
-    let archivos = 0, total = 0, descritos = 0, pendientes = 0;
+    let archivos = 0, total = 0, descritos = 0, pendientes = 0, copias = 0;
     for (const p of paths) {
       archivos += p.fileCount || 0;
       if (p.isActive && typeof p.visualTotal === 'number') {
@@ -1046,9 +1063,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         // Lo que queda con los interruptores de ahora; con un servidor viejo
         // que no lo manda, lo que falta por describir.
         pendientes += p.pendientes ?? Math.max(0, p.visualTotal - (p.visualScanned ?? 0));
+        copias += p.copiasHechas?.n ?? 0;
       }
     }
-    return { archivos, total, descritos, pendientes };
+    return { archivos, total, descritos, pendientes, copias };
   }, [paths]);
 
   /** Por que no se puede escanear una ruta ahora mismo (null = si se puede). */
@@ -1194,6 +1212,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                   {capsGlobal && !capsGlobal.descripcion
                     ? 'Les falta algo de lo que tienes encendido. Las descripciones están apagadas: se hará solo lo demás.'
                     : 'Les falta algo de lo que tienes encendido. Sin descripción no aparecen en la búsqueda por lenguaje natural.'}
+                  {totales.copias > 0 && (totales.copias === 1
+                    ? <> De ellos, <span className="text-niebla">1</span> es copia exacta de un archivo ya escaneado: se copia en segundos, sin gráfica.</>
+                    : <> De ellos, <span className="text-niebla">{miles(totales.copias)}</span> son copias exactas de archivos ya escaneados: se copian en segundos, sin gráfica.</>
+                  )}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -1349,6 +1371,24 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                               {pct} % descrito
                               {porEscanear > 0 && <span className="text-humo"> · {miles(porEscanear)} por escanear</span>}
                             </span>
+                            {/* Un backup junto al original sale al 0 % aunque casi todo
+                                este escaneado en el otro disco: se dice cuanto. */}
+                            {path.copiasHechas && path.copiasHechas.n > 0 && porEscanear > 0 && (
+                              <p className="basis-full text-[11px] text-humo leading-snug">
+                                {path.copiasHechas.n >= porEscanear
+                                  ? (porEscanear === 1 ? 'Es copia exacta de un archivo ya escaneado' : 'Todos son copias exactas de archivos ya escaneados')
+                                  : path.copiasHechas.n === 1
+                                    ? '1 es copia exacta de un archivo ya escaneado'
+                                    : `${miles(path.copiasHechas.n)} son copias exactas de archivos ya escaneados`}
+                                {' '}en {path.copiasHechas.en.map(c => c.id === path.id
+                                  ? 'esta misma biblioteca'
+                                  : nombreDeBiblioteca(c.id)).join(', ')}:
+                                {' '}al escanear se {path.copiasHechas.n === 1 ? 'copia' : 'copian'} en segundos, sin gráfica.
+                                {path.copiasHechas.n < porEscanear && (porEscanear - path.copiasHechas.n === 1
+                                  ? ' Solo 1 necesita escanearse de verdad.'
+                                  : ` Solo ${miles(porEscanear - path.copiasHechas.n)} necesitan escanearse de verdad.`)}
+                              </p>
+                            )}
                           </div>
                         ) : path.isActive && path.status === 'disconnected' && !path.sugerencia ? (
                           <p className="mt-2 text-[12px] text-humo">Conecta el disco y se sincroniza solo: lo ya descrito vuelve sin re-escanear. Si al conectarlo tiene otra letra, usa «Cambiar ubicación».</p>

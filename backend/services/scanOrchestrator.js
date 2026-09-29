@@ -47,6 +47,7 @@ const { computePeopleFraming } = require('../utils/peopleFraming');
 const { computeTimeOfDay } = require('../utils/timeOfDay');
 const { computeLighting } = require('../utils/lighting');
 const escaneoConfig = require('./escaneoConfig');
+const { reaprovechables, entradaCopiada } = require('../utils/reaprovecharCopias');
 
 /** Trabajos que dejan huella en la entrada (los proxies no: viven aparte). */
 const TRABAJOS = ['descripcion', 'caras', 'busquedaVisual', 'movimiento'];
@@ -785,6 +786,51 @@ async function escanearCarpeta(folderPath, opts, job) {
     console.log(`[scan] ${completando} archivo(s) ya catalogados vuelven para completar trabajos encendidos`);
   }
 
+  // 3b) Copias exactas ya escaneadas en otro sitio (un disco de backup junto
+  // al original): se copia su entrada en vez de volver a pasarlas por la
+  // grafica. Archivo a archivo y por contenido (utils/reaprovecharCopias.js):
+  // un backup no tiene por que tener lo mismo que el original. Con `force` no:
+  // re-escanear es rehacer.
+  let reaprovechados = 0;
+  if (!force && !singleFile && toScan.length > 0 && typeof opts.copiasDe === 'function') {
+    const catalogosCopia = new Map(); // dir -> photos de su catalogo (o null)
+    const entradaDe = async (ruta) => {
+      const dir = path.dirname(ruta);
+      if (!catalogosCopia.has(dir)) {
+        const { catalog } = await readExistingCatalog(dir);
+        catalogosCopia.set(dir, (catalog && (catalog.photos || catalog.clips)) || null);
+      }
+      const fotos = catalogosCopia.get(dir);
+      return (fotos && fotos[path.basename(ruta)]) || null;
+    };
+    try {
+      const copiables = await reaprovechables(
+        toScan.map(ruta => ({ ruta, plan: planes.get(ruta) })),
+        { copiasDe: opts.copiasDe, entradaDe, hecho: trabajoHecho },
+      );
+      if (copiables.size > 0 && !clipIndex.isLoaded()) await clipIndex.load();
+      for (const [ruta, { entrada, de }] of copiables) {
+        catalogsByDir.get(path.dirname(ruta)).pending.set(path.basename(ruta), entradaCopiada(entrada, de));
+        planes.delete(ruta);
+        // La busqueda visual va por el id de ESTE archivo: su huella (y sus
+        // momentos, si es video) entra en el indice como si se hubiera escaneado.
+        if (entrada.clip_embedding_b64) clipIndex.upsert(fileIdFor(ruta), entrada.clip_embedding_b64);
+        if (Array.isArray(entrada.clip_momentos) && entrada.clip_momentos.length > 0) clipIndex.setMomentos(fileIdFor(ruta), entrada.clip_momentos);
+        reaprovechados++;
+      }
+      if (reaprovechados > 0) {
+        for (let i = toScan.length - 1; i >= 0; i--) if (copiables.has(toScan[i])) toScan.splice(i, 1);
+        console.log(`[scan] ${reaprovechados} archivo(s) copiados de su copia exacta ya escaneada, sin grafica`);
+        await flushCatalogs();
+        if (clipIndex.isDirty()) await clipIndex.save().catch(err => fallos.record('guardar el indice visual', err, {}));
+      }
+    } catch (err) {
+      // Si falla, se escanea todo como siempre: se repite trabajo, no se pierde.
+      fallos.record('reaprovechar el escaneo de las copias exactas', err, { path: folderPath });
+    }
+  }
+  job.reaprovechados = reaprovechados;
+
   // Cache de `_contexto.md` por directorio (raíz + cada subcarpeta).
   // Se rellena perezosamente la primera vez que un archivo de ese dir se
   // escanea — así, si hay 200 fotos en una misma carpeta, sólo leemos el
@@ -812,10 +858,14 @@ async function escanearCarpeta(folderPath, opts, job) {
       total: allImages.length,
       done: 0,
       errors: 0,
-      status: `Todas las imágenes ya estaban escaneadas (${allImages.length})`,
+      status: reaprovechados > 0
+        ? `${reaprovechados} copiados de su copia exacta ya escaneada, sin gráfica`
+        : `Todas las imágenes ya estaban escaneadas (${allImages.length})`,
       already: allImages.length,
+      reaprovechados,
     });
-    return { jobId, total: allImages.length, done: 0, errors: 0, written: 0, carpetas: [] };
+    // Lo copiado se ha escrito: quien llama refresca esas carpetas.
+    return { jobId, total: allImages.length, done: 0, errors: 0, written: writtenDirs.size, carpetas: Array.from(writtenDirs), reaprovechados };
   }
 
   // 4) Escanear en serie
@@ -1391,6 +1441,8 @@ async function escanearCarpeta(folderPath, opts, job) {
       ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
       : null,
     status: estadoTexto,
+    // Copiados de su copia exacta ya escaneada (sin grafica): no cuentan en total.
+    reaprovechados: job.reaprovechados || 0,
     percentage: 100,
     elapsedMs: job.finishedAt - job.startedAt,
     // Media real del job completo (no la ventana movil): tiempo total / archivos
@@ -1409,6 +1461,7 @@ async function escanearCarpeta(folderPath, opts, job) {
     // Carpetas cuyo catalogo se ha escrito: quien llama puede refrescar solo
     // esas en vez de resincronizar todos los discos.
     carpetas: Array.from(writtenDirs),
+    reaprovechados: job.reaprovechados || 0,
     escriturasFallidas: job.escriturasFallidas,
     causa: incidencias.principal
       ? { reason: incidencias.principal.reason, hint: incidencias.principal.hint, code: incidencias.principal.code }
@@ -1426,6 +1479,7 @@ function getJobStatus(jobId) {
     total: job.total,
     done: job.done,
     errors: job.errors,
+    reaprovechados: job.reaprovechados || 0,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt || null,
   };
@@ -1439,6 +1493,7 @@ function listJobs() {
     total: j.total,
     done: j.done,
     errors: j.errors,
+    reaprovechados: j.reaprovechados || 0,
     startedAt: j.startedAt,
     finishedAt: j.finishedAt || null,
   }));

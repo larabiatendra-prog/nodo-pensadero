@@ -2,8 +2,8 @@
  * Letras cruzadas entre bibliotecas — Pensadero
  *
  * Windows reparte las letras segun el orden en que se conectan los discos. Con
- * dos discos que tienen la misma carpeta (el caso real: dos LaCie con
- * «(1) WORKS»), el disco de una biblioteca puede aparecer justo en la ruta que
+ * dos discos que tienen la misma carpeta (el caso real: dos discos externos
+ * con la misma carpeta de trabajo), el disco de una biblioteca puede aparecer justo en la ruta que
  * tiene apuntada la otra. El aviso decia entonces «son el mismo disco: quita
  * una de las dos», y era falso: son dos discos, con las letras cruzadas.
  *

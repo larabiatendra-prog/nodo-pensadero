@@ -78,8 +78,8 @@ async function buscarDisco(serie, rutaVieja, unidades) {
 /**
  * Nombre (etiqueta) y capacidad de cada disco montado, por su numero de serie
  * (el mismo que `stat.dev`: comprobado el 29/09/2026 con Win32_Volume). Sirve
- * para distinguir dos bibliotecas que se llaman igual («(1) WORKS» en un
- * LaCie de 6 TB y en uno de 10 TB). Una consulta a Windows cuesta ~1 s, asi
+ * para distinguir dos bibliotecas que se llaman igual (la misma carpeta en un
+ * disco de 6 TB y en otro de 10 TB). Una consulta a Windows cuesta ~1 s, asi
  * que se guarda unos minutos. Si falla, un mapa vacio: es solo informacion.
  * @returns {Promise<Map<number, {etiqueta: string|null, capacidad: number|null, letra: string|null}>>}
  */

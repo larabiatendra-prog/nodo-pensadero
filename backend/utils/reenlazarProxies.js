@@ -5,8 +5,9 @@
  * md5 de la ruta COMPLETA, letra incluida. Si el disco pasa de D: a X:, cada
  * video tiene otro fileId y su proxy (que sigue en el disco, junto al video)
  * deja de encontrarse: sale como "sin previsualizar" y el lote lo volveria a
- * preparar. Paso de verdad (29/09/2026): 11.117 proxies (165 GB) del LaCie
- * 10TB hechos cuando era D:, sin enlazar tras pasar por E: y quedarse en X:.
+ * preparar. Paso de verdad (29/09/2026): 11.117 proxies (165 GB) de un disco
+ * externo de 10 TB hechos cuando era D:, sin enlazar tras pasar por E: y
+ * quedarse en X:.
  *
  * Aqui se decide, sin tocar nada, que entradas del indice son de que video:
  * para un video sin entrada se prueba su misma ruta con las otras letras. Solo

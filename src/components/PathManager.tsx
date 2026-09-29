@@ -142,6 +142,21 @@ const PRESETS: Array<{ id: string; nombre: string; detalle: string; valores: Par
   },
 ];
 
+// La ultima combinacion «A medida», en este navegador: se recuerda para poder
+// volver a ella despues de probar un ajuste rapido.
+const CLAVE_A_MEDIDA = 'pensadero.escaneoAMedida';
+function leerAMedida(): Partial<Capacidades> | null {
+  try {
+    const dato = JSON.parse(localStorage.getItem(CLAVE_A_MEDIDA) || 'null');
+    if (!dato || !ANALISIS.every(id => typeof dato[id] === 'boolean')) return null;
+    // Si coincide con un ajuste rapido no es «a medida».
+    if (PRESETS.some(pr => ANALISIS.every(id => pr.valores[id] === dato[id]))) return null;
+    return Object.fromEntries(ANALISIS.map(id => [id, dato[id]])) as Partial<Capacidades>;
+  } catch {
+    return null;
+  }
+}
+
 const miles = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 
 /** "6 TB", "931 GB": la capacidad como la dice el fabricante (potencias de 1000). */
@@ -983,6 +998,23 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     return PRESETS.find(pr => ANALISIS.every(id => pr.valores[id] === capsGlobal[id]))?.id ?? null;
   }, [capsGlobal]);
 
+  // «A medida» es un boton mas: vuelve a la ultima combinacion hecha a mano.
+  // Antes era solo una etiqueta que salia sin ajuste rapido y desaparecia al
+  // pulsar uno, sin forma de volver a lo tuyo.
+  const [aMedida, setAMedida] = useState<Partial<Capacidades> | null>(leerAMedida);
+  useEffect(() => {
+    if (!capsGlobal || presetActivo) return;
+    const combinacion = Object.fromEntries(ANALISIS.map(id => [id, capsGlobal[id]])) as Partial<Capacidades>;
+    setAMedida(combinacion);
+    try { localStorage.setItem(CLAVE_A_MEDIDA, JSON.stringify(combinacion)); } catch { /* sin guardar: solo se pierde el recuerdo */ }
+  }, [capsGlobal, presetActivo]);
+
+  const usarAMedida = () => {
+    if (!capsGlobal || !presetActivo) return; // ya esta a medida
+    if (aMedida) { cambiarGlobal(aMedida); return; }
+    toast('Elige abajo, uno a uno, qué quieres que haga el escaneo: en cuanto no coincida con un ajuste rápido, será «A medida».', { icon: '🎛️', duration: 7000 });
+  };
+
   // ── Derivados ───────────────────────────────────────────────────────────
 
   const vlmCaido = !!vlmHealth && (!vlmHealth.ollamaRunning || !vlmHealth.modelAvailable);
@@ -1572,9 +1604,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                 {pr.nombre}
               </button>
             ))}
-            {capsGlobal && !presetActivo && (
-              <span className="px-3 py-1 rounded-full text-[12px] text-lavanda border border-lavanda/30">A medida</span>
-            )}
+            <button
+              onClick={usarAMedida}
+              disabled={!capsGlobal}
+              aria-pressed={!!capsGlobal && !presetActivo}
+              title={aMedida ? 'Tu combinación: la última que elegiste a mano en los interruptores de abajo' : 'Elige abajo, uno a uno, qué hace el escaneo'}
+              className={`px-3 py-1 rounded-full text-[12px] transition-colors ${
+                capsGlobal && !presetActivo ? 'bg-lavanda text-noche font-medium' : 'bg-grafito text-niebla hover:text-marfil hover:bg-pizarra'
+              }`}
+            >
+              A medida
+            </button>
           </div>
 
           <ul className="flex flex-col divide-y divide-borde-sutil border-y border-borde-sutil">

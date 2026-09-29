@@ -45,6 +45,8 @@ backend/collections_persistent.json
 backend/notes_persistent.json
 backend/descartes_persistent.json
 backend/cartas_persistent.json
+# Copias de seguridad de lo del usuario antes de una reparacion.
+backend/respaldos/
 # Material bajo candado: lleva los nombres de lo que el usuario oculta.
 backend/ocultos_persistent.json
 # Portada de inicio preparada en la ultima sincronizacion (regenerable).

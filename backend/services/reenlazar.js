@@ -76,9 +76,9 @@ function emparejar(desaparecidos, llegados) {
  * @returns {Promise<{favoritos:number, colecciones:number, notas:number, ocultos:number, etiquetas:number, visual:number}>}
  */
 async function aplicar(pares, almacenes) {
-  const r = { favoritos: 0, colecciones: 0, notas: 0, ocultos: 0, etiquetas: 0, visual: 0 };
+  const r = { favoritos: 0, colecciones: 0, notas: 0, ocultos: 0, etiquetas: 0, visual: 0, descartes: 0, proxies: 0 };
   if (!Array.isArray(pares) || pares.length === 0) return r;
-  const { favoritos, colecciones, notas, ocultos, etiquetas, clipIndex } = almacenes || {};
+  const { favoritos, colecciones, notas, ocultos, etiquetas, clipIndex, descartes, proxies } = almacenes || {};
   const paso = async (clave, nombre, fn) => {
     try {
       r[clave] = (await fn()) || 0;
@@ -91,6 +91,11 @@ async function aplicar(pares, almacenes) {
   if (notas) await paso('notas', 'las notas', () => notas.reenlazar(pares));
   if (ocultos) await paso('ocultos', 'el material oculto', () => ocultos.reenlazar(pares));
   if (etiquetas) await paso('etiquetas', 'las etiquetas cambiadas a mano', () => etiquetas.reenlazar(pares));
+  // Van por el id de ruta, que cambia con la letra del disco: sin esto las
+  // tomas apartadas volvian a la galeria y los videos preparados se perdian
+  // (seguian en el disco con el nombre viejo). 29/09/2026.
+  if (descartes) await paso('descartes', 'las tomas apartadas', () => descartes.reenlazar(pares));
+  if (proxies) await paso('proxies', 'los videos preparados', () => proxies.reenlazarPares(pares));
   if (clipIndex) {
     await paso('visual', 'el indice visual', async () => {
       let n = 0;

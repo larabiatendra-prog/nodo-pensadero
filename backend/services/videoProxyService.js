@@ -55,6 +55,7 @@ const pathsConfig = require('../config/paths');
 const runtime = require('../config/runtime');
 const { atomicWriteFile } = require('../utils/jsonStore');
 const fallos = require('../utils/failureReason');
+const { planReenlace } = require('../utils/reenlazarProxies');
 
 // Binario ffmpeg de respaldo (sin NVENC) si no hay ffmpeg en el PATH.
 let installerFfmpeg = null;
@@ -1139,6 +1140,94 @@ async function getReadyProxyPath(file) {
   return rutaProxyExistente(file);
 }
 
+// ---------------------------------------------------------------------------
+// Reenlazar: el indice va por fileId (md5 de la ruta con su letra). Si el
+// video cambia de ruta (otra letra, otra carpeta), su proxy sigue en el disco
+// pero con el nombre del id viejo. Aqui se pasa la entrada al id nuevo y se
+// renombra el archivo. No se prepara ni se borra nada.
+// ---------------------------------------------------------------------------
+const existeArchivo = (r) => fsp.access(r).then(() => true, () => false);
+const juntoAlVideo = (fullPath, fileId) => pathsConfig.resolveProxyLocation({ fullPath, fileId }).proxyPath;
+
+/** Pasa la entrada `viejo` a `nuevo`; si hay archivo (`de`), lo renombra a `a`. */
+async function moverEntrada(viejo, nuevo, de, a) {
+  const e = index[viejo];
+  if (!e || index[nuevo]) return false;
+  const entrada = { ...e };
+  if (de) {
+    entrada.ruta = de;
+    if (a && a !== de) {
+      try {
+        await fsp.mkdir(path.dirname(a), { recursive: true });
+        await fsp.rename(de, a);
+        entrada.ruta = a;
+      } catch { /* se queda con su nombre viejo: la entrada apunta a el */ }
+    }
+  }
+  index[nuevo] = entrada;
+  delete index[viejo];
+  return true;
+}
+
+/**
+ * Pares exactos { de, a } (services/reenlazar.js): cambio de ubicacion de una
+ * biblioteca o archivos movidos. El proxy se busca junto al video en su sitio
+ * nuevo (la carpeta se movio con el) o donde lo apunta el indice.
+ * @returns {Promise<number>}
+ */
+async function reenlazarPares(pares) {
+  await loadIndex();
+  let n = 0;
+  for (const { de, a } of pares || []) {
+    if (!de || !a || !de.id || !a.id || de.id === a.id) continue;
+    const e = index[de.id];
+    if (!e || index[a.id]) continue;
+    if (e.status === 'native') {
+      if (await moverEntrada(de.id, a.id, null, null)) n++;
+      continue;
+    }
+    if (e.status !== 'ready' || !a.fullPath) continue;
+    const junto = juntoAlVideo(a.fullPath, de.id);
+    if (await existeArchivo(junto)) {
+      if (await moverEntrada(de.id, a.id, junto, juntoAlVideo(a.fullPath, a.id))) n++;
+    } else if (e.ruta && await existeArchivo(e.ruta)) {
+      // En otro sitio (la carpeta del sistema, o la carpeta vieja que sigue
+      // ahi): se renombra donde esta.
+      if (await moverEntrada(de.id, a.id, e.ruta, path.join(path.dirname(e.ruta), `${a.id}.mp4`))) n++;
+    }
+  }
+  if (n > 0) scheduleSave();
+  return n;
+}
+
+/**
+ * Proxies que se quedaron sin enlazar por un cambio de letra anterior (ver
+ * utils/reenlazarProxies.js): se prueba cada video sin entrada con las otras
+ * letras. Se llama tras sincronizar con TODOS los archivos conocidos (tambien
+ * los de discos desconectados: si no, una entrada suya podria parecer libre).
+ * @param {Array<{id, fullPath, modifiedAt, type}>} archivos
+ * @param {(ruta: string) => string} idDe - el mismo que genera los fileId
+ * @returns {Promise<number>}
+ */
+async function reenlazarPorLetra(archivos, idDe) {
+  await loadIndex();
+  const videos = [];
+  for (const f of archivos || []) {
+    if (!f || !f.id || !f.fullPath) continue;
+    if (f.type && f.type !== 'video' && f.type !== 'export') continue;
+    videos.push({ id: f.id, fullPath: f.fullPath, mtimeMs: new Date(f.modifiedAt || 0).getTime() });
+  }
+  const plan = await planReenlace(videos, index, {
+    idDe, existe: existeArchivo, junto: juntoAlVideo, dirSistema: pathsConfig.systemPaths.proxies,
+  });
+  let n = 0;
+  for (const p of plan) {
+    if (await moverEntrada(p.viejo, p.nuevo, p.de, p.a)) n++;
+  }
+  if (n > 0) scheduleSave();
+  return n;
+}
+
 module.exports = {
   getPlayable,
   prewarm,
@@ -1159,6 +1248,8 @@ module.exports = {
   raizSistema,
   // Lo ya preparado (yaListo) solo se sabe con el indice cargado.
   cargarIndice: loadIndex,
+  reenlazarPares,
+  reenlazarPorLetra,
   // Para pruebas: los niveles y los argumentos de ffmpeg.
   _modosPara: modosPara,
   _buildArgs: buildArgs,

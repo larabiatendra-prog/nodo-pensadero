@@ -75,6 +75,9 @@ const fechaArchivo = require('./utils/fechaArchivo');
 const volumen = require('./utils/volumen');
 const reenlazar = require('./services/reenlazar');
 const etiquetasManuales = require('./services/etiquetasManuales');
+const descartesManager = require('./descartesManager');
+const videoProxyService = require('./services/videoProxyService');
+const { paresParaHuerfanos, clasificar } = require('./utils/huerfanosPorLetra');
 const spacesRegistry = require('./spacesRegistry');
 const createSpacesManageRoutes = require('./routes/spacesManageRoutes');
 
@@ -1341,6 +1344,8 @@ async function performSync(opts = {}) {
           ocultos: ocultosManager,
           etiquetas: etiquetasManuales,
           clipIndex,
+          descartes: descartesManager,
+          proxies: videoProxyService,
         });
         reenlazados.archivos = pares.length;
         console.log(`🔗 ${pares.length} archivo(s) movidos reconocidos: ${JSON.stringify(reenlazados)}`);
@@ -1408,6 +1413,10 @@ async function performSync(opts = {}) {
 
     // Vigilar lo que esta conectado (y dejar de vigilar lo que no).
     armarVigilancia(paths.length > 0 ? paths : activePaths);
+
+    // Lo tuyo que un cambio de letra dejo sin archivo vuelve a el. Sin await:
+    // no retrasa el aviso de sincronizacion completada.
+    recuperarHuerfanos().catch(err => fallos.record('recuperar lo que se quedo sin archivo', err, {}));
 
     broadcastProgress({
       type: 'sync_complete',
@@ -1759,11 +1768,80 @@ async function remapearBiblioteca(libraryId, vieja, nueva) {
     ocultos: ocultosManager,
     etiquetas: etiquetasManuales,
     clipIndex,
+    descartes: descartesManager,
+    proxies: videoProxyService,
   });
   // Lo que habia en memoria con la ruta vieja fuera: la sincronizacion lo rehace.
   mediaFiles = mediaFiles.filter(f => !(f.fullPath && dentroDeAlguna(f.fullPath, [raizVieja])));
   console.log(`🔀 Biblioteca ${libraryId}: ${pares.length} archivos llevados de ${raizVieja} a ${raizNueva} (${miniaturas} miniaturas)`);
   return { archivos: pares.length, miniaturas, ...r };
+}
+
+// === LO TUYO QUE SE QUEDO SIN ARCHIVO ===
+/**
+ * Tomas apartadas, notas, ocultos, favoritos, colecciones y etiquetas a mano
+ * cuyo archivo ya no se conoce porque su disco cambio de letra (o se cruzo con
+ * otro disco con la misma carpeta), y videos preparados con el id viejo,
+ * vuelven a su archivo si no hay duda (utils/huerfanosPorLetra.js,
+ * utils/reenlazarProxies.js). No borra nada. El 29/09/2026 habia 478 tomas
+ * apartadas, 30 ocultos, 2 notas y 11.117 proxies (165 GB) asi.
+ *
+ * Tras cada sincronizacion, pero solo si algo ha cambiado desde la ultima vez:
+ * buscar cuesta ~1 s (25 variantes de letra por archivo conocido).
+ */
+let _huerfanosEnCurso = null;
+let _huerfanosFirma = null;
+function recuperarHuerfanos() {
+  if (_huerfanosEnCurso) return _huerfanosEnCurso;
+  _huerfanosEnCurso = (async () => {
+    // Conocidos = toda la cache, tambien lo de discos desconectados: lo suyo
+    // no es huerfano, esta esperando a su disco.
+    const conocidos = [];
+    for (const e of fileCache.values()) if (e && e.fileData && e.fileData.id) conocidos.push(e.fileData);
+    await Promise.all([descartesManager.ensureLoaded(), notesManager.ensureLoaded(), ocultosManager.ensureLoaded(), videoProxyService.cargarIndice()]);
+    const apuntes = [];
+    const meter = (clave, id) => {
+      const c = clasificar(clave);
+      if (c) apuntes.push(id && !c.id ? { ...c, id } : c);
+    };
+    for (const id of descartesManager.list()) meter(id);
+    for (const [k, v] of ocultosManager.items) meter(k, v && v.id);
+    for (const k of notesManager.files.keys()) meter(k);
+    for (const k of favoritesManager.favorites.keys()) meter(k);
+    for (const c of collectionsManager.getAllCollections()) {
+      for (const ref of c.mediaFiles || []) meter(ref);
+      if (typeof c.coverImage === 'string') meter(c.coverImage);
+    }
+    for (const k of etiquetasManuales.claves()) meter(k);
+
+    // Cambia si cambia algun id (un disco en otra letra da otros ids aunque
+    // sean los mismos archivos) o lo apuntado.
+    let suma = 0;
+    for (const f of conocidos) suma = (suma + parseInt(String(f.id).slice(0, 8), 16)) >>> 0;
+    const firma = `${conocidos.length}|${suma}|${apuntes.length}|${JSON.stringify(apuntes.slice(0, 5))}`;
+    if (firma === _huerfanosFirma) return null;
+
+    const rutas = await loadScanPaths().catch(() => []);
+    const bibliotecas = Object.fromEntries((rutas || []).map(p => [p.id, p.path]));
+    const pares = paresParaHuerfanos(conocidos, apuntes, generateFileId, bibliotecas);
+    const r = pares.length === 0 ? null : await reenlazar.aplicar(pares, {
+      favoritos: favoritesManager,
+      colecciones: collectionsManager,
+      notas: notesManager,
+      ocultos: ocultosManager,
+      etiquetas: etiquetasManuales,
+      descartes: descartesManager,
+    });
+    const proxies = await videoProxyService.reenlazarPorLetra(conocidos, generateFileId);
+    const hechos = r ? Object.entries(r).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`) : [];
+    if (proxies > 0) hechos.push(`${proxies} videos preparados`);
+    if (hechos.length > 0) console.log(`🔗 Vuelven a su archivo tras un cambio de letra: ${hechos.join(', ')}`);
+    // Con cambios se vuelve a mirar la proxima vez; sin ellos, hasta que
+    // cambie lo conocido o lo apuntado.
+    _huerfanosFirma = hechos.length > 0 ? null : firma;
+    return { pares: pares.length, ...(r || {}), proxies };
+  })().finally(() => { _huerfanosEnCurso = null; });
+  return _huerfanosEnCurso;
 }
 
 // === ROUTERS ===

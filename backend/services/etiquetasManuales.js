@@ -189,4 +189,9 @@ function reenlazar(pares) {
   });
 }
 
-module.exports = { aplicar, cambiar, reenlazar, ARCHIVO };
+/** Las claves (mediaKey o id) de lo cambiado a mano: para buscar huerfanos. */
+function claves() {
+  return Array.from(cargar().keys());
+}
+
+module.exports = { aplicar, cambiar, reenlazar, claves, ARCHIVO };

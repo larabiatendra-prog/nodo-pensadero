@@ -107,6 +107,35 @@ class DescartesManager {
     return this.list();
   }
 
+  /**
+   * Un archivo ha cambiado de sitio (otra letra, otra carpeta): lo apartado
+   * pasa a su id nuevo. Ver services/reenlazar.js. Antes no se hacia, y al
+   * cambiar de letra un disco sus tomas apartadas volvian a la galeria (el
+   * 29/09/2026 quedaban 13 de 491 enlazadas). Un id viejo puede ir a varios
+   * nuevos (la misma foto copiada en dos discos): apartar es "no me enseñes
+   * esta toma", y vale para las dos.
+   * @returns {Promise<number>} tomas reenlazadas
+   */
+  async reenlazar(pares) {
+    await this.ensureLoaded();
+    const destinos = new Map();
+    for (const { de, a } of pares || []) {
+      if (!de || !a || !de.id || !a.id || de.id === a.id || !this.items.has(de.id)) continue;
+      if (!destinos.has(de.id)) destinos.set(de.id, []);
+      destinos.get(de.id).push(a.id);
+    }
+    let n = 0;
+    for (const [viejo, nuevos] of destinos) {
+      const valor = this.items.get(viejo);
+      for (const id of nuevos) {
+        if (!this.items.has(id)) { this.items.set(id, valor); n++; }
+      }
+      this.items.delete(viejo);
+    }
+    if (destinos.size > 0) await this._save();
+    return n;
+  }
+
   getStats() {
     return { total: this.items.size };
   }

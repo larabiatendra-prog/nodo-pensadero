@@ -8,7 +8,7 @@
  * que propone salen de utils/letrasDiscos.ts.
  */
 import type { ReactNode } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Loader2 } from 'lucide-react';
 import type { DiscoAFijar } from '../utils/letrasDiscos';
 
 interface Props {
@@ -89,9 +89,14 @@ export default function TutorialLetraFija({ discos, abierto, onAlternar, onCompr
           <button
             onClick={onComprobar}
             disabled={comprobando}
-            className="mt-2.5 px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+            aria-busy={comprobando}
+            className={`mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors ${
+              comprobando ? 'cursor-wait' : ''
+            }`}
           >
-            {comprobando ? 'Comprobando…' : 'Ya está, comprobar'}
+            {comprobando
+              ? <><Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />Comprobando…</>
+              : 'Ya está, comprobar'}
           </button>
         </div>
       )}

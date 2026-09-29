@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   FolderOpen, RefreshCw, Plus, Sparkles, Square, AlertTriangle, ChevronRight,
-  Folder, MoreHorizontal, Check, RotateCcw, Cpu, Zap, Tag, Unlink, Link2, Trash2, X, ShieldCheck, HardDrive,
+  Folder, MoreHorizontal, Check, RotateCcw, Cpu, Zap, Tag, Unlink, Link2, Trash2, X, ShieldCheck, HardDrive, Loader2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';
@@ -331,7 +331,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [mismoDisco, setMismoDisco] = useState<MismoDisco | null>(null);
   // Ruta cuya ubicacion se esta cambiando (formulario en su propia fila).
   const [ubicacion, setUbicacion] = useState<{ id: string; valor: string } | null>(null);
-  const [guardandoUbicacion, setGuardandoUbicacion] = useState(false);
+  // La biblioteca cuya ubicacion se esta cambiando (su boton gira).
+  const [guardandoUbicacion, setGuardandoUbicacion] = useState<string | null>(null);
   const [recolocando, setRecolocando] = useState<string | null>(null);
   // Tutorial de la letra fija, por biblioteca. Sin tocar: abierto si las letras
   // se han cruzado (ahi es el arreglo), plegado si solo ha cambiado la letra.
@@ -674,11 +675,22 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
     }
   };
 
-  /** Lleva una biblioteca a otra ruta conservando todo lo suyo. */
+  /**
+   * Lleva una biblioteca a otra ruta conservando todo lo suyo. Puede tardar
+   * minutos (se renombran en el disco las miniaturas de cada archivo): mientras,
+   * el boton gira y un aviso dice que se esta haciendo. Antes solo se atenuaba
+   * el boton y parecia que no habia pasado nada.
+   */
   const cambiarUbicacion = async (pathId: string, nuevaRuta: string) => {
     const ruta = nuevaRuta.trim();
     if (!ruta) return;
-    setGuardandoUbicacion(true);
+    const p = paths.find(x => x.id === pathId);
+    const n = p?.fileCount || 0;
+    setGuardandoUbicacion(pathId);
+    const aviso = toast.loading(
+      `Cambiando «${p ? p.displayName || p.path : 'la biblioteca'}» a ${ruta}…`
+      + (n > 0 ? ` Se conservan favoritos, notas y colecciones de ${miles(n)} archivos: puede tardar unos minutos.` : ''),
+    );
     try {
       const r: any = await api.cambiarUbicacionRuta(pathId, ruta);
       if (r.success) {
@@ -686,31 +698,36 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         setMismoDisco(null);
         setShowAddPath(false);
         setNewPath('');
-        const n = r.movido?.archivos;
-        toast.success(n
-          ? `Ubicación cambiada. ${miles(n)} archivos siguen con sus favoritos, notas y colecciones. Sincronizando…`
-          : 'Ubicación cambiada. Sincronizando…');
+        const movidos = r.movido?.archivos;
+        toast.success(movidos
+          ? `Ubicación cambiada. ${miles(movidos)} archivos siguen con sus favoritos, notas y colecciones. Sincronizando…`
+          : 'Ubicación cambiada. Sincronizando…', { id: aviso, duration: 6000 });
         loadPaths();
+      } else {
+        toast.error('No se pudo cambiar la ubicación', { id: aviso });
       }
     } catch (e: any) {
-      toast.error(e?.message || 'No se pudo cambiar la ubicación');
+      toast.error(e?.message || 'No se pudo cambiar la ubicación', { id: aviso });
     } finally {
-      setGuardandoUbicacion(false);
+      setGuardandoUbicacion(null);
     }
   };
 
   /** Letras cruzadas: pone cada disco en su sitio (la que ocupa sale primero). */
   const recolocar = async (pathId: string) => {
     setRecolocando(pathId);
+    const aviso = toast.loading('Poniendo cada disco en su sitio… Se conservan los favoritos, notas y colecciones de los dos: puede tardar unos minutos.');
     try {
       const r = await api.recolocarRuta(pathId);
       if (r.success && r.data) {
         const partes = r.data.movimientos.map(m => `«${m.nombre}» → ${m.a}`);
-        toast.success(`Cada disco en su sitio: ${partes.join(' · ')}. Sincronizando…`);
+        toast.success(`Cada disco en su sitio: ${partes.join(' · ')}. Sincronizando…`, { id: aviso, duration: 6000 });
         loadPaths();
+      } else {
+        toast.error('No se pudo poner cada disco en su sitio', { id: aviso });
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'No se pudo poner cada disco en su sitio');
+      toast.error(e instanceof Error ? e.message : 'No se pudo poner cada disco en su sitio', { id: aviso });
       // Lo que queda (p. ej. dos discos que se han cambiado la letra el uno por
       // el otro) se arregla en Windows: se abre el paso a paso.
       setTutorialAbierto(prev => ({ ...prev, [pathId]: true }));
@@ -1123,10 +1140,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
           </div>
           <button
             onClick={() => cambiarUbicacion(mismoDisco.id, mismoDisco.nuevaRuta)}
-            disabled={guardandoUbicacion}
-            className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+            disabled={guardandoUbicacion !== null}
+            aria-busy={guardandoUbicacion === mismoDisco.id}
+            className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors ${
+              guardandoUbicacion === mismoDisco.id ? 'cursor-wait' : 'disabled:opacity-50'
+            }`}
           >
-            Cambiar su ubicación
+            {guardandoUbicacion === mismoDisco.id
+              ? <><Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />Cambiando…</>
+              : 'Cambiar su ubicación'}
           </button>
           <button onClick={() => setMismoDisco(null)} className="p-1 rounded-full text-humo hover:text-marfil" aria-label="Cerrar aviso">
             <X className="w-4 h-4" />
@@ -1350,10 +1372,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                                 {path.sugerencia.ocupadaPor.suDisco && (
                                   <button
                                     onClick={() => recolocar(path.id)}
-                                    disabled={recolocando !== null}
-                                    className="px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+                                    disabled={recolocando !== null || guardandoUbicacion !== null}
+                                    aria-busy={recolocando === path.id}
+                                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors ${
+                                      recolocando === path.id ? 'cursor-wait' : 'disabled:opacity-50'
+                                    }`}
                                   >
-                                    {recolocando === path.id ? 'Colocando…' : 'Poner cada disco en su sitio'}
+                                    {recolocando === path.id
+                                      ? <><Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />Colocando…</>
+                                      : 'Poner cada disco en su sitio'}
                                   </button>
                                 )}
                               </>
@@ -1368,10 +1395,15 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                                 </p>
                                 <button
                                   onClick={() => cambiarUbicacion(path.id, path.sugerencia!.ruta)}
-                                  disabled={guardandoUbicacion}
-                                  className="px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+                                  disabled={guardandoUbicacion !== null}
+                                  aria-busy={guardandoUbicacion === path.id}
+                                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors ${
+                                    guardandoUbicacion === path.id ? 'cursor-wait' : 'disabled:opacity-50'
+                                  }`}
                                 >
-                                  Usar esa ubicación
+                                  {guardandoUbicacion === path.id
+                                    ? <><Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />Cambiando…</>
+                                    : 'Usar esa ubicación'}
                                 </button>
                               </>
                             )}
@@ -1403,8 +1435,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                               className="flex-1 min-w-[12rem] px-3 py-1.5 rounded-full bg-tinta border border-pizarra text-[13px] text-marfil font-mono focus:outline-none focus:ring-2 focus:ring-lavanda"
                               autoFocus
                             />
-                            <button type="submit" disabled={guardandoUbicacion || !ubicacion!.valor.trim()} className="px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-40 transition-colors">
-                              Cambiar
+                            <button
+                              type="submit"
+                              disabled={guardandoUbicacion !== null || !ubicacion!.valor.trim()}
+                              aria-busy={guardandoUbicacion === path.id}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors ${
+                                guardandoUbicacion === path.id ? 'cursor-wait' : 'disabled:opacity-40'
+                              }`}
+                            >
+                              {guardandoUbicacion === path.id
+                                ? <><Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />Cambiando…</>
+                                : 'Cambiar'}
                             </button>
                             <button type="button" onClick={() => setUbicacion(null)} className="p-1.5 rounded-full text-humo hover:text-marfil" aria-label="Cancelar">
                               <X className="w-4 h-4" />

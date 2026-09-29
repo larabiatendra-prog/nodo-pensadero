@@ -10,6 +10,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { config } from '../config';
 import ScanContextModal from './ScanContextModal';
 import FolderRenameModal from './FolderRenameModal';
+import TutorialLetraFija from './TutorialLetraFija';
+import { discosDeLaTarjeta, type DiscoAFijar } from '../utils/letrasDiscos';
 
 /**
  * Rutas y escaneo — la sala de maquinas del archivo.
@@ -149,10 +151,6 @@ const capacidadTexto = (bytes: number) => bytes >= 1e12
 
 /** Nombre de una biblioteca para comparar si dos se llaman igual. */
 const nombreNorm = (p: { displayName?: string; path: string }) => String(p.displayName || p.path).trim().toLowerCase();
-
-// Como se le da a un disco una letra fija o un nombre en Windows. Pensadero lo
-// reconoce por su numero de serie: ni la letra ni el nombre le hacen perderlo.
-const COMO_LETRA_FIJA = 'Windows reparte las letras según el orden en que conectas los discos. Para que no vuelva a pasar, dale a cada disco una letra fija: Win+X → Administración de discos → clic derecho en el disco → «Cambiar la letra y rutas de acceso de unidad…». Mejor una letra alta (W:, X:…), que no choque con los pendrives.';
 
 /** Vinculada y con SU disco en su sitio (ni fuera ni otro disco en esa letra). */
 const estaConectada = (p: ScanPath) => p.isActive && p.status !== 'disconnected' && p.status !== 'otro_disco';
@@ -320,6 +318,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   const [ubicacion, setUbicacion] = useState<{ id: string; valor: string } | null>(null);
   const [guardandoUbicacion, setGuardandoUbicacion] = useState(false);
   const [recolocando, setRecolocando] = useState<string | null>(null);
+  // Tutorial de la letra fija, por biblioteca. Sin tocar: abierto si las letras
+  // se han cruzado (ahi es el arreglo), plegado si solo ha cambiado la letra.
+  const [tutorialAbierto, setTutorialAbierto] = useState<Record<string, boolean>>({});
+  const [comprobandoDiscos, setComprobandoDiscos] = useState(false);
 
   // Que hace el escaneo: catalogo de trabajos y los globales.
   const [catalogo, setCatalogo] = useState<CapacidadInfo[]>(CATALOGO_RESERVA);
@@ -694,8 +696,40 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo poner cada disco en su sitio');
+      // Lo que queda (p. ej. dos discos que se han cambiado la letra el uno por
+      // el otro) se arregla en Windows: se abre el paso a paso.
+      setTutorialAbierto(prev => ({ ...prev, [pathId]: true }));
     } finally {
       setRecolocando(null);
+    }
+  };
+
+  /**
+   * Tras cambiar las letras en Windows: vuelve a mirar donde esta el disco de
+   * cada biblioteca (sin reiniciar) y dice si ya los encuentra.
+   */
+  const comprobarDiscos = async (discos: DiscoAFijar[]) => {
+    const ids = [...new Set(discos.flatMap(d => d.bibliotecas))];
+    setComprobandoDiscos(true);
+    try {
+      // Una a una: si no hay disco en su ruta, la respuesta es un "error" que
+      // trae la ruta nueva; aqui solo importa que se ha vuelto a mirar.
+      for (const id of ids) await api.syncPath(id).catch(() => null);
+      const r = await api.getScanPaths();
+      const ahora: ScanPath[] = r.success && r.data ? r.data : [];
+      const siguen = [...new Map(ids.flatMap(id => discosDeLaTarjeta(ahora, id)).map(d => [d.letraAhora, d])).values()];
+      if (siguen.length > 0) {
+        toast(`Todavía no ha cambiado: ${siguen.map(d => `${d.etiqueta ? `«${d.etiqueta}»` : 'el disco'} sigue en ${d.letraAhora}`).join(' y ')}. Si ya le has cambiado la letra, espera unos segundos y vuelve a comprobar.`, { icon: '⚠️', duration: 8000 });
+      } else if (ahora.some(p => ids.includes(p.id) && p.sugerencia)) {
+        toast.success('Discos encontrados en su letra nueva. Pulsa «Usar esa ubicación» en cada biblioteca.', { duration: 6000 });
+      } else {
+        toast.success('Comprobado.');
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo comprobar dónde están los discos');
+    } finally {
+      setComprobandoDiscos(false);
+      loadPaths();
     }
   };
 
@@ -727,6 +761,13 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       }
       loadPaths();
     } catch (error: any) {
+      // Su disco no esta en esa ruta pero si en otra letra: no es un fallo, la
+      // tarjeta ya propone «Usar esa ubicación».
+      if (error?.data?.sugerencia) {
+        toast(`${error.message} Mira la propuesta en su tarjeta.`, { icon: '💽', duration: 6000 });
+        loadPaths();
+        return;
+      }
       setPaths(prev => prev.map(p =>
         p.id === pathId ? { ...p, status: 'error', errorMessage: error?.message || 'No se pudo sincronizar. Comprueba que la ruta existe.' } : p
       ));
@@ -1176,6 +1217,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                 // disco...). Antes el servidor lo guardaba y no se enseñaba.
                 const avisoServidor = path.isActive && path.lastError && path.status !== 'disconnected' ? path.lastError : null;
                 const editandoUbicacion = ubicacion?.id === path.id;
+                const discosTutorial = path.isActive && path.sugerencia ? discosDeLaTarjeta(paths, path.id) : [];
+                const cruzadas = path.sugerencia?.ocupadaPor?.mismoDisco === false;
 
                 return (
                   <li key={path.id} className={`py-5 ${path.isActive ? '' : 'opacity-60 hover:opacity-100 transition-opacity'}`}>
@@ -1216,7 +1259,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                               {path.disco.capacidad ? capacidadTexto(path.disco.capacidad) : ''}
                             </span>
                           )}
-                          {' · '}{path.status === 'scanning' ? 'sincronizando…' : `sincronizada ${haceCuanto(path.lastScan)}`}
+                          {' · '}{path.status === 'scanning' ? 'sincronizando…' : path.lastScan ? `sincronizada ${haceCuanto(path.lastScan)}` : 'sin sincronizar'}
                         </p>
                         {/* Dos bibliotecas que se llaman igual: se confunden. */}
                         {paths.filter(q => q.id !== path.id && nombreNorm(q) === nombreNorm(path)).length > 0 && (
@@ -1300,8 +1343,14 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                                 </button>
                               </>
                             )}
-                            {/* Que no vuelva a pasar: letra fija en Windows. */}
-                            <p className="basis-full text-[11px] text-humo leading-snug">{COMO_LETRA_FIJA}</p>
+                            {/* Que no vuelva a pasar: letra fija en Windows, paso a paso. */}
+                            <TutorialLetraFija
+                              discos={discosTutorial}
+                              abierto={tutorialAbierto[path.id] ?? cruzadas}
+                              onAlternar={() => setTutorialAbierto(prev => ({ ...prev, [path.id]: !(prev[path.id] ?? cruzadas) }))}
+                              onComprobar={() => comprobarDiscos(discosTutorial)}
+                              comprobando={comprobandoDiscos}
+                            />
                           </div>
                         )}
 

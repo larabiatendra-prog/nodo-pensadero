@@ -660,10 +660,23 @@ module.exports = function createSystemRoutes(deps) {
         return res.status(404).json({ success: false, error: 'Ruta no encontrada' });
       }
 
-      try {
-        await fs.access(pathConfig.path);
-      } catch {
-        return res.status(400).json({ success: false, error: 'La ruta no existe o no es accesible' });
+      const accesible = await fs.access(pathConfig.path).then(() => true).catch(() => false);
+      if (!accesible) {
+        // Se sincroniza igual: marca el estado real y busca su disco en otra
+        // letra. Antes se contestaba "no existe" sin mirar, y tras darle al
+        // disco otra letra en Windows el aviso seguia con la vieja hasta
+        // reiniciar. No se lee nada del disco ni se borra nada suyo.
+        let estado = null;
+        if (pathConfig.isActive) {
+          const r = await syncFiles({ soloIds: [id] });
+          estado = (r && r.porBiblioteca && r.porBiblioteca[id]) || null;
+        }
+        const s = estado && estado.sugerencia;
+        return res.status(400).json({
+          success: false,
+          error: s ? `El disco de esta biblioteca está ahora en ${s.ruta}.` : 'La ruta no existe o no es accesible',
+          sugerencia: s || undefined,
+        });
       }
 
       // Sincronizar una ruta desvinculada es volver a vincularla.

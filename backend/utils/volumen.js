@@ -16,6 +16,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { execFile } = require('child_process');
 
 /** Numero de serie del volumen donde vive `ruta`, o null si no se sabe. */
 async function serialDe(ruta) {
@@ -74,4 +75,40 @@ async function buscarDisco(serie, rutaVieja, unidades) {
   return null;
 }
 
-module.exports = { serialDe, unidadDe, seriesDeUnidades, buscarDisco };
+/**
+ * Nombre (etiqueta) y capacidad de cada disco montado, por su numero de serie
+ * (el mismo que `stat.dev`: comprobado el 29/09/2026 con Win32_Volume). Sirve
+ * para distinguir dos bibliotecas que se llaman igual («(1) WORKS» en un
+ * LaCie de 6 TB y en uno de 10 TB). Una consulta a Windows cuesta ~1 s, asi
+ * que se guarda unos minutos. Si falla, un mapa vacio: es solo informacion.
+ * @returns {Promise<Map<number, {etiqueta: string|null, capacidad: number|null, letra: string|null}>>}
+ */
+let infoCacheada = null;
+function infoDiscos() {
+  if (infoCacheada && Date.now() - infoCacheada.en < 5 * 60 * 1000) return Promise.resolve(infoCacheada.mapa);
+  if (process.platform !== 'win32') return Promise.resolve(new Map());
+  const orden = 'Get-CimInstance Win32_Volume | Where-Object DriveLetter | Select-Object DriveLetter,Label,Capacity,SerialNumber | ConvertTo-Json -Compress';
+  return new Promise((resolve) => {
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', orden], { timeout: 15000, windowsHide: true }, (err, stdout) => {
+      const mapa = new Map();
+      if (!err) {
+        try {
+          const datos = JSON.parse(String(stdout || '').trim() || '[]');
+          for (const v of Array.isArray(datos) ? datos : [datos]) {
+            const serie = Number(v && v.SerialNumber);
+            if (!serie) continue;
+            mapa.set(serie, {
+              etiqueta: typeof v.Label === 'string' && v.Label.trim() ? v.Label.trim() : null,
+              capacidad: Number(v.Capacity) || null,
+              letra: v.DriveLetter || null,
+            });
+          }
+        } catch { /* sin informacion: no pasa nada */ }
+      }
+      infoCacheada = { en: Date.now(), mapa };
+      resolve(mapa);
+    });
+  });
+}
+
+module.exports = { serialDe, unidadDe, seriesDeUnidades, buscarDisco, infoDiscos };

@@ -30,6 +30,7 @@ const colorAnalyzer = require('./colorAnalyzer');
 const favoritesManager = require('./favoritesManager');
 const collectionsManager = require('./collectionsManager');
 const catalogReader = require('./catalogReader');
+const { anotarCruces } = require('./utils/recolocar');
 const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
 const peopleRegistry = require('./peopleRegistry');
 const personsAggregator = require('./personsAggregator');
@@ -189,7 +190,7 @@ async function guardarEstadoDeRutas(rutasSync, tocadas = null) {
     // Si el usuario cambio la ruta (otra letra) mientras se sincronizaba, lo
     // que sabe esta pasada es de la ruta vieja: no se mezcla.
     if (s.path !== r.path) continue;
-    for (const k of ['status', 'lastError', 'lastScan', 'fileCount', 'volumen', 'sugerencia']) {
+    for (const k of ['status', 'lastError', 'lastScan', 'fileCount', 'volumen', 'sugerencia', 'disco']) {
       if (Object.prototype.hasOwnProperty.call(s, k)) r[k] = s[k];
     }
   }
@@ -1175,13 +1176,33 @@ async function performSync(opts = {}) {
     if (p.volumen && serie && serie !== p.volumen) {
       console.warn(`⚠️ En ${p.path} hay otro disco (serie ${serie}; la biblioteca es del ${p.volumen})`);
       p.status = 'otro_disco';
-      p.lastError = 'En esta ruta hay ahora otro disco, no el de esta biblioteca. No se ha leído para no mezclar lo de los dos.';
+      // Si ese disco es el de otra biblioteca, se dice cual: "otro disco" a
+      // secas no dejaba ver que eran dos discos con las letras cruzadas.
+      const duena = paths.find(q => q.id !== p.id && q.volumen === serie);
+      const info = (await volumen.infoDiscos().catch(() => new Map())).get(serie);
+      const cual = [info && info.etiqueta ? `«${info.etiqueta}»` : null, duena ? `el disco de «${duena.displayName || duena.path}»` : null].filter(Boolean).join(', ');
+      p.lastError = `En esta ruta está ahora ${cual || 'otro disco'}, no el de esta biblioteca. No se ha leído para no mezclar lo de los dos.`;
       p.sugerencia = await sugerir(p);
       continue;
     }
     if (serie && !p.volumen) p.volumen = serie;
     p.sugerencia = null;
     legibles.push(p);
+  }
+
+  // Letras cruzadas: si la ruta a la que ha ido el disco de una biblioteca la
+  // tiene otra que es OTRO disco, no son "el mismo disco" (lo que decia el
+  // aviso): se anota donde esta el de la otra para poder ponerlos en su sitio.
+  await anotarCruces(objetivo, paths, async (serie, rutaVieja) => {
+    if (!unidades) unidades = await volumen.seriesDeUnidades();
+    return volumen.buscarDisco(serie, rutaVieja, unidades);
+  }).catch(err => fallos.record('comprobar las letras de los discos', err, {}));
+  // Nombre y tamaño de cada disco (el ultimo que se vio): distinguen dos
+  // bibliotecas que se llaman igual.
+  const infoDisco = await volumen.infoDiscos().catch(() => new Map());
+  for (const p of objetivo) {
+    const d = p.volumen ? infoDisco.get(p.volumen) : null;
+    if (d) p.disco = { etiqueta: d.etiqueta, capacidad: d.capacidad };
   }
 
   const conteos = new Map();

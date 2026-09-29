@@ -775,6 +775,25 @@ class ApiService {
     });
   }
 
+  /**
+   * Pone el disco de esta biblioteca en su sitio aunque las letras se hayan
+   * cruzado con otra (primero mueve la que ocupa su ruta). Ver utils/recolocar.js.
+   */
+  async recolocarRuta(pathId: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ movimientos: Array<{ id: string; de: string; a: string; nombre: string; archivos: number | null }> }>>(
+      `${API_BASE_URL}/scan-paths/${pathId}/recolocar`,
+      { method: 'POST' },
+    );
+  }
+
+  /** Nombre de la biblioteca en Pensadero (no toca el disco ni sus carpetas). */
+  async renombrarRuta(pathId: string, displayName: string) {
+    return this.fetchWithErrorHandling<ApiResponse<{ id: string; displayName?: string }>>(`${API_BASE_URL}/scan-paths/${pathId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ displayName }),
+    });
+  }
+
   // Cambiar estado activo/inactivo de una ruta
   async togglePath(pathId: string, isActive: boolean) {
     return this.fetchWithErrorHandling<ApiResponse<any>>(`${API_BASE_URL}/scan-paths/${pathId}/toggle`, {

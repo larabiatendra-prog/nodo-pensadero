@@ -30,6 +30,7 @@ const fallos = require('../utils/failureReason');
 const escaneoConfig = require('../services/escaneoConfig');
 const scanOrchestrator = require('../services/scanOrchestrator');
 const volumen = require('../utils/volumen');
+const { planRecolocar } = require('../utils/recolocar');
 
 /**
  * Factory function que crea el router con las dependencias inyectadas
@@ -816,6 +817,70 @@ module.exports = function createSystemRoutes(deps) {
       res.json({ success: true, data: pathConfig, movido, sincronizando: !!(remapeo || typeof isActive === 'boolean') });
     } catch (error) {
       return responderFallo(res, 'editar la biblioteca', error);
+    }
+  });
+
+  /**
+   * POST /api/scan-paths/:id/recolocar  (?simular=1 solo dice que haria)
+   *
+   * Pone el disco de esta biblioteca en su sitio cuando Windows le ha cambiado
+   * la letra, aunque su ruta nueva la tenga otra biblioteca que es OTRO disco
+   * (letras cruzadas): primero lleva esa a donde esta ahora su disco y luego
+   * esta. Cada paso es el mismo "cambiar ubicacion" de siempre
+   * (remapearBiblioteca): se conserva todo lo suyo. Ver utils/recolocar.js.
+   */
+  router.post('/scan-paths/:id/recolocar', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const paths = await loadScanPaths();
+      const unidades = await volumen.seriesDeUnidades();
+      const plan = await planRecolocar(paths, id, (serie, ruta) => volumen.buscarDisco(serie, ruta, unidades));
+      if (plan.error) {
+        return res.status(plan.status || 409).json({
+          success: false, error: plan.error,
+          intercambio: !!plan.intercambio, esperaOtra: !!plan.esperaOtra, mismoDisco: !!plan.mismoDisco,
+        });
+      }
+      // Cada paso con las mismas reglas que al cambiar la ubicacion a mano,
+      // sobre como quedarian las rutas tras los pasos anteriores.
+      const simuladas = paths.map(p => ({ ...p }));
+      for (const m of plan.movimientos) {
+        const v = await validarCarpeta(m.a, simuladas, m.id);
+        if (v.error) return res.status(v.status || 400).json({ success: false, error: v.error });
+        simuladas.find(p => p.id === m.id).path = v.ruta;
+        m.a = v.ruta;
+      }
+      if (req.query.simular) {
+        return res.json({ success: true, data: { simulado: true, movimientos: plan.movimientos } });
+      }
+
+      const hechos = [];
+      for (const m of plan.movimientos) {
+        const q = paths.find(p => p.id === m.id);
+        q.path = m.a;
+        q.status = 'connected';
+        q.lastError = null;
+        q.sugerencia = null;
+        // El volumen no cambia: es el mismo disco en otra letra.
+        await saveScanPaths(paths);
+        let movido = null;
+        if (typeof remapearBiblioteca === 'function') {
+          try {
+            movido = await remapearBiblioteca(m.id, m.de, m.a);
+          } catch (err) {
+            fallos.record('llevar la biblioteca a su nueva ubicacion', err, { path: m.a });
+          }
+        }
+        console.log(`🔀 Biblioteca recolocada (id estable ${m.id}): ${m.de} -> ${m.a}`);
+        hechos.push({ ...m, nombre: q.displayName || q.path, archivos: movido ? movido.archivos : null });
+      }
+      if (typeof alCambiarRutas === 'function') {
+        try { await alCambiarRutas(); } catch (err) { fallos.record('aplicar el cambio de una ruta', err, {}); }
+      }
+      sincronizarLuego(hechos.map(h => h.id));
+      res.json({ success: true, data: { movimientos: hechos }, sincronizando: true });
+    } catch (error) {
+      return responderFallo(res, 'poner cada disco en su sitio', error);
     }
   });
 

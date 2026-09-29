@@ -42,8 +42,17 @@ interface ScanPath {
   visualTotal?: number;     // archivos que el escaneo mira bajo la ruta (live)
   visualScanned?: number;   // de esos, cuantos tienen descripcion visual
   pendientes?: number;      // a cuantos les falta algun trabajo encendido ahora
-  /** El disco de esta biblioteca esta ahora en otra ruta (otra letra). */
-  sugerencia?: { ruta: string; ocupadaPor?: { id: string; nombre: string } | null } | null;
+  /**
+   * El disco de esta biblioteca esta ahora en otra ruta (otra letra). Si esa
+   * ruta la tiene otra biblioteca: `mismoDisco` dice si es de verdad el mismo
+   * disco y, si no, `suDisco` donde esta ahora el de la otra (letras cruzadas).
+   */
+  sugerencia?: {
+    ruta: string;
+    ocupadaPor?: { id: string; nombre: string; mismoDisco?: boolean; suDisco?: string | null } | null;
+  } | null;
+  /** Nombre (etiqueta) y capacidad del disco, la ultima vez que se vio. */
+  disco?: { etiqueta: string | null; capacidad: number | null } | null;
   escaneo?: Partial<Capacidades>;       // lo que esta ruta sobrescribe
   escaneoEfectivo?: Capacidades;         // global + sobrescrituras
   /** Disco de copia de seguridad: sus copias exactas se esconden solas. */
@@ -132,6 +141,18 @@ const PRESETS: Array<{ id: string; nombre: string; detalle: string; valores: Par
 ];
 
 const miles = (n: number) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+/** "6 TB", "931 GB": la capacidad como la dice el fabricante (potencias de 1000). */
+const capacidadTexto = (bytes: number) => bytes >= 1e12
+  ? `${(bytes / 1e12).toLocaleString('es-ES', { maximumFractionDigits: 1 })} TB`
+  : `${Math.round(bytes / 1e9)} GB`;
+
+/** Nombre de una biblioteca para comparar si dos se llaman igual. */
+const nombreNorm = (p: { displayName?: string; path: string }) => String(p.displayName || p.path).trim().toLowerCase();
+
+// Como se le da a un disco una letra fija o un nombre en Windows. Pensadero lo
+// reconoce por su numero de serie: ni la letra ni el nombre le hacen perderlo.
+const COMO_LETRA_FIJA = 'Windows reparte las letras según el orden en que conectas los discos. Para que no vuelva a pasar, dale a cada disco una letra fija: Win+X → Administración de discos → clic derecho en el disco → «Cambiar la letra y rutas de acceso de unidad…». Mejor una letra alta (W:, X:…), que no choque con los pendrives.';
 
 /** Vinculada y con SU disco en su sitio (ni fuera ni otro disco en esa letra). */
 const estaConectada = (p: ScanPath) => p.isActive && p.status !== 'disconnected' && p.status !== 'otro_disco';
@@ -298,6 +319,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   // Ruta cuya ubicacion se esta cambiando (formulario en su propia fila).
   const [ubicacion, setUbicacion] = useState<{ id: string; valor: string } | null>(null);
   const [guardandoUbicacion, setGuardandoUbicacion] = useState(false);
+  const [recolocando, setRecolocando] = useState<string | null>(null);
 
   // Que hace el escaneo: catalogo de trabajos y los globales.
   const [catalogo, setCatalogo] = useState<CapacidadInfo[]>(CATALOGO_RESERVA);
@@ -657,6 +679,36 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       toast.error(e?.message || 'No se pudo cambiar la ubicación');
     } finally {
       setGuardandoUbicacion(false);
+    }
+  };
+
+  /** Letras cruzadas: pone cada disco en su sitio (la que ocupa sale primero). */
+  const recolocar = async (pathId: string) => {
+    setRecolocando(pathId);
+    try {
+      const r = await api.recolocarRuta(pathId);
+      if (r.success && r.data) {
+        const partes = r.data.movimientos.map(m => `«${m.nombre}» → ${m.a}`);
+        toast.success(`Cada disco en su sitio: ${partes.join(' · ')}. Sincronizando…`);
+        loadPaths();
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo poner cada disco en su sitio');
+    } finally {
+      setRecolocando(null);
+    }
+  };
+
+  /** Le pone a la biblioteca el nombre de su disco para distinguirla de otra que se llama igual. */
+  const renombrarConDisco = async (p: ScanPath) => {
+    const etiqueta = p.disco?.etiqueta;
+    if (!etiqueta) return;
+    const base = (p.displayName || p.path).split(' · ')[0];
+    try {
+      const r = await api.renombrarRuta(p.id, `${base} · ${etiqueta}`);
+      if (r.success) { toast.success('Nombre cambiado'); loadPaths(); }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo cambiar el nombre');
     }
   };
 
@@ -1157,8 +1209,39 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                         </div>
                         <p className="mt-0.5 text-[11px] text-humo truncate">
                           <span className="font-mono">{path.path}</span>
+                          {path.disco && (path.disco.etiqueta || path.disco.capacidad) && (
+                            <span title="El disco de esta biblioteca (se reconoce por su número de serie, no por la letra)">
+                              {' · disco '}{path.disco.etiqueta ? `«${path.disco.etiqueta}»` : ''}
+                              {path.disco.etiqueta && path.disco.capacidad ? ' de ' : ''}
+                              {path.disco.capacidad ? capacidadTexto(path.disco.capacidad) : ''}
+                            </span>
+                          )}
                           {' · '}{path.status === 'scanning' ? 'sincronizando…' : `sincronizada ${haceCuanto(path.lastScan)}`}
                         </p>
+                        {/* Dos bibliotecas que se llaman igual: se confunden. */}
+                        {paths.filter(q => q.id !== path.id && nombreNorm(q) === nombreNorm(path)).length > 0 && (
+                          <div className="mt-2 text-[11px] text-humo leading-snug">
+                            Hay otra biblioteca que se llama igual.
+                            {path.disco?.etiqueta ? (
+                              <>
+                                {' '}Puedes ponerle el nombre de su disco:{' '}
+                                <button
+                                  onClick={() => renombrarConDisco(path)}
+                                  className="text-lavanda underline underline-offset-2 hover:text-lavanda-claro"
+                                >
+                                  llamarla «{(path.displayName || path.path).split(' · ')[0]} · {path.disco.etiqueta}»
+                                </button>.
+                              </>
+                            ) : null}
+                            {(!path.disco?.etiqueta || paths.some(q => q.id !== path.id && q.disco?.etiqueta && q.disco.etiqueta === path.disco?.etiqueta)) && (
+                              <>
+                                {' '}Si los discos también se llaman igual (o no tienen nombre), puedes cambiarle el nombre al disco en Windows:
+                                Explorador → clic derecho en la unidad → «Cambiar nombre», o Administración de discos → clic derecho → «Propiedades».
+                                Pensadero no lo pierde: lo reconoce por su número de serie.
+                              </>
+                            )}
+                          </div>
+                        )}
 
                         {conectada && total > 0 ? (
                           <div className="mt-3 flex items-center gap-3 flex-wrap">
@@ -1179,7 +1262,27 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                         {path.isActive && path.sugerencia && (
                           <div className="mt-3 flex items-start gap-3 flex-wrap rounded-xl border border-lavanda/30 bg-lavanda/10 px-3 py-2.5">
                             <HardDrive className="w-4 h-4 mt-0.5 text-lavanda shrink-0" />
-                            {path.sugerencia.ocupadaPor ? (
+                            {path.sugerencia.ocupadaPor && path.sugerencia.ocupadaPor.mismoDisco === false ? (
+                              // Letras cruzadas: dos discos distintos. Antes decia
+                              // "son el mismo disco: quita una", y no lo eran.
+                              <>
+                                <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
+                                  Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>, pero esa ruta la tiene «{path.sugerencia.ocupadaPor.nombre}», que es <b className="text-marfil font-medium">otro disco</b>
+                                  {path.sugerencia.ocupadaPor.suDisco
+                                    ? <> (ahora en <span className="font-mono text-marfil">{path.sugerencia.ocupadaPor.suDisco}</span>). Windows les ha cruzado las letras: no quites ninguna.</>
+                                    : <> y ahora no está conectado. Conéctalo también y podrás poner cada uno en su sitio con un clic. No quites ninguna.</>}
+                                </p>
+                                {path.sugerencia.ocupadaPor.suDisco && (
+                                  <button
+                                    onClick={() => recolocar(path.id)}
+                                    disabled={recolocando !== null}
+                                    className="px-3 py-1 rounded-full text-xs font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-50 transition-colors"
+                                  >
+                                    {recolocando === path.id ? 'Colocando…' : 'Poner cada disco en su sitio'}
+                                  </button>
+                                )}
+                              </>
+                            ) : path.sugerencia.ocupadaPor ? (
                               <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
                                 Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>, pero esa carpeta ya está añadida como «{path.sugerencia.ocupadaPor.nombre}». Son el mismo disco: quita una de las dos.
                               </p>
@@ -1197,6 +1300,8 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                                 </button>
                               </>
                             )}
+                            {/* Que no vuelva a pasar: letra fija en Windows. */}
+                            <p className="basis-full text-[11px] text-humo leading-snug">{COMO_LETRA_FIJA}</p>
                           </div>
                         )}
 

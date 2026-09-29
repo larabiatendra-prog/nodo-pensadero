@@ -105,6 +105,10 @@ export default function MediaModal({
   }, [showFaceBoxes]);
   const imgRef = useRef<HTMLImageElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Clic fuera de la tarjeta = cerrar, como la X o Esc. Solo si el clic
+  // empieza Y acaba en el fondo: seleccionar texto o arrastrar la barra del
+  // video y soltar fuera no la cierra.
+  const pulsadoEnFondo = useRef(false);
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
   // Para video: dimensiones naturales del video y currentTime para mostrar
   // bboxes solo cuando estamos cerca del frame donde se detectaron caras
@@ -807,7 +811,14 @@ export default function MediaModal({
 
   return (
     <>
-      <div className="fixed inset-0 bg-noche bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div
+        className="fixed inset-0 bg-noche bg-opacity-50 flex items-center justify-center p-4 z-50"
+        onMouseDown={(e) => { pulsadoEnFondo.current = e.target === e.currentTarget; }}
+        onClick={(e) => {
+          if (pulsadoEnFondo.current && e.target === e.currentTarget) onClose();
+          pulsadoEnFondo.current = false;
+        }}
+      >
         <div className="bg-tinta rounded-2xl max-w-[min(92vw,1700px)] w-full max-h-[90vh] overflow-auto relative">
 
         {/* Navigation Arrows - Solo si hay múltiples archivos */}

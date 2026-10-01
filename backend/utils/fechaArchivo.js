@@ -127,14 +127,23 @@ function deCarpeta(fullPath) {
   return 0;
 }
 
-/** Fecha del propio archivo en disco (cuando se copio). */
+/**
+ * Fecha del propio archivo en disco: la MAS ANTIGUA de creacion y modificacion.
+ * Al copiar, Windows pone la creacion al dia de la copia y conserva la
+ * modificacion, asi que la creacion sola fechaba "hoy" todo lo volcado (los
+ * TIFF de 2019 de la prueba con usuarios salian de 2026). Editado despues, la
+ * mas antigua sigue siendo la de origen.
+ */
 function deDisco(file) {
+  let mejor = null;
   for (const bruto of [file && file.createdAt, file && file.modifiedAt]) {
     if (!bruto) continue;
     const d = bruto instanceof Date ? bruto : new Date(bruto);
-    if (!isNaN(d.getTime())) return { dia: aDia(d.getFullYear(), d.getMonth() + 1, d.getDate()), hora: d.getTime(), minuto: d.getHours() * 60 + d.getMinutes() };
+    if (isNaN(d.getTime())) continue;
+    if (!mejor || d.getTime() < mejor.getTime()) mejor = d;
   }
-  return null;
+  if (!mejor) return null;
+  return { dia: aDia(mejor.getFullYear(), mejor.getMonth() + 1, mejor.getDate()), hora: mejor.getTime(), minuto: mejor.getHours() * 60 + mejor.getMinutes() };
 }
 
 /**

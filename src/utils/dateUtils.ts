@@ -44,6 +44,37 @@ export const formatDate = (date: string | Date, options?: Intl.DateTimeFormatOpt
   return dateObj.toLocaleDateString('es-ES', options);
 };
 
+/** Lo minimo de un archivo para fecharlo en pantalla. */
+interface ConFecha {
+  fechaDia?: number | null;
+  fechaFuente?: string;
+  createdAt?: Date | string;
+  modifiedAt?: Date | string;
+}
+
+const AVISO_DISCO = 'Fecha del archivo en disco: puede ser la de cuando se copió';
+
+/**
+ * La fecha que se enseña de un archivo: la que resolvio el servidor
+ * (nombre > carpeta > camara > disco, backend/utils/fechaArchivo.js), la misma
+ * que ordena la galeria. Antes las tarjetas pintaban `createdAt`, la fecha de
+ * COPIA: una boda de junio volcada en septiembre salia de septiembre. `aviso`
+ * (para el title) dice cuando solo la sabe el disco, que es la menos fiable.
+ */
+export const fechaDeArchivo = (f: ConFecha): { texto: string; aviso?: string } => {
+  const dia = f.fechaDia;
+  if (dia && dia > 19000101) {
+    const d = new Date(Math.floor(dia / 10000), (Math.floor(dia / 100) % 100) - 1, dia % 100);
+    return { texto: d.toLocaleDateString('es-ES'), aviso: f.fechaFuente === 'disco' ? AVISO_DISCO : undefined };
+  }
+  // Sin fecha del servidor: la mas antigua del disco (la de copia es la nueva).
+  const ts = [f.createdAt, f.modifiedAt]
+    .map(x => (x ? new Date(x).getTime() : NaN))
+    .filter(t => !isNaN(t));
+  if (ts.length === 0) return { texto: '' };
+  return { texto: new Date(Math.min(...ts)).toLocaleDateString('es-ES'), aviso: AVISO_DISCO };
+};
+
 /**
  * Formatea una fecha con opciones por defecto más legibles
  */

@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Download, Heart, Plus, X, Sparkles, FolderOpen, Lock } from 'lucide-react';
 import { MediaFile, VideoItem } from '../types';
-import { formatDate } from '../utils/dateUtils';
+import { fechaDeArchivo } from '../utils/dateUtils';
 import { normalizePath } from '../utils/formatData';
 import VideoThumbnail from './VideoThumbnail';
 
@@ -30,9 +30,12 @@ export const formatFileSize = (bytes: number) => {
 
 export const formatDuration = (seconds?: number) => {
   if (!seconds) return '';
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
+  // Segundos enteros: la duracion llega con decimales del probe ("72:57.969...").
+  const total = Math.round(seconds);
+  const horas = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = (total % 60).toString().padStart(2, '0');
+  return horas > 0 ? `${horas}:${mins.toString().padStart(2, '0')}:${secs}` : `${mins}:${secs}`;
 };
 
 const convertToVideoItem = (file: MediaFile): VideoItem => ({
@@ -136,7 +139,7 @@ function MediaCardBase({
             )}
             <div className="flex items-center justify-between text-xs sm:text-sm text-white/90">
               <span>{formatFileSize(file.size)}</span>
-              <span>{formatDate(file.createdAt)}</span>
+              <span title={fechaDeArchivo(file).aviso}>{fechaDeArchivo(file).texto}</span>
             </div>
           </div>
           <div className="flex justify-end space-x-2">

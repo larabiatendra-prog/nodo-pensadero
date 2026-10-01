@@ -38,6 +38,9 @@ function normalize(s) {
 // nivel el valor es array, no entra dentro — eso se maneja con ops especificos.
 function getField(file, path) {
   if (!file || !path) return undefined;
+  // "Fecha desde/hasta" se guarda como `createdAt`, que es la fecha de COPIA
+  // en disco: se mira la fecha resuelta (nombre > carpeta > camara > disco).
+  if (path === 'createdAt' && file.extractedDate) return file.extractedDate;
   const parts = path.split('.');
   let cur = file;
   for (const p of parts) {
@@ -115,6 +118,10 @@ function evaluateRule(file, rule) {
     if (typeof v === 'number') return v;
     if (v instanceof Date) return v.getTime();
     if (typeof v === 'string') {
+      // "2026-06-14" (un campo de fecha) es la medianoche LOCAL de ese dia;
+      // Date.parse la toma en UTC y en España dejaba fuera el propio dia.
+      const dia = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (dia) return new Date(+dia[1], +dia[2] - 1, +dia[3]).getTime();
       const t = Date.parse(v);
       if (!isNaN(t)) return t;
       const n = parseFloat(v);

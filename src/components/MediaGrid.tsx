@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Play, Download, Heart, MoreHorizontal, Clock, Eye, Plus, X } from 'lucide-react';
 import { MediaFile } from '../types';
-import { formatDate } from '../utils/dateUtils';
+import { fechaDeArchivo } from '../utils/dateUtils';
 import Masonry from 'react-masonry-css';
 import { SessionItem } from '../hooks/useSessionGroups';
 import { SessionCard, SessionHeader, SessionShowMore, SessionBoundaryCard } from './SessionCard';
@@ -316,7 +316,7 @@ export default function MediaGrid({
                     {formatFileSize(file.size)}
                   </td>
                   <td className="hidden md:table-cell py-4 px-3 md:px-4 text-sm text-slate-600">
-                    {formatDate(file.createdAt)}
+                    <span title={fechaDeArchivo(file).aviso}>{fechaDeArchivo(file).texto}</span>
                   </td>
                   <td className="hidden sm:table-cell py-4 px-3 md:px-4">
                     <div className="flex flex-wrap gap-1">

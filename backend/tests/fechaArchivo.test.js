@@ -32,6 +32,17 @@ test('prioridad: nombre > carpeta > camara > disco', () => {
   assert.strictEqual(fecha.resolver(sinNada).fuente, 'disco');
 });
 
+test('disco: la mas antigua de creacion y modificacion (una copia no es de hoy)', () => {
+  // Volcado hoy: creacion = el dia de la copia, modificacion = la de origen.
+  const copiado = { fullPath: 'E:\\TIFF\\scan_001.tif', name: 'scan_001.tif', createdAt: '2026-09-29T21:00:00', modifiedAt: '2019-11-05T10:00:00' };
+  assert.deepStrictEqual([fecha.resolver(copiado).fuente, fecha.resolver(copiado).dia], ['disco', 20191105]);
+  // Editado despues de crearlo: manda la creacion, que es la de origen.
+  const editado = { ...copiado, createdAt: '2024-03-01T10:00:00', modifiedAt: '2025-06-01T10:00:00' };
+  assert.strictEqual(fecha.resolver(editado).dia, 20240301);
+  // Una fecha rota no tapa la buena.
+  assert.strictEqual(fecha.resolver({ ...copiado, createdAt: 'no-es-fecha' }).dia, 20191105);
+});
+
 test('aplicar rellena fechaDia y extractedDate a medianoche local', () => {
   const [f] = fecha.aplicar([{ fullPath: 'E:\\A\\190907_Bioritme\\x.jpg', name: 'x.jpg' }]);
   assert.strictEqual(f.fechaDia, 20190907);

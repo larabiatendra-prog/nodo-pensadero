@@ -2,7 +2,7 @@
 // Se ejecuta con la zona de España para que el fallo antiguo se vea.
 import test from 'node:test';
 import assert from 'node:assert';
-import { aTextoDiaLocal, deTextoDiaLocal, finDelDia } from '../src/utils/dateUtils.ts';
+import { aTextoDiaLocal, deTextoDiaLocal, finDelDia, fechaDeArchivo } from '../src/utils/dateUtils.ts';
 
 test('el dia de un campo de fecha es la medianoche LOCAL de ese dia', () => {
   const d = deTextoDiaLocal('2026-09-07');
@@ -24,4 +24,18 @@ test('un archivo del mismo dia entra en un rango de un solo dia', () => {
   const hasta = finDelDia(deTextoDiaLocal('2026-09-07')!);
   assert.ok(archivo >= desde && archivo <= hasta);
   assert.ok(new Date(2026, 8, 7, 23, 30) <= hasta, 'la noche del ultimo dia tambien');
+});
+
+test('la tarjeta enseña la fecha resuelta, no la de copia', () => {
+  // Boda del 14/06 volcada el 29/09: antes la tarjeta decia 29/9/2026.
+  const boda = { fechaDia: 20260614, fechaFuente: 'carpeta', createdAt: new Date(2026, 8, 29, 21) };
+  assert.deepStrictEqual(fechaDeArchivo(boda), { texto: '14/6/2026', aviso: undefined });
+  // Solo la sabe el disco: se avisa en el title.
+  const deDisco = fechaDeArchivo({ fechaDia: 20191105, fechaFuente: 'disco' });
+  assert.strictEqual(deDisco.texto, '5/11/2019');
+  assert.ok(deDisco.aviso);
+  // Sin fecha del servidor: la mas antigua de las dos del disco.
+  const suelto = fechaDeArchivo({ createdAt: new Date(2026, 8, 29), modifiedAt: new Date(2019, 10, 5) });
+  assert.strictEqual(suelto.texto, '5/11/2019');
+  assert.strictEqual(fechaDeArchivo({}).texto, '');
 });

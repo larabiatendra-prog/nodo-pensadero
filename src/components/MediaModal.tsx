@@ -24,6 +24,7 @@ import { resolvePlayable, PlayableInfo } from '../utils/playable';
 // El volumen es comun a los dos reproductores (ver utils/volumen.ts).
 import { guardarVolumen, leerVolumen } from '../utils/volumen';
 import { AvisoSistema, AvisoTope } from './ProxiesPanel';
+import { formatDuration } from './MediaCard';
 
 interface MediaModalProps {
   file: MediaFile | null;
@@ -473,13 +474,6 @@ export default function MediaModal({
     return `${Math.round(bytes / Math.pow(1024, i) * 100) / 100} ${sizes[i]}`;
   };
 
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return '';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
   // Función para calcular similaridad de etiquetas usando el coeficiente de Jaccard
   const calculateTagSimilarity = (tags1: string[], tags2: string[]): number => {
     const set1 = new Set(tags1.map(tag => tag.toLowerCase()));
@@ -679,7 +673,7 @@ export default function MediaModal({
               <button
                 onClick={(e) => { e.stopPropagation(); setShowFaceBoxes(v => !v); }}
                 className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors"
-                title={showFaceBoxes ? `Caras detectadas a los ${detTime?.toFixed(1)}s — salta ahi para verlas` : 'Mostrar caras detectadas'}
+                title={showFaceBoxes ? `Caras detectadas en el ${formatDuration(detTime ?? 0) || '0:00'} — salta ahi para verlas` : 'Mostrar caras detectadas'}
               >
                 {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
               </button>
@@ -705,9 +699,9 @@ export default function MediaModal({
                   }
                 }}
                 className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-lavanda/90 hover:bg-lavanda text-white text-xs rounded-full backdrop-blur-sm transition-colors"
-                title={`Saltar al frame con caras detectadas (${jumpTarget.toFixed(1)}s)`}
+                title={`Saltar al momento con caras (${formatDuration(jumpTarget) || "0:00"})`}
               >
-                Caras a {jumpTarget.toFixed(1)}s — ir
+                Caras en el {formatDuration(jumpTarget) || '0:00'} — ir
               </button>
             )}
           </div>

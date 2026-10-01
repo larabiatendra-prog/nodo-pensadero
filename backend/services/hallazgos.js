@@ -85,6 +85,9 @@ function semilla(txt) {
 
 /** Fecha de un archivo: la del nombre o la de la carpeta antes que la del disco. */
 function fechaDe(file) {
+  // La fecha resuelta en el servidor (utils/fechaArchivo.js) manda; lo de
+  // abajo queda para archivos que aun no la tienen.
+  if (file.fechaDia && partes(file.fechaDia)) return file.fechaDia;
   const texto = `${file.displayName || ''} ${file.name || ''} ${file.folderName || ''} ${file.fullPath || ''}`;
   const m = texto.match(/(?:^|[\\/\s_-])((?:19|20)\d{6}|\d{6})(?=[_\s-])/);
   if (m) {

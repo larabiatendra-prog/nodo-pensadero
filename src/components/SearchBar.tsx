@@ -1069,10 +1069,10 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
               {naturalIntent.tags && naturalIntent.tags.length > 0 && (
                 <Chip>tags: {naturalIntent.tags.join(', ')}</Chip>
               )}
-              {naturalIntent.shot_type && <Chip>plano: {naturalIntent.shot_type}</Chip>}
-              {naturalIntent.people_framing && <Chip>encuadre: {naturalIntent.people_framing}</Chip>}
-              {naturalIntent.movement_type && <Chip>movimiento: {naturalIntent.movement_type}</Chip>}
-              {naturalIntent.exposure && <Chip>exposición: {naturalIntent.exposure}</Chip>}
+              {naturalIntent.shot_type && <Chip>plano: {legible(naturalIntent.shot_type)}</Chip>}
+              {naturalIntent.people_framing && <Chip>encuadre: {legible(naturalIntent.people_framing)}</Chip>}
+              {naturalIntent.movement_type && <Chip>movimiento: {legible(naturalIntent.movement_type)}</Chip>}
+              {naturalIntent.exposure && <Chip>exposición: {legible(naturalIntent.exposure)}</Chip>}
               {naturalIntent.color_terms && naturalIntent.color_terms.length > 0 && (
                 <Chip>colores: {naturalIntent.color_terms.join(', ')}</Chip>
               )}
@@ -1400,6 +1400,18 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
 });
 
 export default SearchBar;
+
+/**
+ * Un valor del intent como se dice: "primer_plano" -> "primer plano",
+ * "grupo_pequeno" -> "grupo pequeño", "ninguno" -> "sin personas". Los mismos
+ * nombres que las etiquetas (backend/utils/etiquetas.js).
+ */
+function legible(v: string | null | undefined): string {
+  if (!v) return '';
+  if (v === 'ninguno') return 'sin personas';
+  if (v === 'individual') return 'una persona';
+  return v.replace(/_/g, ' ').replace(/\bpequeno\b/, 'pequeño').replace(/\bestatico\b/, 'estático');
+}
 
 // Píldora compacta para mostrar campos del intent extraído por el LLM.
 function Chip({ children }: { children: React.ReactNode }) {

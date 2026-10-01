@@ -48,6 +48,7 @@ const fs = require('fs').promises;
 const { atomicWriteFile } = require('./utils/jsonStore');
 const fallos = require('./utils/failureReason');
 const mediaIdentity = require('./utils/mediaIdentity');
+const { esCarpetaTecnica } = require('./utils/etiquetas');
 
 const NAMES_FILE = path.join(__dirname, 'data', 'folder_names.json');
 
@@ -318,6 +319,15 @@ function applyFolderNames(files, opts = {}) {
 const FOLDER_DATE_PREFIX = /^\d{6}[_\s]/;
 
 /**
+ * Carpeta de evento con la fecha escrita de otra forma: "2026-06-14_Ana_y_Pablo",
+ * "2026-03_Congreso", "FONDO_FAMILIAR_1930-1959", "Boda de la nieta 2011".
+ * Antes solo valia AAMMDD_ y el material de camara de esas carpetas no
+ * heredaba su nombre: no se podia buscar "Ana y Pablo".
+ */
+const FOLDER_DATE_OTRA = /^(19|20)\d{2}[-_. ]?\d{2}(?!\d)|(^|[\s_-])(19|20)\d{2}(?=$|[\s_-])/;
+const tieneFecha = (nombre) => FOLDER_DATE_PREFIX.test(nombre) || FOLDER_DATE_OTRA.test(nombre);
+
+/**
  * Cadena de carpetas de las que hereda un archivo, de la mas cercana a la mas
  * lejana y SIEMPRE por debajo de la biblioteca: su raiz nunca entra, porque
  * "BRUTOS" o "F:\" no significan nada y ensuciarian todas las etiquetas.
@@ -347,9 +357,14 @@ function inheritedFolderChain(f) {
   const dirs = absSegs.slice(start, absSegs.length - 1); // sin el nombre de archivo
   if (dirs.length === 0) return [];
 
-  const chain = [dirs[dirs.length - 1]];
-  for (let i = dirs.length - 2; i >= 0; i--) {
-    if (FOLDER_DATE_PREFIX.test(dirs[i])) chain.push(dirs[i]);
+  // La contenedora, o la mas cercana que no sea de la camara: "CLIP",
+  // "100MSDCF" o "DCIM" no dicen nada y salian como etiquetas.
+  let i = dirs.length - 1;
+  while (i >= 0 && esCarpetaTecnica(dirs[i])) i--;
+  if (i < 0) return [];
+  const chain = [dirs[i]];
+  for (let j = i - 1; j >= 0; j--) {
+    if (tieneFecha(dirs[j])) chain.push(dirs[j]);
   }
   return chain;
 }

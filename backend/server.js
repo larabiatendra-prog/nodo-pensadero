@@ -33,6 +33,7 @@ const catalogReader = require('./catalogReader');
 const { anotarCruces } = require('./utils/recolocar');
 const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
 const { tipoPorExtension, VIDEO_EXTS, NO_LEIDOS } = require('./utils/formatos');
+const { esCodigoDeArchivo, limpiarEtiquetas } = require('./utils/etiquetas');
 const peopleRegistry = require('./peopleRegistry');
 const personsAggregator = require('./personsAggregator');
 const multer = require('multer');
@@ -525,7 +526,10 @@ function extractSmartTags(filename) {
     if (isDate) return;
 
     if (/^\d+$/.test(cleanPart)) return;
-    if (cleanPart.length === 1 && !/^[A-Z]$/i.test(cleanPart)) return;
+    // Contadores de camara ("C0001", "WA0010"), prefijos ("IMG", "DSC") y
+    // letras sueltas: no describen nada y ensuciaban etiquetas y «Acotar». El
+    // nombre se sigue buscando como texto (utils/etiquetas.js).
+    if (esCodigoDeArchivo(cleanPart)) return;
 
     if (cleanPart.length === 2) {
       if (!/^[A-Z]{2}$/i.test(cleanPart)) return;
@@ -1395,6 +1399,10 @@ async function performSync(opts = {}) {
     // manera, y los filtros por año/mes dejaban fuera a 639 archivos.
     allFiles = fechaArchivo.aplicar(allFiles);
 
+    // Fuera contadores de camara y carpetas tecnicas de lo derivado, tambien de
+    // lo que viene de la cache (utils/etiquetas.js).
+    allFiles = limpiarEtiquetas(allFiles);
+
     // Lo que el usuario ha cambiado a mano en las etiquetas, encima de todo lo
     // derivado (ver services/etiquetasManuales.js). Sin esto, renombrar o
     // borrar una etiqueta se deshacia en la siguiente sincronizacion.
@@ -1724,7 +1732,9 @@ async function refreshFilesInDir(dirPath, { agregado = true } = {}) {
   // Misma fecha que en el sync completo: refrescar una carpeta no puede dejar
   // sus archivos con otra fecha que el resto del catalogo.
   fechaArchivo.aplicar(touched);
-  // Y las etiquetas cambiadas a mano, igual que en el sync completo.
+  // Y las etiquetas: sin codigos de camara y con las cambiadas a mano, igual
+  // que en el sync completo.
+  limpiarEtiquetas(touched);
   etiquetasManuales.aplicar(touched);
   // Recalcular el agregado de personas: si el refresco cambio las caras de un
   // archivo (re-id, assign-face, promote), los conteos/bubbles del home deben

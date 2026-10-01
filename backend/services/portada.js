@@ -98,6 +98,11 @@ const ETIQUETAS_VACIAS = new Set([
   'joven', 'adulto', 'mayor', 'niño', 'nino', 'mujer', 'hombre', 'persona', 'personas', 'gente',
   'alegre', 'neutro', 'serio', 'formal', 'festivo', 'intimo', 'melancolico', 'contemplativo', 'energico',
   'luz_natural', 'luz_dorada', 'contraluz', 'nocturna', 'neon', 'mixta',
+  // Los mismos atributos escritos como se dicen (utils/etiquetas.js).
+  'ángulo normal', 'angulo normal', 'cámara fija', 'camara fija', 'cámara en mano', 'camara en mano',
+  'sin personas', 'una persona', 'grupo pequeño', 'grupo pequeno', 'grupo grande',
+  'luz natural', 'luz dorada', 'luz interior', 'luz nocturna', 'luz mixta', 'neón', 'tránsito', 'mediodía', 'acción',
+  'plano general', 'plano americano', 'plano medio', 'plano medio corto', 'primer plano', 'plano detalle', 'plano conjunto',
   'picado', 'contrapicado', 'cenital', 'nadir', 'paneo', 'cabeceo', 'acercamiento', 'alejamiento', 'inestable',
   'video', 'foto', 'imagen', 'camara', 'cámara', 'dani', 'nest', 'final', 'copia', 'version', 'edit',
   // Lo que la IA ve en casi cualquier plano: como hilo no dice nada.

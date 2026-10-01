@@ -39,6 +39,7 @@
 const path = require('path');
 const fs = require('fs').promises;
 const peopleRegistry = require('./peopleRegistry');
+const { etiquetaDeEscaneo } = require('./utils/etiquetas');
 
 // Nombres de catálogo por carpeta (orden de prioridad).
 // `_pensadero.json` PRIMERO: es lo que escribe todo el pipeline (scan, re-id,
@@ -340,22 +341,27 @@ function mergeClipIntoFile(fileData, clip, catalog) {
   // IMPORTANTE: las personas (faces[].name) NO entran en tags.
   const newTags = [];
   if (clip.semantics) {
-    newTags.push(...toTagStrings(clip.semantics.objects));
-    newTags.push(...toTagStrings(clip.semantics.actions));
-    newTags.push(...toTagStrings(clip.semantics.expressions));
+    // Algunos modelos escriben "estar_de_pie" o "pan_frances": con espacios,
+    // como se teclean al buscar.
+    const conEspacios = (arr) => arr.map(t => t.replace(/_/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+    newTags.push(...conEspacios(toTagStrings(clip.semantics.objects)));
+    newTags.push(...conEspacios(toTagStrings(clip.semantics.actions)));
+    newTags.push(...conEspacios(toTagStrings(clip.semantics.expressions)));
   }
+  // Los atributos del escaneo se guardan con su codigo ("plano_general"); como
+  // etiqueta van escritos como se dicen ("plano general"): utils/etiquetas.js.
   if (clip.composition) {
     for (const key of ['shot_type','camera_angle','camera_movement','people_framing']) {
-      const v = clip.composition[key];
-      if (typeof v === 'string' && v.trim()) newTags.push(v.trim());
+      const legible = etiquetaDeEscaneo(key, clip.composition[key]);
+      if (legible) newTags.push(legible);
     }
     // scene_changes es booleano (solo video); lo volcamos como tag buscable.
     if (clip.composition.scene_changes === true) newTags.push('cambio de escena');
   }
   if (clip.atmosphere) {
     for (const key of ['mood','lighting','space_type','time_of_day','style']) {
-      const v = clip.atmosphere[key];
-      if (typeof v === 'string' && v.trim()) newTags.push(v.trim());
+      const legible = etiquetaDeEscaneo(key, clip.atmosphere[key]);
+      if (legible) newTags.push(legible);
     }
   }
   // Compat schema v1: demographics venia del VLM. En v2 viene de InsightFace

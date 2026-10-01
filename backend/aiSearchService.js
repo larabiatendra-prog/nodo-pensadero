@@ -35,6 +35,59 @@ const { getInstance: getClipService } = require('./services/clipService');
 const clipIndex = require('./clipIndex');
 require('dotenv').config();
 
+/**
+ * ¿La etiqueta del archivo (`ft`) casa con lo pedido (`t`)? Ambas ya
+ * normalizadas. Hacia delante, por trozo, como siempre ("conciertos" casa
+ * con "concierto"). Al reves (la etiqueta DENTRO de lo pedido) solo si es una
+ * palabra de 4 letras o mas, entera o como raiz: antes una etiqueta "V" casaba
+ * con todo lo que pidiera algo con v ("videos"), y "Video" en el nombre de una
+ * cancion la colaba en "videos de conciertos".
+ */
+function casaEtiqueta(ft, t) {
+  if (!ft || !t) return false;
+  if (ft.includes(t)) return true;
+  if (ft.length < 4) return false;
+  return ` ${t} `.includes(` ${ft} `) || t.split(/\s+/).some(w => w.startsWith(ft));
+}
+
+/**
+ * Tipo de archivo que la consulta PIDE con palabras ("fotos de...", "videos
+ * de..."): 'image' | 'video' | 'audio', o null si no dice ninguno o dice
+ * varios ("fotos y videos"). No se deja al modelo: unas veces no lo ponia
+ * aunque la frase lo dijera y otras se lo inventaba.
+ */
+const PALABRAS_TIPO = {
+  image: /\b(fotos?|fotografias?|imagen(es)?|selfies?|capturas?)\b/,
+  video: /\b(videos?|clips?|grabacion(es)?|pelis?|peliculas?|filmaciones?)\b/,
+  // Solo lo inequivoco: "musica" o "canciones" no, que "concierto de musica"
+  // busca la imagen de un concierto.
+  audio: /\b(audios?|notas? de voz|grabaciones de voz)\b/,
+};
+function tipoPedido(qNorm) {
+  const dichos = Object.keys(PALABRAS_TIPO).filter(k => PALABRAS_TIPO[k].test(qNorm));
+  return dichos.length === 1 ? dichos[0] : null;
+}
+
+/**
+ * Atributos que el modelo deduce (encuadre, plano, movimiento, luz, color) y
+ * las palabras con que una consulta los PIDE. Si la frase los dice cuentan
+ * para ser "resultado claro"; si solo los dedujo el modelo, solo ordenan.
+ * Antes, en un archivo grande, "el segundo dia del festival" daba cientos de
+ * claros que solo casaban por "multitud", que nadie habia pedido.
+ */
+const PALABRAS_ATRIBUTO = {
+  people_framing: /\b(solos?|solas?|retratos?|parejas?|grupos?|multitud(es)?|muchedumbre|gentio|publico|gente|individual)\b/,
+  shot_type: /\b(primer(os)? planos?|planos? (general(es)?|medios?|americanos?|detalle|corto)|detalles?|close ?up)\b/,
+  movement_type: /\b(movimiento|moviendo(se)?|en marcha|estatic[oa]s?|quiet[oa]s?|fij[oa]s?|travelling|paneo)\b/,
+  exposure: /\b(oscur[oa]s?|quemad[oa]s?|sobreexpuest[oa]s?|subexpuest[oa]s?|contraluz|luminos[oa]s?)\b/,
+};
+function atributosDichos(qNorm) {
+  return Object.keys(PALABRAS_ATRIBUTO).filter(k => PALABRAS_ATRIBUTO[k].test(qNorm));
+}
+
+/** ¿Es solo una palabra de tipo ("fotos", "videos")? No cuenta como etiqueta. */
+const esPalabraDeTipo = (s) => Object.values(PALABRAS_TIPO).some(re => new RegExp(`^${re.source}$`).test(s));
+
 class AISearchService {
   constructor() {
     const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
@@ -181,6 +234,9 @@ Resuelve SIEMPRE las expresiones relativas contra esa fecha:
   "hace dos años" -> ${anioActual - 2}  "hace tres años" -> ${anioActual - 3}
   "este mes" -> month "${String(ahora.getMonth() + 1).padStart(2, '0')}" y year ${anioActual}
 Si la expresion no fija un año (por ejemplo "en verano"), deja year en null.
+Pon year y month SOLO si la consulta nombra un mes, un año o un periodo relativo
+explicito. "El segundo dia", "el primer dia", "por la mañana" o "el finde" NO
+son fechas: deja year y month en null.
 `;
 
     const intentPrompt = `Eres un asistente que analiza búsquedas de archivos multimedia (fotos y videos) producidas por una pipeline de visión por computador. Devuelve SOLO un JSON sin explicaciones.
@@ -190,7 +246,7 @@ Campos esperados:
 - year: número (ej. 2023) o null
 - month: "01".."12" o null
 - month_name: nombre del mes en minúsculas (enero, febrero, ...) o null
-- person_ids: array de identificadores de la lista de PERSONAS CONOCIDAS abajo (vacío si nadie mencionado o no resoluble)
+- person_ids: array de identificadores de la lista de PERSONAS CONOCIDAS abajo (vacío si nadie mencionado o no resoluble). Un nombre que NO esté en esa lista no va aquí: ponlo en free_terms
 - space_ids: array de identificadores de espacios mencionados (auditorio, cocina, ...) — vacío si no aplica
 - tags: array de etiquetas que el usuario pide que aparezcan (suman puntos al ranking, no filtran)
 - free_terms: array de términos de texto libre que NO encajan en los demás campos
@@ -263,6 +319,14 @@ Output:`;
    */
   normalizeIntent(raw, _query, peopleHints = []) {
     const r = raw || {};
+    // Tipo y fecha son filtros OBLIGATORIOS: salen de lo que la consulta dice,
+    // no de lo que el modelo deduce ("el carruaje de los novios" -> tipo foto,
+    // y fuera todos los videos; "el segundo dia" -> septiembre; y al reves,
+    // "fotos de conciertos" sin tipo). El tipo, de sus palabras
+    // (`tipoPedido`); la fecha, solo si nombra un año, un mes o un periodo.
+    // Sin consulta (llamadas internas) se acepta lo que venga.
+    const q = this.normalizeText(_query || '');
+    const diceFecha = !q || /\b(19|20)\d{2}\b|\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|año|anos?|mes|ayer|semana)\b/.test(q);
     const knownIds = new Set((peopleHints || []).map(p => p.person_id));
 
     const arrStr = (v) => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()) : [];
@@ -287,20 +351,30 @@ Output:`;
     // Por tanto un huérfano (carlos99 sin registry) SÍ es válido si aparece
     // en algún sidecar/catalog. Si peopleHints está vacío (sin registry y
     // sin material), se aceptan tal cual para no bloquear primeras pruebas.
+    // Un nombre que no es de nadie conocido no filtra: pasa a buscarse como
+    // texto (en carpetas, descripcion...). Antes, sin nadie dado de alta, se
+    // aceptaba tal cual como persona y "la boda de Ana y Pablo" daba 0: ningun
+    // archivo tiene una cara reconocida como "ana". Con gente dada de alta se
+    // descartaba sin mas y tampoco servia para buscar.
     const personIdsRaw = arrStr(r.person_ids);
-    const personIds = knownIds.size > 0
-      ? personIdsRaw.filter(id => knownIds.has(id))
-      : personIdsRaw;
+    const personIds = personIdsRaw.filter(id => knownIds.has(id));
+    const nombresSueltos = personIdsRaw.filter(id => !knownIds.has(id));
 
     return {
-      type: str(r.type),
-      year: year !== null ? String(year) : null,
-      month: month && /^\d{1,2}$/.test(month) ? String(month).padStart(2, '0') : null,
-      month_name: monthName ? monthName.toLowerCase() : null,
+      // El tipo lo dicen las palabras de la consulta, no el modelo.
+      type: q ? tipoPedido(q) : str(r.type),
+      year: diceFecha && year !== null ? String(year) : null,
+      month: diceFecha && month && /^\d{1,2}$/.test(month) ? String(month).padStart(2, '0') : null,
+      month_name: diceFecha && monthName ? monthName.toLowerCase() : null,
       person_ids: personIds,
       space_ids: arrStr(r.space_ids),
-      tags: arrStr(r.tags),
-      free_terms: arrStr(r.free_terms).length > 0 ? arrStr(r.free_terms) : arrStr(r.searchTerms),
+      // "videos" o "fotos" ya son el tipo: como etiqueta solo puntuaban nombres
+      // de archivo con esa palabra (una cancion "... Music Video").
+      tags: arrStr(r.tags).filter(t => !esPalabraDeTipo(this.normalizeText(t))),
+      free_terms: [...new Set([
+        ...(arrStr(r.free_terms).length > 0 ? arrStr(r.free_terms) : arrStr(r.searchTerms)),
+        ...nombresSueltos,
+      ])].filter(t => !esPalabraDeTipo(this.normalizeText(t))),
       // expanded_terms: sinónimos y traducciones que el LLM genera para cubrir
       // el desajuste de idioma entre query (español) y visual_descriptions
       // (inglés en el corpus actual). Limitamos a 15 por si el modelo se va
@@ -311,6 +385,9 @@ Output:`;
       movement_type: str(r.movement_type) ?? str(r.movementType),
       exposure: str(r.exposure),
       color_terms: arrStr(r.color_terms).length > 0 ? arrStr(r.color_terms) : arrStr(r.colorTerms),
+      // Los atributos que la frase pide con palabras (ver PALABRAS_ATRIBUTO).
+      // null = sin consulta: todos cuentan, como antes.
+      atributos_dichos: q ? atributosDichos(q) : null,
     };
   }
 
@@ -363,7 +440,23 @@ Output:`;
       type, year, month, month_name,
       person_ids, space_ids, tags, free_terms, expanded_terms,
       shot_type, people_framing, movement_type, exposure, color_terms,
+      atributos_dichos,
     } = intent;
+    // Lo que el modelo dedujo sin que la frase lo dijera: ordena, pero no hace
+    // "claro" a nadie (ver PALABRAS_ATRIBUTO). null = todo cuenta.
+    const dicho = (k) => !Array.isArray(atributos_dichos) || atributos_dichos.includes(k);
+    // Casar DIRECTAMENTE con lo pedido: etiqueta, descripcion, nombre, carpeta,
+    // texto, persona, lugar, color o un atributo dicho con palabras. Solo eso
+    // (o parecerse mucho a la vista, abajo) hace "claro" un resultado; lo que
+    // solo casa por los sinonimos que añade el modelo va a "te pueden interesar".
+    const DIRECTOS = new Set(['person_ids', 'space_ids', 'tags', 'visual_description', 'ocr_text', 'name', 'carpeta', 'dominant_colors', 'dominant_color']);
+    const ATRIBUTOS = new Set(['shot_type', 'people_framing', 'movement_type', 'exposure']);
+    const esDirecto = (k) => DIRECTOS.has(k) || (ATRIBUTOS.has(k) && dicho(k));
+    // Una consulta sin nada que puntuar ("videos de 2024", solo filtros): todo
+    // lo que pasa los filtros es la respuesta.
+    const sinConceptos = !(tags || []).length && !(free_terms || []).length && !(expanded_terms || []).length
+      && !(person_ids || []).length && !(space_ids || []).length && !(color_terms || []).length
+      && !shot_type && !people_framing && !movement_type && !exposure;
 
     const results = [];
     const N = (s) => this.normalizeText(s);
@@ -386,7 +479,17 @@ Output:`;
       if (type && file.type !== type) continue;
 
       // Fecha: mismo enfoque que el endpoint /api/search (sobre tags + extractedDate)
-      if (year || month || month_name) {
+      if ((year || month || month_name) && file.fechaDia) {
+        // La fecha resuelta del archivo (utils/fechaArchivo.js), la misma de
+        // la tarjeta. Antes solo se miraban etiquetas, y lo fechado por la
+        // camara o el disco no tenia etiqueta de año ni de mes.
+        const y = Math.floor(file.fechaDia / 10000);
+        const m = Math.floor(file.fechaDia / 100) % 100;
+        const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+        if (year && String(y) !== String(year)) continue;
+        if (month && m !== parseInt(month, 10)) continue;
+        if (!month && month_name && MESES[m - 1] !== N(month_name)) continue;
+      } else if (year || month || month_name) {
         const fileTagsN = (file.tags || []).map(N);
         let dateOk = true;
 
@@ -426,6 +529,8 @@ Output:`;
       // === SCORING (incluye bonus para ranking) ===
 
       let score = 1;
+      // Puntos de atributos que nadie pidio con palabras: no cuentan para el corte.
+      let accesorio = 0;
       const matchedIn = [];
       const addMatch = (k) => { if (!matchedIn.includes(k)) matchedIn.push(k); };
 
@@ -449,7 +554,7 @@ Output:`;
       }
       if (tagsN.length > 0) {
         const fileTagsN = (file.tags || []).map(N);
-        const matchedTags = tagsN.filter(t => fileTagsN.some(ft => ft.includes(t) || t.includes(ft)));
+        const matchedTags = tagsN.filter(t => fileTagsN.some(ft => casaEtiqueta(ft, t)));
         if (matchedTags.length > 0) {
           score += 10 * matchedTags.length;
           addMatch('tags');
@@ -461,13 +566,14 @@ Output:`;
       const compFraming = N(file.composition && file.composition.people_framing);
       const movement = N(file.technical && file.technical.movement_type);
       const fileExp = N(file.technical && file.technical.exposure);
-      if (shotN && compShot && compShot === shotN) { score += 8; addMatch('shot_type'); }
-      if (framingN && compFraming && compFraming === framingN) { score += 6; addMatch('people_framing'); }
+      if (shotN && compShot && compShot === shotN) { score += 8; if (!dicho('shot_type')) accesorio += 8; addMatch('shot_type'); }
+      if (framingN && compFraming && compFraming === framingN) { score += 6; if (!dicho('people_framing')) accesorio += 6; addMatch('people_framing'); }
       if (movementN && movement && (movement === movementN || (movementN === 'moving' && movement !== 'estatico'))) {
         score += 5;
+        if (!dicho('movement_type')) accesorio += 5;
         addMatch('movement_type');
       }
-      if (exposureN && fileExp && fileExp === exposureN) { score += 4; addMatch('exposure'); }
+      if (exposureN && fileExp && fileExp === exposureN) { score += 4; if (!dicho('exposure')) accesorio += 4; addMatch('exposure'); }
 
       // Color terms contra dominant_colors[] / dominant_color
       const dominantColors = Array.isArray(file.dominant_colors)
@@ -493,6 +599,11 @@ Output:`;
         const visual = N(file.visual_description);
         const ocr = N(file.ocr_text);
         const fileTagsN = (file.tags || []).map(N);
+        // Las carpetas DENTRO de la biblioteca: es donde la gente escribe el
+        // evento ("2026-06-14_Ana_y_Pablo"), y un nombre que no es de nadie
+        // conocido llega aqui como texto.
+        const mk = typeof file.mediaKey === 'string' ? file.mediaKey : '';
+        const carpetas = N((mk.includes(':') ? mk.slice(mk.indexOf(':') + 1) : String(file.fullPath || '')).replace(/[^/\\]*$/, '').replace(/[_/\\-]+/g, ' '));
 
         // Pasada 1: free_terms (pedidos por el usuario) — pesos altos
         for (const t of freeN) {
@@ -500,6 +611,7 @@ Output:`;
           if (visual && visual.includes(t)) { score += 4; addMatch('visual_description'); }
           if (ocr && ocr.includes(t)) { score += 3; addMatch('ocr_text'); }
           if (fileName.includes(t)) { score += 3; addMatch('name'); }
+          if (carpetas && ` ${carpetas} `.includes(` ${t} `)) { score += 4; addMatch('carpeta'); }
           if (compShot && compShot.includes(t)) { score += 2; addMatch('shot_type'); }
         }
 
@@ -514,7 +626,7 @@ Output:`;
         }
       }
 
-      results.push({ fileId: file.id, file, score, matchedIn });
+      results.push({ fileId: file.id, file, score, accesorio, directo: sinConceptos || matchedIn.some(esDirecto), matchedIn });
     }
 
     // Bonus semantico. El peso lo fija AI_SEMANTIC_WEIGHT: con 12, un archivo
@@ -532,6 +644,9 @@ Output:`;
         if (sem > 0) {
           r.score += Math.round(PESO * sem);
           r.semanticScore = Number(sem.toFixed(4));
+          // Muy parecido a la escena pedida (cuarto superior de la via
+          // semantica): cuenta como casar con lo pedido aunque el texto no.
+          if (sem >= 0.75) r.directo = true;
         }
       }
     }
@@ -565,16 +680,26 @@ Output:`;
     const SECONDARY_FLOOR = 2;
     const SECONDARY_CAP = 50;
 
-    const topScore = results[0]?.score ?? 0;
-    const primaryCutoff = Math.max(topScore * PRIMARY_RATIO, PRIMARY_FLOOR);
-    const secondaryCutoff = Math.max(topScore * SECONDARY_RATIO, SECONDARY_FLOOR);
+    // Los tramos se cortan por lo que CASA con lo pedido, no por el total:
+    //  - `senal` = puntos sin los de atributos que nadie pidio (`accesorio`):
+    //    siguen ordenando, pero no bastan para ser "claro";
+    //  - y "claro" exige casar DIRECTAMENTE (`directo`): lo que solo casa por
+    //    sinonimos del modelo va a "te pueden interesar".
+    // Antes el corte era relativo al mejor y con un archivo grande crecia con
+    // el: cientos de "claros" solo por "multitud" o por un sinonimo, y cuando
+    // nada casaba de verdad el liston bajaba y todo pasaba a claro.
+    const senal = (r) => r.score - (r.accesorio || 0);
+    const topScore = results.reduce((m, r) => (r.directo ? Math.max(m, senal(r)) : m), 0);
+    const primaryCutoff = sinConceptos ? 0 : Math.max(topScore * PRIMARY_RATIO, PRIMARY_FLOOR);
+    const topTodos = results.reduce((m, r) => Math.max(m, senal(r)), 0);
+    const secondaryCutoff = Math.max(topTodos * SECONDARY_RATIO, SECONDARY_FLOOR);
 
     const primary = [];
     const secondary = [];
     for (const r of results) {
-      if (r.score >= primaryCutoff) {
+      if (r.directo && senal(r) >= primaryCutoff) {
         primary.push({ ...r, tier: 'primary' });
-      } else if (r.score >= secondaryCutoff) {
+      } else if (senal(r) >= secondaryCutoff) {
         secondary.push({ ...r, tier: 'secondary' });
       }
     }
@@ -850,7 +975,26 @@ Respuesta JSON:`;
     const semanticTime = Date.now() - semStart;
 
     // === STAGE 1 (+ bonus semantico) ===
-    const stage1Results = this.scoreMediaFiles(intent, mediaFiles, 200, semanticScores);
+    let stage1Results = this.scoreMediaFiles(intent, mediaFiles, 200, semanticScores);
+
+    // Nunca un 0 mudo: si lo obligatorio que DEDUJO el modelo (fecha, tipo)
+    // deja fuera todo, se prueba sin ello y se dice que se quito. Antes
+    // "fotos de Iker del segundo dia" se convertia en "septiembre" y daba 0
+    // sin explicacion. Las personas no se relajan: o las nombraste con @ o
+    // son de tu registro, y quitarlas enseñaria a otra gente.
+    const relajado = [];
+    const MESES_R = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+    if (stage1Results.length === 0 && (intent.year || intent.month || intent.month_name)) {
+      const mes = intent.month_name || (intent.month ? MESES_R[parseInt(intent.month, 10) - 1] : null);
+      relajado.push({ que: 'fecha', valor: [mes, intent.year].filter(Boolean).join(' de ') });
+      intent.year = null; intent.month = null; intent.month_name = null;
+      stage1Results = this.scoreMediaFiles(intent, mediaFiles, 200, semanticScores);
+    }
+    if (stage1Results.length === 0 && intent.type) {
+      relajado.push({ que: 'tipo', valor: intent.type });
+      intent.type = null;
+      stage1Results = this.scoreMediaFiles(intent, mediaFiles, 200, semanticScores);
+    }
     const stage1Relevance = stage1Results.__relevance || null;
     const stage1PrimaryCount = stage1Relevance?.primaryCount ?? 0;
 
@@ -919,6 +1063,8 @@ Respuesta JSON:`;
         semanticTime,
         // Cuantos van en el bloque "ademas, te puede interesar".
         suggestionCount: sugerencias.length,
+        // Lo obligatorio que se quito porque dejaba 0 ([{ que, valor }]).
+        relajado,
         // Diagnóstico de relevancia para el separador y el debug.
         topScore: relevance?.topScore ?? 0,
         primaryCutoff: relevance?.primaryCutoff ?? 0,

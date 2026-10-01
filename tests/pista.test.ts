@@ -88,3 +88,16 @@ test('promocion silenciosa: solo si no se pierde ni un resultado', () => {
   assert.strictEqual(promocionSilenciosa('playa', vocab, { etiquetas: ['playa'], personas: [] }, () => true), null, 'ya activa');
   assert.strictEqual(promocionSilenciosa('nada', vocab, activas, () => true), null);
 });
+
+test('5. sin resultados ni errata: ofrecer el lenguaje natural', () => {
+  const p = pista({ textos: ['fotos del perro'], resultados: 0, contar: () => 0 });
+  assert.strictEqual(p?.caso, 'natural');
+  assert.strictEqual(p?.frase, 'Sin resultados para «fotos del perro».');
+  assert.strictEqual(p?.accion, 'Buscarlo con lenguaje natural');
+  assert.deepStrictEqual(p?.quitar, { clase: 'texto', valor: 'fotos del perro' });
+  assert.deepStrictEqual(p?.poner, { clase: 'natural', texto: 'fotos del perro' });
+  // Con resultados no se ofrece: puede estar buscando eso exactamente.
+  assert.strictEqual(pista({ textos: ['fotos del perro'], resultados: 3 }), null);
+  // Una errata que si da resultados va antes.
+  assert.strictEqual(pista({ textos: ['montanya'], resultados: 0 })?.caso, 'errata');
+});

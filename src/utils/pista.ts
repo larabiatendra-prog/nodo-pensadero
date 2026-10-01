@@ -18,14 +18,15 @@ export type Quitar = { clase: 'texto' | 'etiqueta'; valor: string };
 
 export interface Pista {
   /** 0: etiqueta que es persona; 1: texto que es persona; 2: texto que es etiqueta. */
-  caso: 0 | 1 | 2 | 'prefijo' | 'errata';
+  caso: 0 | 1 | 2 | 'prefijo' | 'errata' | 'natural';
   /** La frase, en gris. */
   frase: string;
   /** La accion, subrayada y en el color de acento (lleva el recuento). */
   accion: string;
   n: number;
   quitar: Quitar;
-  poner: Valor;
+  /** `natural`: no se cambia por nada, se busca la frase en lenguaje natural. */
+  poner: Valor | { clase: 'natural'; texto: string };
 }
 
 interface Entrada {
@@ -158,8 +159,10 @@ const nombreDe = (x: Valor) => (x.clase === 'etiqueta' ? x.valor : x.nombre);
  *   0. sin texto, una etiqueta activa que se llama como una persona;
  *   1. el texto es una persona;  2. el texto es una etiqueta;
  *   3. una etiqueta (o persona) que empieza por el texto;
- *   4. solo sin resultados: una errata.
- * Una accion que dejaria 0 resultados no se ofrece: se pasa a la siguiente.
+ *   4. solo sin resultados: una errata;
+ *   5. solo sin resultados y sin errata: buscarlo con lenguaje natural.
+ * Una accion que dejaria 0 resultados no se ofrece: se pasa a la siguiente
+ * (salvo la 5, que no filtra: lanza otra busqueda).
  */
 export function decidirPista(e: EntradaPista): Pista | null {
   const v = e.vocabulario;
@@ -210,6 +213,10 @@ export function decidirPista(e: EntradaPista): Pista | null {
       const n = e.contar(quitar, err);
       if (n > 0) return { caso: 'errata', frase: `Sin resultados para «${texto}».`, accion: `¿Quizás ${nombreDe(err)}? (${n})`, n, quitar, poner: err };
     }
+    // 5. Ni errata: el modo normal busca palabras tal cual, y una frase («fotos
+    // del perro») casi nunca aparece entera. Para eso esta el lenguaje natural,
+    // que mucha gente no sabe que existe (es un icono a la izquierda).
+    return { caso: 'natural', frase: `Sin resultados para «${texto}».`, accion: 'Buscarlo con lenguaje natural', n: 0, quitar, poner: { clase: 'natural', texto } };
   }
   return null;
 }

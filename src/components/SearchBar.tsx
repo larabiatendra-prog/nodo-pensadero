@@ -132,6 +132,8 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     secondaryCount?: number;
     /** Rescates de la via semantica: se parecen a lo pedido aunque el texto no casara. */
     suggestionCount?: number;
+    /** Lo obligatorio que el servidor quito porque dejaba 0 resultados. */
+    relajado?: { que: 'fecha' | 'tipo'; valor: string }[];
     processingTime?: number;
   } | null>(null);
 
@@ -365,6 +367,17 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     if (p.quitar.clase === 'texto') terms = terms.filter(x => x !== p.quitar.valor);
     else included = included.filter(x => x !== p.quitar.valor);
     const poner = p.poner;
+    if (poner.clase === 'natural') {
+      // La frase sale del modo normal (si se quedara, filtraria encima de lo
+      // que encuentre el natural y volveria a dar 0) y se busca en natural.
+      setLocalTextTerms(terms);
+      emitSearch(terms, included);
+      switchMode('natural');
+      setNaturalMarkup(poner.texto);
+      setNaturalPlainText(poner.texto);
+      runNaturalSearch(poner.texto);
+      return;
+    }
     if (poner.clase === 'etiqueta') {
       const ya = [...included, ...localExcludedTags].some(x => normalizeString(x) === normalizeString(poner.valor));
       if (!ya) included = [...included, poner.valor];
@@ -381,12 +394,14 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
 
   // Lanza búsqueda en lenguaje natural contra Ollama (vía /api/ai/search).
   // Si Ollama no está disponible, cae con elegancia a búsqueda textual normal.
-  const runNaturalSearch = async () => {
+  // `textoDirecto`: lo lanza la pista del modo normal con la frase que dio 0,
+  // sin esperar a que el estado de la casilla se actualice.
+  const runNaturalSearch = async (textoDirecto?: string) => {
     // Las @mentions vienen ya estructuradas desde MentionsInput. El markup
     // interno tiene formato `@[Display Name](person_id)`; basta con striparlo
     // para obtener la query "limpia" que enviamos al LLM.
-    const markup = naturalMarkup;
-    const fallbackPlain = naturalPlainText.trim();
+    const markup = textoDirecto ?? naturalMarkup;
+    const fallbackPlain = (textoDirecto ?? naturalPlainText).trim();
     if (!markup.trim() && !fallbackPlain) return;
 
     const queryStripped = markup
@@ -399,7 +414,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
     // hace que el filtro AND del padre (App.tsx applyAllFilters) aplique
     // y mantiene coherencia con el modo tags.
     const newIds: string[] = [];
-    for (const m of naturalMentions) {
+    for (const m of (textoDirecto !== undefined ? [] : naturalMentions)) {
       if (m.id.startsWith(PREFIJO_GRUPO)) {
         // Un grupo no es una persona para el buscador: se queda como chip y
         // filtra encima de lo que devuelva, con su propia tolerancia.
@@ -993,7 +1008,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
             )}
 
             <button
-              onClick={isNatural ? runNaturalSearch : handleSearch}
+              onClick={isNatural ? () => runNaturalSearch() : handleSearch}
               disabled={naturalLoading || (isNatural && !naturalMarkup.trim() && !naturalPlainText.trim())}
               className={`px-4 py-2 md:px-6 rounded-full transition-all duration-300 font-medium hover:shadow-lg text-sm md:text-base disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
                 isNatural ? 'bg-noche text-lavanda hover:bg-grafito' : 'bg-lavanda text-noche hover:bg-lavanda-claro'
@@ -1072,6 +1087,15 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
               resultados "no literales". */}
           {naturalMetadata && (
             <>
+              {/* Lo que se quito para no dar 0: que se vea, no en silencio. */}
+              {naturalMetadata.relajado && naturalMetadata.relajado.length > 0 && (
+                <span className="text-estado-aviso">
+                  {naturalMetadata.relajado.map(r => (r.que === 'fecha'
+                    ? `No había nada de ${r.valor}`
+                    : `No había nada de tipo ${r.valor === 'image' ? 'foto' : r.valor === 'video' ? 'vídeo' : r.valor}`)).join(' y ')}
+                  : te enseño sin esa condición.
+                </span>
+              )}
               {naturalMetadata.stage2Applied && (
                 <span
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-lavanda/15 text-lavanda text-[11px] font-medium"
@@ -1081,9 +1105,13 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                   IA refinó
                 </span>
               )}
-              {typeof naturalMetadata.primaryCount === 'number' && naturalMetadata.primaryCount > 0 && (
+              {typeof naturalMetadata.primaryCount === 'number' && (naturalMetadata.primaryCount > 0
+                || (naturalMetadata.secondaryCount || 0) + (naturalMetadata.suggestionCount || 0) > 0) && (
                 <span className="text-humo text-[11px]">
-                  {naturalMetadata.primaryCount} {naturalMetadata.primaryCount === 1 ? 'resultado claro' : 'resultados claros'}
+                  {/* Con 0 claros tambien se dice: callado parecia que no habia buscado. */}
+                  {naturalMetadata.primaryCount === 0
+                    ? 'Nada claro'
+                    : `${naturalMetadata.primaryCount} ${naturalMetadata.primaryCount === 1 ? 'resultado claro' : 'resultados claros'}`}
                   {/* Segundo bloque: casaron debilmente con la consulta, o los
                       encontro la via semantica (se parecen a lo pedido aunque
                       el texto no coincidiera). Mismo nombre que el separador

@@ -52,6 +52,22 @@ export interface SugerenciaAcotar {
 // filtro (con 36.000 archivos y ~28 etiquetas cada uno se nota).
 const cacheNorm = new WeakMap<object, { de: string[]; norm: string[] }>();
 
+const cacheDesc = new WeakMap<object, { de: string; norm: string }>();
+
+/**
+ * Lo que la IA describio del archivo, normalizado y cacheado igual que las
+ * etiquetas. La busqueda normal no lo miraba: "carruaje" o "novios" no
+ * encontraban nada si no eran etiqueta, aunque la descripcion lo dijera.
+ */
+export function descripcionNormalizada(file: { visual_description?: string }): string {
+  const d = typeof file.visual_description === 'string' ? file.visual_description : '';
+  const hecho = cacheDesc.get(file);
+  if (hecho && hecho.de === d) return hecho.norm;
+  const norm = normalizeText(d);
+  cacheDesc.set(file, { de: d, norm });
+  return norm;
+}
+
 export function etiquetasNormalizadas(file: { tags: string[] }): string[] {
   const tags = Array.isArray(file.tags) ? file.tags : [];
   const hecho = cacheNorm.get(file);

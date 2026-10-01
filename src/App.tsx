@@ -50,7 +50,7 @@ import { ConnectionBanner } from './components/ConnectionBanner';
 import { getFileSortDate } from './utils/filenameParser';
 import { normalizePath } from './utils/formatData';
 import { aTextoDiaLocal, finDelDia } from './utils/dateUtils';
-import { etiquetasNormalizadas, frecuenciasCatalogo, llevaEtiquetaNormalizada, sugerirAcotar } from './utils/acotar';
+import { descripcionNormalizada, etiquetasNormalizadas, frecuenciasCatalogo, llevaEtiquetaNormalizada, sugerirAcotar } from './utils/acotar';
 import { normalizeText } from './utils/smartTags';
 import type { Quitar, Valor } from './utils/pista';
 import { leerFrame, type ContextoLote, type Muestra, type VistaProgreso } from './utils/progresoProceso';
@@ -775,13 +775,16 @@ function App() {
     const { searchQuery, searchTerms = currentSearchTerms, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds, grupos: gruposFiltro = filtrosGrupo } = options;
 
     // Coincidencia de texto (substring, sin acentos) sobre nombre, nombre de
-    // presentacion, CARPETA contenedora y tags. La carpeta es lo que hace
-    // encontrable el material de camara: "Ondara" encuentra "P1248278.MP4".
+    // presentacion, CARPETA contenedora, tags y lo que describio la IA. La
+    // carpeta es lo que hace encontrable el material de camara: "Ondara"
+    // encuentra "P1248278.MP4"; la descripcion, lo que no es etiqueta
+    // ("carruaje", "novios").
     const matchesText = (file: MediaFile, q: string) =>
       normalizaTexto(file.name).includes(q) ||
       normalizaTexto(file.displayName).includes(q) ||
       normalizaTexto(file.folderName).includes(q) ||
-      etiquetasNormalizadas(file).some(tag => tag.includes(q));
+      etiquetasNormalizadas(file).some(tag => tag.includes(q)) ||
+      descripcionNormalizada(file).includes(q);
 
     // 1. Búsqueda de texto suelta (query única; p.ej. fallback de natural).
     if (searchQuery && searchQuery.trim()) {

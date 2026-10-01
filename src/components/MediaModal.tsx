@@ -173,6 +173,10 @@ export default function MediaModal({
   const [noteSaving, setNoteSaving] = useState(false);
   const [noteSaved, setNoteSaved] = useState(false);
   useEffect(() => { setNoteDraft(note || ''); setNoteSaved(false); }, [file?.id, note]);
+  // Desplegable: abierta si el archivo ya tiene nota (que no se esconda lo
+  // escrito), plegada si no, para que el cuadro vacio no ocupe la ficha.
+  const [notaAbierta, setNotaAbierta] = useState(false);
+  useEffect(() => { setNotaAbierta(!!(note && note.trim())); }, [file?.id, note]);
 
   const handleSaveNote = async () => {
     if (!file || !onSaveNote) return;
@@ -868,7 +872,7 @@ export default function MediaModal({
                   onClick={() => onToggleFavorite(file.id)}
                   title={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
                   aria-label={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
-                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
                 >
                   <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} />
                 </button>
@@ -876,7 +880,7 @@ export default function MediaModal({
                   onClick={() => onDownload(file)}
                   title="Descargar"
                   aria-label="Descargar"
-                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
                 >
                   <Download className="w-4 h-4" />
                 </button>
@@ -885,7 +889,7 @@ export default function MediaModal({
                     onClick={() => onOpenPath(file.id)}
                     title="Ir a ruta (abrir carpeta contenedora)"
                     aria-label="Ir a ruta"
-                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
+                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
                   >
                     <FolderOpen className="w-4 h-4" />
                   </button>
@@ -895,7 +899,7 @@ export default function MediaModal({
                     onClick={() => onOcultar(file)}
                     title="Ocultar bajo candado: deja de salir en la aplicacion hasta dar la clave"
                     aria-label="Ocultar bajo candado"
-                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-marfil hover:bg-opacity-80 transition-colors"
+                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
                   >
                     <Lock className="w-4 h-4" />
                   </button>
@@ -913,7 +917,7 @@ export default function MediaModal({
                     : 'Al terminar el clip se queda aqui. Pulsa para encadenar con el siguiente.'}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 ${
                     encadenarClips
-                      ? 'bg-lavanda-claro text-marfil shadow-md'
+                      ? 'bg-lavanda-claro text-noche shadow-md'
                       : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
                   }`}
                 >
@@ -948,21 +952,33 @@ export default function MediaModal({
                 {/* Nota humana del archivo — editable, distinta de la descripcion IA */}
                 {onSaveNote && (
                   <div>
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 mb-1">
-                      <Pencil className="w-3 h-3" /> Nota
-                    </label>
-                    <textarea
-                      value={noteDraft}
-                      onChange={(e) => { setNoteDraft(e.target.value); setNoteSaved(false); }}
-                      onBlur={handleSaveNote}
-                      rows={3}
-                      placeholder="Escribe una nota sobre este archivo..."
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
-                    />
-                    <div className="h-4 mt-0.5 text-xs">
-                      {noteSaving && <span className="text-slate-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Guardando...</span>}
-                      {!noteSaving && noteSaved && <span className="text-salvia flex items-center gap-1"><Check className="w-3 h-3" /> Guardado</span>}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setNotaAbierta(v => !v)}
+                      aria-expanded={notaAbierta}
+                      className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-300 transition-colors mb-1"
+                    >
+                      <ChevronRight className={`w-3 h-3 transition-transform ${notaAbierta ? 'rotate-90' : ''}`} />
+                      <Pencil className="w-3 h-3" /> {notaAbierta || noteDraft.trim() ? 'Nota' : 'Añadir nota'}
+                    </button>
+                    {notaAbierta && (
+                      <>
+                        <textarea
+                          value={noteDraft}
+                          onChange={(e) => { setNoteDraft(e.target.value); setNoteSaved(false); }}
+                          onBlur={handleSaveNote}
+                          rows={3}
+                          // Al abrirla a mano y vacia, se escribe directamente.
+                          autoFocus={!noteDraft.trim()}
+                          placeholder="Escribe una nota sobre este archivo..."
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
+                        />
+                        <div className="h-4 mt-0.5 text-xs">
+                          {noteSaving && <span className="text-slate-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Guardando...</span>}
+                          {!noteSaving && noteSaved && <span className="text-salvia flex items-center gap-1"><Check className="w-3 h-3" /> Guardado</span>}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -1480,7 +1496,7 @@ function TagsList({ tags, onTagClick }: { tags: string[]; onTagClick: (t: string
         <button
           key={tag}
           onClick={() => onTagClick(tag)}
-          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium hover:bg-opacity-80 border border-transparent transition-all duration-200 cursor-pointer group"
+          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-lavanda-claro text-noche font-medium hover:bg-opacity-80 border border-transparent transition-all duration-200 cursor-pointer group"
           title={`Filtrar por etiqueta: ${tag}`}
         >
           <span className="group-hover:scale-105 transition-transform duration-200">{tag}</span>

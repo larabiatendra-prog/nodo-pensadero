@@ -42,7 +42,7 @@ export default function QuickFilters({
               onClick={() => onTypeSelection(type)}
               className={`px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
                 isSelected
-                  ? 'bg-lavanda-claro text-marfil shadow-md'
+                  ? 'bg-lavanda-claro text-noche shadow-md'
                   : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
               }`}
             >
@@ -92,7 +92,7 @@ export default function QuickFilters({
               groupingDisabled
                 ? 'opacity-40 cursor-not-allowed bg-pizarra text-lavanda-archivo'
                 : groupingEnabled
-                  ? 'bg-lavanda-claro text-marfil shadow-md'
+                  ? 'bg-lavanda-claro text-noche shadow-md'
                   : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
             }`}
             title={groupingDisabled ? 'Solo disponible en vista cuadrícula' : groupingEnabled ? 'Desactivar agrupación por sesiones' : 'Agrupar por sesiones'}

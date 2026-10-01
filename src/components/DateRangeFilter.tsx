@@ -225,7 +225,7 @@ export default function DateRangeFilter({
         onClick={() => setIsOpen(!isOpen)}
         className={`flex items-center gap-1.5 px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
           hasFilter
-            ? 'bg-lavanda-claro text-marfil shadow-md'
+            ? 'bg-lavanda-claro text-noche shadow-md'
             : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
         }`}
       >

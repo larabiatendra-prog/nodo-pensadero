@@ -1,11 +1,44 @@
 import { useMemo } from 'react';
 import { MediaFile } from '../types';
-import { etiquetaDeSesionSuelta, getFileSessionKey, getSessionLabelSource, parseSmartLabel } from '../utils/filenameParser';
+import { etiquetaDeCarpeta, etiquetaDeSesionSuelta, getFileSessionKey, getSessionKey, getSessionLabelSource, nombreDeBiblioteca, parseSmartLabel } from '../utils/filenameParser';
 
-/** Etiqueta de una sesion: la de siempre, o fecha + origen si es un dia suelto. */
-function etiquetaDe(key: string, files: MediaFile[]): { line1: string; line2: string } {
-  if (key.includes('#')) return etiquetaDeSesionSuelta(key, files[0]);
-  return parseSmartLabel(getSessionLabelSource(files[0]));
+type Etiqueta = { line1: string; line2: string };
+
+/**
+ * Etiqueta de una sesion: fecha + origen si es un dia suelto; la del nombre
+ * puesto o del patron del archivo, como siempre; y si sale de la carpeta, el
+ * evento y de que va (`etiquetaDeCarpeta`), no la carpeta de la camara.
+ */
+function etiquetaDe(key: string, files: MediaFile[]): Etiqueta {
+  const f = files[0];
+  if (key.includes('#')) return etiquetaDeSesionSuelta(key, f);
+  if ((f.displayName && f.displayName.trim()) || getSessionKey(f.name)) return parseSmartLabel(getSessionLabelSource(f));
+  return etiquetaDeCarpeta(f);
+}
+
+/**
+ * Etiquetas de todas las sesiones, con desempate: dos sesiones distintas que se
+ * llaman igual (un servidor y su backup con las mismas carpetas, "01_BRUTOS"
+ * dos veces) llevan detras el nombre de su biblioteca.
+ */
+function etiquetasDe(groups: { key: string | null; files: MediaFile[] }[]): Map<string, Etiqueta> {
+  const out = new Map<string, Etiqueta>();
+  const usos = new Map<string, number>();
+  for (const { key, files } of groups) {
+    if (key === null || files.length < MIN_GROUP_SIZE) continue;
+    const e = etiquetaDe(key, files);
+    out.set(key, e);
+    const firma = `${e.line1}|${e.line2}`;
+    usos.set(firma, (usos.get(firma) || 0) + 1);
+  }
+  for (const { key, files } of groups) {
+    const e = key !== null ? out.get(key) : undefined;
+    if (!e || (usos.get(`${e.line1}|${e.line2}`) || 0) < 2) continue;
+    const biblioteca = nombreDeBiblioteca(files[0]).replace(/_/g, ' ').trim();
+    if (!biblioteca) continue;
+    out.set(key!, e.line2 ? { ...e, line2: `${e.line2} · ${biblioteca}` } : { ...e, line1: `${e.line1} · ${biblioteca}` });
+  }
+  return out;
 }
 
 export const MIN_GROUP_SIZE = 5;
@@ -90,6 +123,7 @@ export function useSessionGroups(
     }
 
     const groups = buildOrderedGroups(allFiles);
+    const etiquetas = etiquetasDe(groups);
     const items: SessionItem[] = [];
     let slotsUsed = 0;
 
@@ -113,12 +147,12 @@ export function useSessionGroups(
         }
       } else if (!expandedGroups.has(key!)) {
         // Grupo colapsado — 1 slot (tarjeta mosaico)
-        const label = etiquetaDe(key!, files);
+        const label = etiquetas.get(key!) || etiquetaDe(key!, files);
         items.push({ type: 'session-card', key: key!, files, label, dimmed: anyExpanded });
         slotsUsed++;
       } else {
         // Grupo expandido: tarjeta de inicio + archivos + (show-more | tarjeta de fin)
-        const label = etiquetaDe(key!, files);
+        const label = etiquetas.get(key!) || etiquetaDe(key!, files);
         items.push({ type: 'session-start', key: key!, firstFile: files[0], label });
         slotsUsed++;
         if (slotsUsed >= visibleSlotCount) break;

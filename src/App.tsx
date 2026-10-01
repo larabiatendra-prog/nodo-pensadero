@@ -3682,7 +3682,7 @@ function App() {
     } catch (error) {
       console.error('Error rendering main content:', error);
       return (
-        <div className="p-4 bg-lavanda-claro text-marfil rounded-3xl">
+        <div className="p-4 bg-lavanda-claro text-noche rounded-3xl">
           <h2 className="font-bold">Error rendering content</h2>
           <p>View: {activeView}</p>
           <p>Error: {error?.toString()}</p>

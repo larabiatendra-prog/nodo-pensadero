@@ -124,7 +124,7 @@ function MediaCardBase({
           {file.tags.length > 0 && (
             <div className="flex flex-wrap gap-1 mb-3">
               {file.tags.slice(0, 3).map((tag) => (
-                <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium">{tag}</span>
+                <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-noche font-medium">{tag}</span>
               ))}
               {file.tags.length > 3 && <span className="text-xs text-lavanda-archivo font-medium">+{file.tags.length - 3}</span>}
             </div>
@@ -183,7 +183,7 @@ function MediaCardBase({
             </div>
           </div>
         )}
-        <div className={`absolute ${isSelectionMode ? 'top-10' : 'top-2'} left-2 px-2 py-1 rounded-full text-xs font-medium ${file.type === 'export' ? 'bg-bruma text-white' : 'bg-lavanda-claro text-marfil'}`}>
+        <div className={`absolute ${isSelectionMode ? 'top-10' : 'top-2'} left-2 px-2 py-1 rounded-full text-xs font-medium ${file.type === 'export' ? 'bg-bruma text-white' : 'bg-lavanda-claro text-noche'}`}>
           {file.type === 'export' ? 'EXPORT' : file.type.toUpperCase()}
         </div>
       </div>

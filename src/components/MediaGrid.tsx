@@ -307,7 +307,7 @@ export default function MediaGrid({
                     </div>
                   </td>
                   <td className="hidden md:table-cell py-4 px-3 md:px-4">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${file.type === 'export' ? 'bg-bruma text-white' : 'bg-lavanda-claro text-marfil'
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${file.type === 'export' ? 'bg-bruma text-white' : 'bg-lavanda-claro text-noche'
                       }`}>
                       {file.type === 'export' ? 'Export' : file.type}
                     </span>
@@ -323,7 +323,7 @@ export default function MediaGrid({
                       {file.tags.slice(0, 3).map((tag) => (
                         <span
                           key={tag}
-                          className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium"
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-noche font-medium"
                         >
                           {tag}
                         </span>

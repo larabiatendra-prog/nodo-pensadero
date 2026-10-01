@@ -1,8 +1,10 @@
 // Regex: captura todo hasta el YYMMDD inclusive
 // Ejemplos: "EDEM_Bootcamp - 240617_Presentaciones" → key "EDEM_Bootcamp - 240617"
-const DATE_REGEX = /^(.+?-\s*\d{6})/;
-const SUFFIX_REGEX = /^.+?-\s*\d{6}[_\s]*(.*)/;
-const DATE_EXTRACT_REGEX = /-\s*(\d{6})/;
+// `(?!\d)`: seis cifras justas. Sin eso "IMG-20260614-WA0010" casaba como
+// "IMG-202606" (mes 26) y salia la sesion "IMG · 6 undefined 2020".
+const DATE_REGEX = /^(.+?-\s*\d{6})(?!\d)/;
+const SUFFIX_REGEX = /^.+?-\s*\d{6}(?!\d)[_\s]*(.*)/;
+const DATE_EXTRACT_REGEX = /-\s*(\d{6})(?!\d)/;
 // Formato NODO / display name: fecha al INICIO "YYMMDD_Sufijo" (sin prefijo, sep "_").
 // Ejemplo: "240412_Viaje Marruecos" → fecha 240412, sufijo "Viaje Marruecos".
 const LEADING_DATE_REGEX = /^(\d{6})[_\s]+(.*)$/;
@@ -206,12 +208,117 @@ export function etiquetaDeDia(dia: number): string {
  */
 export function etiquetaDeSesionSuelta(clave: string, file: SessionFileRef): { line1: string; line2: string } {
   const dia = Number(clave.split('#').pop() || 0);
-  const segs = String(file.fullPath || '').split(/[\\/]/).filter(Boolean);
-  const carpeta = segs[segs.length - 2] || '';
-  const padre = segs[segs.length - 3] || '';
-  const limpia = (s: string) => s.replace(/^[-\s]+/, '').trim();
-  const nombre = /^\d+$/.test(carpeta) ? limpia(padre) : limpia(carpeta);
+  // Debajo, de que va la carpeta (evento y subcarpeta, sin las tecnicas): antes
+  // solo la carpeta, y "Dia_1\Jorge" salia como "Jorge" sin decir de que evento.
+  const { nombre } = deQueVa(file);
   return { line1: dia ? etiquetaDeDia(dia) : (nombre || 'sin fecha'), line2: dia ? nombre : '' };
+}
+
+/**
+ * Carpetas que crea la camara o el soporte, no el usuario: no dicen nada del
+ * material ("CLIP" de Sony, "100MSDCF", "DCIM", "XDROOT", "VIDEO_TS"...) y se
+ * saltan al nombrar una sesion. "clips", en plural, no entra: esa la crea el
+ * usuario a proposito. Un numero suelto ("3") tampoco dice nada.
+ */
+const CARPETA_TECNICA = /^(private|m4root|clip|dcim|avchd|bdmv|stream|xdroot|contents|video_ts|audio_ts|mp_root|thmbnl|general|\d{3}[a-z0-9_]{5}|\d+)$/i;
+
+export function esCarpetaTecnica(nombre: string): boolean {
+  return CARPETA_TECNICA.test(nombre.trim());
+}
+
+/** "Ana_y_Pablo" -> "Ana y Pablo", sin guiones ni separadores en los bordes. */
+function limpiarNombre(s: string): string {
+  return s.replace(/_/g, ' ').replace(/\s+/g, ' ').replace(/^[-\s.·]+|[-\s.·]+$/g, '').trim();
+}
+
+/**
+ * Fecha escrita en el nombre de una carpeta de evento, en las formas en que la
+ * gente las nombra, con el texto que se enseña y el nombre sin ella:
+ *   "260811_Ondara"            -> "11 ago 2026" + "Ondara" (AAMMDD_, la de Daniel)
+ *   "2026-06-14_Ana_y_Pablo"   -> "14 jun 2026" + "Ana y Pablo"
+ *   "2026-03_Congreso"         -> "mar 2026" + "Congreso"
+ *   "FONDO_FAMILIAR_1930-1959" -> "1930-1959" + "FONDO FAMILIAR"
+ *   "Boda de la nieta 2011"    -> "2011" + "Boda de la nieta"
+ * Antes solo valia AAMMDD_ y el resto de carpetas de evento no contaban.
+ */
+export function fechaDeCarpeta(nombre: string): { fecha: string; resto: string } | null {
+  const n = nombre.trim();
+  let m = n.match(/^(\d{6})[_\s]+(.*)$/);
+  if (m && formatYYMMDD(m[1])) return { fecha: formatYYMMDD(m[1])!, resto: limpiarNombre(m[2]) };
+
+  m = n.match(/^((?:19|20)\d{2})[-_.]?(\d{2})[-_.]?(\d{2})(?!\d)(.*)$/);
+  if (m) {
+    const mes = +m[2];
+    const dia = +m[3];
+    if (mes >= 1 && mes <= 12 && dia >= 1 && dia <= 31) return { fecha: `${dia} ${MONTHS_ES[mes - 1]} ${m[1]}`, resto: limpiarNombre(m[4]) };
+  }
+
+  m = n.match(/^((?:19|20)\d{2})[-_.](\d{2})(?!\d)(.*)$/);
+  if (m && +m[2] >= 1 && +m[2] <= 12) return { fecha: `${MONTHS_ES[+m[2] - 1]} ${m[1]}`, resto: limpiarNombre(m[3]) };
+
+  m = n.match(/(^|[\s_-])((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})(?=$|[\s_-])/);
+  if (m) return { fecha: `${m[2]}-${m[3]}`, resto: limpiarNombre(n.replace(m[0], m[1])) };
+
+  m = n.match(/(^|[\s_-])((?:19|20)\d{2})(?=$|[\s_-])/);
+  if (m) return { fecha: m[2], resto: limpiarNombre(n.replace(m[0], m[1])) };
+
+  return null;
+}
+
+/**
+ * Carpetas del archivo DENTRO de su biblioteca, de la raiz a la contenedora.
+ * La raiz de la biblioteca y lo de encima no son el evento ("BODAS", "F:\").
+ * Sin mediaKey (datos antiguos), la ruta entera.
+ */
+function carpetasDe(file: SessionFileRef): string[] {
+  const dirs = String(file.fullPath || '').split(/[\\/]/).filter(Boolean).slice(0, -1);
+  const mk = file.mediaKey && file.mediaKey.trim();
+  if (mk && mk.includes(':')) {
+    const n = mk.slice(mk.indexOf(':') + 1).split('/').filter(Boolean).length - 1;
+    return n > 0 ? dirs.slice(-n) : [];
+  }
+  return dirs;
+}
+
+/** Nombre de la carpeta de la biblioteca de un archivo ("SERVIDOR_MARKETING"). */
+export function nombreDeBiblioteca(file: SessionFileRef): string {
+  const segs = String(file.fullPath || '').split(/[\\/]/).filter(Boolean);
+  const dentro = carpetasDe(file).length;
+  return segs[segs.length - 2 - dentro] || '';
+}
+
+/**
+ * De que va una carpeta: el evento (la carpeta con fecha mas cercana) y,
+ * debajo, la subcarpeta mas cercana que aporte algo, sin las tecnicas. Sin evento,
+ * la carpeta mas cercana que no sea tecnica. `fecha` es la del evento.
+ *   2026-06-14_Ana_y_Pablo\CAM_A_FX3\PRIVATE\M4ROOT\CLIP -> "Ana y Pablo / CAM A FX3"
+ *   2026-03_Congreso\Dia_1\Jorge                         -> "Congreso / Jorge"
+ */
+function deQueVa(file: SessionFileRef): { fecha: string; nombre: string } {
+  const dirs = carpetasDe(file);
+  for (let i = dirs.length - 1; i >= 0; i--) {
+    const ev = fechaDeCarpeta(dirs[i]);
+    if (!ev) continue;
+    // Una sola subcarpeta, la mas cercana con significado: es la regla de
+    // siempre ("190907_Bioritme / Selects"), ahora saltando las tecnicas.
+    const subs = dirs.slice(i + 1).filter(d => !esCarpetaTecnica(d)).slice(-1).map(limpiarNombre);
+    return { fecha: ev.fecha, nombre: [ev.resto, ...subs].filter(Boolean).join(' / ') };
+  }
+  // Todo tecnico dentro ("- Móvil\3", con la biblioteca en "- Móvil"): la biblioteca.
+  const propia = [...dirs].reverse().find(d => !esCarpetaTecnica(d)) || nombreDeBiblioteca(file) || dirs[dirs.length - 1] || '';
+  return { fecha: '', nombre: propia.replace(/^[-\s]+/, '').trim() };
+}
+
+/**
+ * Etiqueta de una sesion de CARPETA (sin nombre puesto ni patron en el nombre
+ * del archivo): arriba la fecha del evento, debajo de que va. Antes salia el
+ * nombre de la carpeta contenedora a secas, y con material de camara eso es
+ * "CLIP" o "100MSDCF". Con carpetas AAMMDD_ queda como estaba.
+ */
+export function etiquetaDeCarpeta(file: SessionFileRef): { line1: string; line2: string } {
+  const { fecha, nombre } = deQueVa(file);
+  if (fecha) return { line1: fecha, line2: nombre };
+  return { line1: nombre || file.name, line2: '' };
 }
 
 /** String del que derivar etiqueta/fecha. Sigue la misma prioridad que la clave. */
@@ -271,12 +378,13 @@ export function parseSmartLabel(fileName: string): { line1: string; line2: strin
     return label;
   }
 
-  const dateStr = dateMatch[1]; // "240617"
-  const yy = parseInt(dateStr.substring(0, 2));
-  const mm = parseInt(dateStr.substring(2, 4));
-  const dd = parseInt(dateStr.substring(4, 6));
-  const year = yy > 50 ? 1900 + yy : 2000 + yy;
-  const dateLabel = `${dd} ${MONTHS_ES[mm - 1]} ${year}`;
+  const dateLabel = formatYYMMDD(dateMatch[1]); // "240617" -> "17 jun 2024"
+  if (!dateLabel) {
+    // Seis cifras que no son una fecha (mes 13...): el nombre tal cual.
+    const label = { line1: name, line2: '' };
+    smartLabelCache.set(name, label);
+    return label;
+  }
 
   // Prefijo antes del " - YYMMDD"
   const prefixMatch = name.match(/^(.+?)\s*-\s*\d{6}/);

@@ -362,7 +362,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
                     {currentVideo.tags.slice(0, 3).map((tag) => (
                       <span
                         key={tag}
-                        className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-marfil font-medium"
+                        className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-lavanda-claro text-noche font-medium"
                       >
                         {tag}
                       </span>

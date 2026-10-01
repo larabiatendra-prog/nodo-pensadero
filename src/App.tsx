@@ -775,10 +775,10 @@ function App() {
     const { searchQuery, searchTerms = currentSearchTerms, searchFilters, tags = [], excludeTags = [], types = selectedTypes, personIds = selectedPersonIds, favoritesOnly = showFavoritesOnly, skipDedup = false, colorFileIds = colorFilterFileIds, imageSearchIds = imageSearchFileIds, grupos: gruposFiltro = filtrosGrupo } = options;
 
     // Coincidencia de texto (substring, sin acentos) sobre nombre, nombre de
-    // presentacion, CARPETA contenedora, tags y lo que describio la IA. La
-    // carpeta es lo que hace encontrable el material de camara: "Ondara"
-    // encuentra "P1248278.MP4"; la descripcion, lo que no es etiqueta
-    // ("carruaje", "novios").
+    // presentacion, CARPETA contenedora, tags y lo que describio la IA.
+    // La carpeta hace encontrable el material de camara:
+    // "Ondara" encuentra "P1248278.MP4"; la descripcion, lo que no es
+    // etiqueta ("carruaje", "novios").
     const matchesText = (file: MediaFile, q: string) =>
       normalizaTexto(file.name).includes(q) ||
       normalizaTexto(file.displayName).includes(q) ||

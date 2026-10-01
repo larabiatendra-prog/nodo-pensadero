@@ -29,8 +29,7 @@ const fallos = require('../utils/failureReason');
 // Extensiones que se aceptan como consulta. El nombre del archivo lo pone el
 // navegador: solo se usa para elegir la extension del temporal, y solo si es
 // una de estas (nada de rutas ni nombres raros en el disco).
-const EXT_IMAGEN = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.heic', '.heif']);
-const EXT_VIDEO = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.avi', '.webm', '.mts', '.m2ts', '.ts', '.mpg', '.mpeg', '.wmv', '.3gp', '.mxf', '.dv', '.vob', '.flv', '.ogv']);
+const { IMAGE_EXTS: EXT_IMAGEN, VIDEO_EXTS: EXT_VIDEO } = require('../utils/formatos');
 // Cuantos momentos de un video arrastrado se miran (repartidos del 5% al 95%).
 const FOTOGRAMAS_VIDEO = 6;
 

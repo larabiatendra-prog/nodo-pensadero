@@ -85,6 +85,9 @@ const NATIVE_ACODECS = new Set([
 ]);
 const NATIVE_CONTAINERS = new Set(['mp4', 'mov', 'm4v', 'm4a', 'webm', '3gp', '3gpp']);
 
+/** Lo que dice la ficha de un video cuya imagen ffmpeg no sabe leer. */
+const TEXTO_ILEGIBLE = 'Pensadero aún no sabe leer la imagen de este archivo (un formato de cámara sin soporte, como el RAW de cine). Descarga el original para abrirlo con su programa.';
+
 // === Estado en memoria ===
 let index = null;                 // fileId -> { kind, status, srcW, srcH, outW, outH, srcMtime, error }
 const inFlight = new Map();       // fileId -> Promise (generacion en curso)
@@ -779,13 +782,20 @@ async function getPlayable(file, opts = {}) {
   // Clasificacion (cacheada por mtime).
   let cached = index[file.id];
   let kind, info;
-  if (cached && cached.srcMtime === srcMtime && cached.kind && cached.v === VERSION_CLASIFICACION) {
+  // Una clasificacion sin tamaño (0x0) es de antes de saber reconocer los
+  // ilegibles: se vuelve a mirar. Un video que se lee siempre tiene ancho.
+  if (cached && cached.srcMtime === srcMtime && cached.kind && cached.v === VERSION_CLASIFICACION
+    && (cached.srcW > 0 || cached.kind === 'ilegible')) {
     kind = cached.kind;
     info = { width: cached.srcW, height: cached.srcH, bitrate: cached.bitrate, rotacion: cached.rot, vcodec: cached.vcodec, pixfmt: cached.pixfmt };
   } else {
     const probed = await probe(file.fullPath);
     if (!probed) return { status: 'error', error: 'no se pudo analizar el video' };
-    kind = classify(probed);
+    // Sin imagen que ffmpeg sepa leer (el RAW de cine de una Sony F55 dentro de
+    // un MXF): no hay version ligera posible. Antes se reintentaba en cada
+    // apertura y la ficha decia "preparando" para siempre.
+    const legible = !!probed.vcodec && probed.vcodec !== 'none' && probed.width > 0;
+    kind = legible ? classify(probed) : 'ilegible';
     info = probed;
     // Un proxy de la regla vieja solo se aprovecha si era una version ligera
     // (transcode) y sigue haciendo falta. Un remux era una copia: se ignora y,
@@ -796,7 +806,8 @@ async function getPlayable(file, opts = {}) {
       ...(aprovechable ? cached : {}),
       v: VERSION_CLASIFICACION,
       kind,
-      status: kind === 'native' ? 'native' : (aprovechable ? 'ready' : 'pending'),
+      status: kind === 'native' ? 'native' : kind === 'ilegible' ? 'error' : (aprovechable ? 'ready' : 'pending'),
+      ...(kind === 'ilegible' ? { error: TEXTO_ILEGIBLE } : {}),
       srcW: probed.width, srcH: probed.height, srcMtime,
       bitrate: probed.bitrate || 0,
       dur: probed.duracion || 0,
@@ -807,6 +818,8 @@ async function getPlayable(file, opts = {}) {
     scheduleSave();
     cached = index[file.id];
   }
+
+  if (kind === 'ilegible') return { status: 'error', motivo: 'formato', error: TEXTO_ILEGIBLE };
 
   // Se abre, pero pesa: se le prepara una version ligera igualmente. El
   // original sigue siendo reproducible, asi que nadie espera por esto:

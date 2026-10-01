@@ -12,6 +12,7 @@ import ScanContextModal from './ScanContextModal';
 import FolderRenameModal from './FolderRenameModal';
 import TutorialLetraFija from './TutorialLetraFija';
 import { discosDeLaTarjeta, type DiscoAFijar } from '../utils/letrasDiscos';
+import { textoSinSoporte, totalSinSoporte, type SinSoporte } from '../utils/sinSoporte';
 
 /**
  * Rutas y escaneo — la sala de maquinas del archivo.
@@ -49,6 +50,8 @@ interface ScanPath {
    * `en`, por biblioteca): el escaneo los copia en segundos, sin grafica.
    */
   copiasHechas?: { n: number; en: Array<{ id: string; n: number }> } | null;
+  /** Lo que hay y aun no se sabe leer (RAW...): Rutas lo dice. */
+  sinSoporte?: SinSoporte[] | null;
   /**
    * El disco de esta biblioteca esta ahora en otra ruta (otra letra). Si esa
    * ruta la tiene otra biblioteca: `mismoDisco` dice si es de verdad el mismo
@@ -1054,9 +1057,10 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
   };
 
   const totales = useMemo(() => {
-    let archivos = 0, total = 0, descritos = 0, pendientes = 0, copias = 0;
+    let archivos = 0, total = 0, descritos = 0, pendientes = 0, copias = 0, sinLeer = 0;
     for (const p of paths) {
       archivos += p.fileCount || 0;
+      if (p.isActive && p.status !== 'disconnected') sinLeer += totalSinSoporte(p.sinSoporte);
       if (p.isActive && typeof p.visualTotal === 'number') {
         total += p.visualTotal;
         descritos += p.visualScanned ?? 0;
@@ -1066,7 +1070,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
         copias += p.copiasHechas?.n ?? 0;
       }
     }
-    return { archivos, total, descritos, pendientes, copias };
+    return { archivos, total, descritos, pendientes, copias, sinLeer };
   }, [paths]);
 
   /** Por que no se puede escanear una ruta ahora mismo (null = si se puede). */
@@ -1242,7 +1246,17 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             <>
               <div className="flex items-center gap-3">
                 <Check className="w-4 h-4 text-salvia" />
-                <p className="text-[15px] text-marfil">Todo lo conectado está escaneado</p>
+                <div>
+                  {/* Con archivos que no se saben leer, "todo escaneado" era falso. */}
+                  <p className="text-[15px] text-marfil">
+                    {totales.sinLeer > 0 ? 'Todo lo que Pensadero sabe leer está escaneado' : 'Todo lo conectado está escaneado'}
+                  </p>
+                  {totales.sinLeer > 0 && (
+                    <p className="text-[12px] text-humo">
+                      {totales.sinLeer === 1 ? 'Hay 1 archivo que aún no sabe leer' : `Hay ${miles(totales.sinLeer)} archivos que aún no sabe leer`}: lo dice cada biblioteca.
+                    </p>
+                  )}
+                </div>
               </div>
               <button
                 onClick={() => handleScanAll(false)}
@@ -1393,6 +1407,9 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                         ) : path.isActive && path.status === 'disconnected' && !path.sugerencia ? (
                           <p className="mt-2 text-[12px] text-humo">Conecta el disco y se sincroniza solo: lo ya descrito vuelve sin re-escanear. Si al conectarlo tiene otra letra, usa «Cambiar ubicación».</p>
                         ) : null}
+                        {conectada && totalSinSoporte(path.sinSoporte) > 0 && (
+                          <p className="mt-2 text-[11px] text-humo leading-snug">{textoSinSoporte(path.sinSoporte)}</p>
+                        )}
 
                         {/* El disco de esta biblioteca esta en otra letra. Se
                             propone, no se hace solo: la decision es tuya. */}

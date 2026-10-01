@@ -18,6 +18,8 @@ const mime = require('mime-types');
 const archiver = require('archiver');
 const { spawn } = require('child_process');
 const fallos = require('../utils/failureReason');
+const { IMAGEN_NO_NATIVA } = require('../utils/formatos');
+const { vistaJpg } = require('../utils/vistaImagen');
 
 const favoritesManager = require('../favoritesManager');
 const etiquetasManuales = require('../services/etiquetasManuales');
@@ -599,6 +601,19 @@ module.exports = function createMediaRoutes(deps) {
           success: false,
           message: 'Archivo no encontrado en el sistema de archivos'
         });
+      }
+
+      // HEIC y TIFF: el navegador no los muestra; la ficha recibe un JPG.
+      // `?original=1` da el archivo tal cual.
+      if (IMAGEN_NO_NATIVA.has(path.extname(filePath).toLowerCase()) && req.query.original !== '1') {
+        try {
+          const vista = await vistaJpg(filePath, file.id);
+          res.setHeader('Cache-Control', 'private, max-age=86400');
+          return res.type('image/jpeg').sendFile(vista);
+        } catch (err) {
+          // Sin JPG se sirve el original, como antes; el porque queda apuntado.
+          fallos.record('preparar la version JPG de una imagen', err, { path: filePath });
+        }
       }
 
       console.log(`🎬 Streaming archivo: ${file.name}`);

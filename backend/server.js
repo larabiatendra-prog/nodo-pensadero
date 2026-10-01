@@ -32,6 +32,7 @@ const collectionsManager = require('./collectionsManager');
 const catalogReader = require('./catalogReader');
 const { anotarCruces } = require('./utils/recolocar');
 const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
+const { tipoPorExtension, VIDEO_EXTS, NO_LEIDOS } = require('./utils/formatos');
 const peopleRegistry = require('./peopleRegistry');
 const personsAggregator = require('./personsAggregator');
 const multer = require('multer');
@@ -193,7 +194,7 @@ async function guardarEstadoDeRutas(rutasSync, tocadas = null) {
     // Si el usuario cambio la ruta (otra letra) mientras se sincronizaba, lo
     // que sabe esta pasada es de la ruta vieja: no se mezcla.
     if (s.path !== r.path) continue;
-    for (const k of ['status', 'lastError', 'lastScan', 'fileCount', 'volumen', 'sugerencia', 'disco']) {
+    for (const k of ['status', 'lastError', 'lastScan', 'fileCount', 'volumen', 'sugerencia', 'disco', 'sinSoporte']) {
       if (Object.prototype.hasOwnProperty.call(s, k)) r[k] = s[k];
     }
   }
@@ -308,9 +309,8 @@ app.use('/media', express.static(CONTENT_DIR, {
   etag: true,
   lastModified: true,
   setHeaders: (res, p) => {
-    const VIDEO_SERVE_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
     const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
-    if (VIDEO_SERVE_EXTS.has(ext)) {
+    if (VIDEO_EXTS.has(ext) && ext !== '.webm') {
       res.set('Content-Type', 'video/mp4');
     } else if (p.endsWith('.webm')) {
       res.set('Content-Type', 'video/webm');
@@ -563,6 +563,11 @@ function getFileType(filePath) {
   const normalizedPath = path.normalize(filePath).toLowerCase();
   const isExport = EXPORTS_PATHS.some(exportPath => normalizedPath.startsWith(exportPath));
   if (isExport) return 'export';
+
+  // Lo que Pensadero conoce manda (utils/formatos.js): `mime-types` llama al
+  // MXF `application/mxf` y lo descartaba.
+  const conocido = tipoPorExtension(path.extname(filePath));
+  if (conocido) return conocido;
 
   const mimeType = mime.lookup(filePath);
   if (mimeType) {
@@ -1041,7 +1046,20 @@ async function recorrerDirectorio(dir, baseDir, libraryId, pasada) {
 
     if (!entry.isFile() || esArchivoBasura(entry.name)) continue;
     const fileType = getFileType(fullPath);
-    if (!fileType) continue;
+    if (!fileType) {
+      // Lo que se reconoce pero aun no se sabe leer (RAW...) se cuenta: Rutas
+      // lo dice en vez de "todo escaneado" con 32 RAW en la carpeta.
+      const ext = path.extname(entry.name).toLowerCase();
+      const familia = NO_LEIDOS.get(ext);
+      if (familia) {
+        if (!pasada.sinSoporte) pasada.sinSoporte = new Map();
+        const s = pasada.sinSoporte.get(familia) || { n: 0, exts: new Set() };
+        s.n++;
+        s.exts.add(ext);
+        pasada.sinSoporte.set(familia, s);
+      }
+      continue;
+    }
 
     try {
       const r = await indexarArchivo(fullPath, entry.name, fileType, baseDir, libraryId);
@@ -1278,6 +1296,10 @@ async function performSync(opts = {}) {
       p.lastScan = new Date().toISOString();
       p.fileCount = deEsta;
       p.status = 'connected';
+      // [{ familia: 'RAW de cámara', n: 32, exts: ['.cr3', '.nef'] }] o null.
+      p.sinSoporte = pasada.sinSoporte && pasada.sinSoporte.size > 0
+        ? [...pasada.sinSoporte].map(([familia, s]) => ({ familia, n: s.n, exts: [...s.exts].sort() }))
+        : null;
     }
 
     if (paths.length > 0) {

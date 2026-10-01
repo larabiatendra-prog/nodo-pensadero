@@ -42,6 +42,7 @@ const folderContext = require('./folderContext');
 const { atomicWriteFile, withFileLock, normalizeLockKey } = require('../utils/jsonStore');
 const { computeFaceCount, mergeIdentityOnRescan } = require('../utils/faceCatalog');
 const fallos = require('../utils/failureReason');
+const { vistaJpg } = require('../utils/vistaImagen');
 const { computeShotType } = require('../utils/shotType');
 const { computePeopleFraming } = require('../utils/peopleFraming');
 const { computeTimeOfDay } = require('../utils/timeOfDay');
@@ -172,8 +173,8 @@ const PENSADERO_CATALOG_FILENAME = '_pensadero.json';
 // numero de archivos redescritos. Antes solo se escribia al terminar el bucle
 // entero y una caida a mitad se llevaba por delante horas de VLM.
 const FLUSH_EVERY = parseInt(process.env.SCAN_FLUSH_EVERY, 10) || 10;
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tif', '.tiff', '.avif']);
-const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
+// Una sola lista de formatos para todo el servidor (utils/formatos.js).
+const { IMAGE_EXTS, VIDEO_EXTS } = require('../utils/formatos');
 const SCANNABLE_EXTS = new Set([...IMAGE_EXTS, ...VIDEO_EXTS]);
 
 function isVideoExt(ext) { return VIDEO_EXTS.has(ext.toLowerCase()); }
@@ -1116,12 +1117,24 @@ async function escanearCarpeta(folderPath, opts, job) {
           videoProxyService.prewarm({ id: fileIdFor(filePath), fullPath: filePath, name: basename });
         }
       } else {
+        // Las HEIC de iPhone van en HEVC: ni sharp (descripcion, color) ni las
+        // caras las leen, y se quedaban sin describir y sin encontrarse. Se
+        // analiza su version JPG, la misma que ve la ficha (utils/vistaImagen).
+        // Los datos tecnicos (fecha de la foto) se siguen leyendo del original.
+        let rutaAnalisis = filePath;
+        if (/\.hei[cf]$/i.test(filePath)) {
+          try {
+            rutaAnalisis = await vistaJpg(filePath, fileIdFor(filePath));
+          } catch (err) {
+            fallos.record('convertir una HEIC para escanearla', err, { path: filePath });
+          }
+        }
         [entry, technical, faceDetections] = await Promise.all([
           hacer.descripcion
-            ? scanner.scanImage(filePath, { folderContext: folderContextStr })
+            ? scanner.scanImage(rutaAnalisis, { folderContext: folderContextStr })
             : Promise.resolve(entradaSinDescripcion(previaJob, null)),
           extractTechnical(filePath),
-          hacer.caras ? faceSvc.detectFaces(filePath).catch(() => []) : Promise.resolve([]),
+          hacer.caras ? faceSvc.detectFaces(rutaAnalisis).catch(() => []) : Promise.resolve([]),
         ]);
         // Mezclar technical de sharp con lo que diga el VLM (sharp manda)
         entry.technical = { ...(entry.technical || {}), ...technical };
@@ -1131,7 +1144,7 @@ async function escanearCarpeta(folderPath, opts, job) {
         // Palette algoritmica sobre la foto original (mas precisa perceptualmente
         // que la heuristica del VLM, que a veces decia "rojo" para hex marrones).
         try {
-          const colorResult = await colorAnalyzer.analyzeImageColors(filePath);
+          const colorResult = await colorAnalyzer.analyzeImageColors(rutaAnalisis);
           if (colorResult && Array.isArray(colorResult.palette) && colorResult.palette.length > 0) {
             entry.colors = entry.colors || {};
             entry.colors.palette = enrichPalette(colorResult.palette.slice(0, 3));
@@ -1143,7 +1156,7 @@ async function escanearCarpeta(folderPath, opts, job) {
         // CLIP embedding (place recognition + image search + text-to-image futuro)
         if (hacer.busquedaVisual) {
           try {
-            const clipEmb = await clipSvc.embedImage(filePath);
+            const clipEmb = await clipSvc.embedImage(rutaAnalisis);
             if (clipEmb) {
               entry.clip_embedding_b64 = clipSvc.encodeEmbedding(clipEmb);
               clipIndex.upsert(fileIdFor(filePath), clipEmb);

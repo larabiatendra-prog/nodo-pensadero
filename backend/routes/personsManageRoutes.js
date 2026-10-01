@@ -966,7 +966,7 @@ module.exports = function createPersonsManageRoutes(deps) {
     res.json({ success: true, data: publicCluster(merged) });
   });
 
-  const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg', '.mts', '.m2ts', '.wmv', '.flv', '.3gp', '.ts', '.ogv', '.vob', '.dv']);
+  const { VIDEO_EXTS } = require('../utils/formatos');
 
   // Extrae un frame de un video a un temp jpg para recortar una cara.
   // `frameTime` (segundo) debe ser el momento donde se detecto la cara (lo

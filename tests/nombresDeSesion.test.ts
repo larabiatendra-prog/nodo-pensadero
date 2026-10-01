@@ -39,9 +39,9 @@ test('agencia: tres dias del mismo fotografo: el congreso, el fotografo y el dia
   assert.notStrictEqual(dia('Dia_1', 20260310).line1, dia('Dia_2', 20260311).line1);
 });
 
-test('las carpetas AAMMDD_ de Daniel se ven igual que antes', () => {
-  const B = 'F:\\(1) WORKS';
-  for (const rel of ['260811_Ondara\\P1000001.MP4', '260811_Ondara\\clips\\P1000002.MP4', '190907_Bioritme\\Clips\\Selects\\a.mov']) {
+test('las carpetas AAMMDD_ se ven igual que antes', () => {
+  const B = 'F:\\Archivo';
+  for (const rel of ['240811_Playa\\P1000001.MP4', '240811_Playa\\clips\\P1000002.MP4', '190907_Concierto\\Clips\\Selects\\a.mov']) {
     const f = archivo(B, rel);
     assert.deepStrictEqual(etiquetaDeCarpeta(f), parseSmartLabel(getFolderLabelSource(f)!), rel);
   }

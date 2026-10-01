@@ -234,7 +234,7 @@ function limpiarNombre(s: string): string {
 /**
  * Fecha escrita en el nombre de una carpeta de evento, en las formas en que la
  * gente las nombra, con el texto que se enseña y el nombre sin ella:
- *   "260811_Ondara"            -> "11 ago 2026" + "Ondara" (AAMMDD_, la de Daniel)
+ *   "240811_Playa"             -> "11 ago 2024" + "Playa" (AAMMDD_)
  *   "2026-06-14_Ana_y_Pablo"   -> "14 jun 2026" + "Ana y Pablo"
  *   "2026-03_Congreso"         -> "mar 2026" + "Congreso"
  *   "FONDO_FAMILIAR_1930-1959" -> "1930-1959" + "FONDO FAMILIAR"
@@ -300,7 +300,7 @@ function deQueVa(file: SessionFileRef): { fecha: string; nombre: string } {
     const ev = fechaDeCarpeta(dirs[i]);
     if (!ev) continue;
     // Una sola subcarpeta, la mas cercana con significado: es la regla de
-    // siempre ("190907_Bioritme / Selects"), ahora saltando las tecnicas.
+    // siempre ("190907_Concierto / Selects"), ahora saltando las tecnicas.
     const subs = dirs.slice(i + 1).filter(d => !esCarpetaTecnica(d)).slice(-1).map(limpiarNombre);
     return { fecha: ev.fecha, nombre: [ev.resto, ...subs].filter(Boolean).join(' / ') };
   }

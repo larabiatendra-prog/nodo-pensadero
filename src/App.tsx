@@ -1617,7 +1617,11 @@ function App() {
       toast((t) => (
         <span className="flex items-center gap-3 text-sm">
           <Lock className="w-4 h-4 shrink-0" />
-          <span>{n === 1 ? 'Oculto bajo candado' : `${n} archivos ocultos bajo candado`}</span>
+          {/* Que diga donde ha ido: quien lo esconde sin querer tiene que poder encontrarlo. */}
+          <span className="flex flex-col">
+            <span>{n === 1 ? 'Oculto bajo candado' : `${n} archivos ocultos bajo candado`}</span>
+            <span className="text-xs opacity-70">Lo tienes en Más opciones › Material oculto</span>
+          </span>
           {token && (
             <button
               className="px-2 py-0.5 rounded-full bg-lavanda text-noche text-xs font-medium"
@@ -1635,7 +1639,9 @@ function App() {
             </button>
           )}
         </span>
-      ), { duration: 8000 });
+      // Lo mismo que dura el Deshacer en el servidor (DESHACER_MS): antes el
+      // aviso se iba a los 8 s y la posibilidad de deshacer seguia 12 s mas.
+      ), { duration: 20000 });
     } catch (e: any) {
       setMediaFiles(antes);
       toast.error(e?.message || 'No se pudo ocultar');

@@ -21,10 +21,17 @@
  * Clave: la identidad portable (`mediaKey`) cuando existe, para que lo oculto
  * siga oculto si el disco cambia de letra; si no, el id de runtime.
  *
+ * Contraseña: al principio no hay ninguna y la caja se abre sin pedirla; dentro
+ * se invita a poner una, y desde entonces se pide siempre. Antes venia con
+ * "1234" de fabrica, que no se decia en ningun sitio: quien escondia algo sin
+ * querer no podia recuperarlo. Si se olvida, se restablece desde fuera de la
+ * aplicacion (ver ARCHIVO_RESTABLECER): quien puede tocar la carpeta de
+ * Pensadero ya ve los archivos en el explorador, asi que no abre nada nuevo.
+ *
  * Formato:
  *   {
  *     "version": 1,
- *     "clave": { "salt": "<hex>", "hash": "<hex>" } | null,   // null = "1234"
+ *     "clave": { "salt": "<hex>", "hash": "<hex>" } | null,   // null = sin contraseña
  *     "ocultos": { "<mediaKey|id>": { "id": "<md5>", "nombre": "...", "desde": "ISO" } }
  *   }
  */
@@ -35,8 +42,12 @@ const crypto = require('crypto');
 const { atomicWriteFile, quarantineCorrupt } = require('./utils/jsonStore');
 const fallos = require('./utils/failureReason');
 
-/** Clave de fabrica mientras el usuario no ponga otra. */
-const CLAVE_INICIAL = '1234';
+/**
+ * Si este archivo aparece junto al de ocultos, la contraseña se quita (lo
+ * oculto sigue oculto) y el archivo se borra. Lo crea la herramienta "Olvide la
+ * clave del candado" del producto, con Pensadero abierto o cerrado.
+ */
+const ARCHIVO_RESTABLECER = 'restablecer_clave_candado';
 /** Cuanto dura abierta la caja tras poner la clave. */
 const LLAVE_MS = 30 * 60 * 1000;
 /** Ventana para deshacer un ocultado sin pedir la clave. */
@@ -49,6 +60,7 @@ function derivar(clave, salt) {
 class OcultosManager {
   constructor() {
     this.file = path.join(__dirname, 'ocultos_persistent.json');
+    this.restablecer = path.join(__dirname, ARCHIVO_RESTABLECER);
     this.items = new Map(); // clave -> { id, nombre, desde }
     this.ids = new Set();   // ids de runtime de lo oculto, para filtrar rapido
     this.clave = null;      // { salt, hash } | null
@@ -60,7 +72,28 @@ class OcultosManager {
 
   async ensureLoaded() {
     if (!this.loaded) await this.load();
+    await this._restablecerSiLoPiden();
     return this;
+  }
+
+  /** ¿Hay contraseña puesta? Sin ella la caja se abre sin pedir nada. */
+  tieneClave() {
+    return !!this.clave;
+  }
+
+  /** La herramienta de "olvide la clave" ha dejado su aviso: se quita la contraseña. */
+  async _restablecerSiLoPiden() {
+    const pedido = await fs.access(this.restablecer).then(() => true).catch(() => false);
+    if (!pedido) return;
+    if (this.clave) {
+      this.clave = null;
+      this.llaves.clear();
+      await this._save();
+      console.log('🔓 Clave del candado restablecida: la caja se abre sin contraseña hasta que se ponga otra');
+    }
+    await fs.unlink(this.restablecer).catch(err => {
+      fallos.record('borrar el aviso de restablecer la clave del candado', err, { path: this.restablecer });
+    });
   }
 
   async load() {
@@ -227,12 +260,9 @@ class OcultosManager {
   // ── Clave y llaves ──────────────────────────────────────────────────────
 
   comprobarClave(clave) {
+    // Sin contraseña puesta, la caja esta abierta para quien entre.
+    if (!this.clave) return true;
     if (typeof clave !== 'string' || clave.length === 0) return false;
-    if (!this.clave) {
-      const a = Buffer.from(clave);
-      const b = Buffer.from(CLAVE_INICIAL);
-      return a.length === b.length && crypto.timingSafeEqual(a, b);
-    }
     const h = Buffer.from(derivar(clave, this.clave.salt), 'hex');
     const esperado = Buffer.from(this.clave.hash, 'hex');
     return h.length === esperado.length && crypto.timingSafeEqual(h, esperado);
@@ -259,18 +289,20 @@ class OcultosManager {
     if (token) this.llaves.delete(token);
   }
 
+  /** Pone la contraseña (la primera vez no hace falta `actual`) o la cambia. */
   async cambiarClave(actual, nueva) {
     await this.ensureLoaded();
     if (!this.comprobarClave(actual)) return { ok: false, error: 'La clave actual no es correcta' };
     if (typeof nueva !== 'string' || nueva.length < 4) {
-      return { ok: false, error: 'La clave nueva necesita al menos 4 caracteres' };
+      return { ok: false, error: 'La clave necesita al menos 4 caracteres' };
     }
     const salt = crypto.randomBytes(16).toString('hex');
     this.clave = { salt, hash: derivar(nueva, salt) };
     await this._save();
-    // Las llaves abiertas con la clave vieja dejan de valer.
+    // Las llaves abiertas con la clave vieja dejan de valer; quien la acaba de
+    // poner sigue dentro con una nueva (antes le echaba en el siguiente clic).
     this.llaves.clear();
-    return { ok: true };
+    return { ok: true, ...this.abrir(nueva) };
   }
 
   _purgar() {
@@ -286,3 +318,5 @@ class OcultosManager {
 }
 
 module.exports = new OcultosManager();
+module.exports.OcultosManager = OcultosManager;
+module.exports.ARCHIVO_RESTABLECER = ARCHIVO_RESTABLECER;

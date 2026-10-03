@@ -897,7 +897,7 @@ export default function MediaModal({
                 {onOcultar && (
                   <button
                     onClick={() => onOcultar(file)}
-                    title="Ocultar bajo candado: deja de salir en la aplicacion hasta dar la clave"
+                    title="Ocultar bajo candado: deja de salir en la aplicación; lo encuentras en Material oculto"
                     aria-label="Ocultar bajo candado"
                     className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
                   >

@@ -3,14 +3,14 @@
  *
  * El candado del material (ver ocultosManager.js).
  *
- *  - GET  /api/ocultos/estado          -> { total }            (sin clave: solo cuantos)
+ *  - GET  /api/ocultos/estado          -> { total, conClave }  (sin clave: solo cuantos)
  *  - POST /api/ocultos/ocultar         -> body { ids }         (sin clave: ocultar no expone nada)
  *  - POST /api/ocultos/deshacer        -> body { token }       (unos segundos tras ocultar)
- *  - POST /api/ocultos/abrir           -> body { clave }       -> { llave, caduca }
+ *  - POST /api/ocultos/abrir           -> body { clave }       -> { llave, caduca }  (sin contraseña puesta, sin clave)
  *  - POST /api/ocultos/cerrar          -> cabecera de llave
  *  - GET  /api/ocultos                 -> cabecera de llave    -> archivos ocultos
  *  - POST /api/ocultos/mostrar         -> cabecera de llave, body { ids }
- *  - POST /api/ocultos/clave           -> body { actual, nueva }
+ *  - POST /api/ocultos/clave           -> body { actual, nueva } -> { llave, caduca }  (la primera vez, sin actual)
  *
  * La llave viaja en la cabecera `x-llave-ocultos`, nunca en la URL: una URL
  * acaba en el historial y en los logs.
@@ -44,7 +44,7 @@ module.exports = function createOcultosRoutes(deps = {}) {
 
   router.get('/ocultos/estado', async (req, res) => {
     await ocultosManager.ensureLoaded();
-    res.json({ success: true, data: { total: ocultosManager.total() } });
+    res.json({ success: true, data: { total: ocultosManager.total(), conClave: ocultosManager.tieneClave() } });
   });
 
   router.post('/ocultos/ocultar', async (req, res) => {
@@ -124,7 +124,7 @@ module.exports = function createOcultosRoutes(deps = {}) {
     try {
       const r = await ocultosManager.cambiarClave(actual, nueva);
       if (!r.ok) return res.status(400).json({ success: false, error: r.error });
-      res.json({ success: true });
+      res.json({ success: true, data: { llave: r.llave, caduca: r.caduca } });
     } catch (err) {
       fallo(res, 'cambiar la clave del material oculto', err);
     }

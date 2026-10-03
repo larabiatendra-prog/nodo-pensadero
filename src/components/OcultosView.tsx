@@ -11,6 +11,10 @@ import { resolvePlayable } from '../utils/playable';
  * Cerrada, solo dice cuanto hay dentro y pide la clave. Abierta, enseña lo
  * oculto y deja devolverlo a la vista, de uno en uno o todo junto.
  *
+ * Al principio no hay contraseña: se entra directamente y dentro se invita a
+ * poner una. Desde que se pone, se pide siempre. Si se olvida, se restablece
+ * con la herramienta "Olvide la clave del candado" (fuera de la aplicacion).
+ *
  * La llave vive solo en el estado de este componente: al salir de la vista se
  * cierra sola y se tira (ni localStorage ni URL). Volver a entrar pide la
  * clave otra vez, que es exactamente lo que se espera de un candado.
@@ -24,6 +28,9 @@ interface Ausente { clave: string; nombre: string; desde: string }
 
 export default function OcultosView({ onBack }: Props) {
   const [total, setTotal] = useState<number | null>(null);
+  /** null = aun no se sabe; false = sin contraseña puesta (se entra sin pedirla). */
+  const [conClave, setConClave] = useState<boolean | null>(null);
+  const [olvidada, setOlvidada] = useState(false);
   const [llave, setLlave] = useState<string | null>(null);
   const [clave, setClave] = useState('');
   const [error, setError] = useState('');
@@ -40,11 +47,19 @@ export default function OcultosView({ onBack }: Props) {
   llaveRef.current = llave;
 
   useEffect(() => {
-    api.getOcultosEstado().then(r => setTotal(r.data?.total ?? 0)).catch(() => setTotal(0));
+    api.getOcultosEstado().then(r => {
+      setTotal(r.data?.total ?? 0);
+      const con = r.data?.conClave !== false;
+      setConClave(con);
+      // Sin contraseña no hay nada que pedir: se entra directamente.
+      if (!con) abrir(undefined, '');
+    }).catch(() => { setTotal(0); setConClave(true); });
     // Al salir de la vista, el candado se cierra en el servidor tambien.
     return () => {
       if (llaveRef.current) api.cerrarOcultos(llaveRef.current).catch(() => {});
     };
+    // Solo al entrar en la vista.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const cargar = async (l: string) => {
@@ -64,13 +79,15 @@ export default function OcultosView({ onBack }: Props) {
     }
   };
 
-  const abrir = async (e?: React.FormEvent) => {
+  // `sinClave` = '' para entrar cuando no hay contraseña puesta.
+  const abrir = async (e?: React.FormEvent, sinClave?: string) => {
     e?.preventDefault();
-    if (!clave || comprobando) return;
+    const intento = sinClave ?? clave;
+    if ((sinClave === undefined && !clave) || comprobando) return;
     setComprobando(true);
     setError('');
     try {
-      const r = await api.abrirOcultos(clave);
+      const r = await api.abrirOcultos(intento);
       const l = r.data?.llave;
       if (!l) throw new Error('Clave incorrecta');
       setLlave(l);
@@ -84,6 +101,13 @@ export default function OcultosView({ onBack }: Props) {
     } finally {
       setComprobando(false);
     }
+  };
+
+  // Contraseña puesta o cambiada: el servidor da una llave nueva y se sigue dentro.
+  const nuevaLlave = (l: string | null) => {
+    setConClave(true);
+    setCambiandoClave(false);
+    if (l) setLlave(l);
   };
 
   const cerrar = () => {
@@ -146,6 +170,17 @@ export default function OcultosView({ onBack }: Props) {
                 : `Hay ${total.toLocaleString('es-ES')} archivos bajo candado`}
             </p>
 
+            {conClave === false && (
+              // Sin contraseña puesta (o se cerro sola por inactividad): se entra sin mas.
+              <>
+                <p className="mt-6 text-sm text-humo">Aún no tiene contraseña.</p>
+                <button type="button" onClick={() => abrir(undefined, '')} disabled={comprobando} className="mt-4 w-full btn-primary disabled:opacity-40">
+                  {comprobando ? 'Abriendo…' : 'Entrar'}
+                </button>
+              </>
+            )}
+
+            {conClave && (<>
             <input
               type="password"
               autoFocus
@@ -171,6 +206,23 @@ export default function OcultosView({ onBack }: Props) {
             >
               {comprobando ? 'Comprobando…' : 'Abrir'}
             </button>
+
+            <button
+              type="button"
+              onClick={() => setOlvidada(v => !v)}
+              aria-expanded={olvidada}
+              className="mt-5 text-xs text-humo hover:text-niebla hover:underline underline-offset-2"
+            >
+              ¿La has olvidado?
+            </button>
+            {olvidada && (
+              <p className="mt-2 text-xs text-niebla leading-relaxed">
+                Desde aquí no se puede quitar: sería un candado que abre cualquiera. En la carpeta
+                de Pensadero, abre <span className="text-marfil">Herramientas › Olvide la clave del candado</span>.
+                Lo oculto sigue oculto; la caja se abrirá sin contraseña y podrás poner una nueva.
+              </p>
+            )}
+            </>)}
           </form>
         </div>
         <style>{`@keyframes sacudir{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}`}</style>
@@ -189,22 +241,25 @@ export default function OcultosView({ onBack }: Props) {
           <ArrowLeft className="w-4 h-4" />
           <span>Volver</span>
         </button>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setCambiandoClave(v => !v)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs text-niebla hover:text-marfil hover:bg-grafito transition-colors"
-          >
-            <KeyRound className="w-3.5 h-3.5" />
-            Cambiar clave
-          </button>
-          <button
-            onClick={cerrar}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-grafito text-lavanda hover:bg-pizarra transition-colors"
-          >
-            <Lock className="w-3.5 h-3.5" />
-            Cerrar candado
-          </button>
-        </div>
+        {/* Sin contraseña no hay nada que cambiar ni que cerrar: arriba se invita a ponerla. */}
+        {conClave && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCambiandoClave(v => !v)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs text-niebla hover:text-marfil hover:bg-grafito transition-colors"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              Cambiar clave
+            </button>
+            <button
+              onClick={cerrar}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-grafito text-lavanda hover:bg-pizarra transition-colors"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              Cerrar candado
+            </button>
+          </div>
+        )}
       </div>
 
       <header className="mb-6">
@@ -217,7 +272,19 @@ export default function OcultosView({ onBack }: Props) {
         </p>
       </header>
 
-      {cambiandoClave && <CambiarClave onHecho={() => setCambiandoClave(false)} />}
+      {conClave === false && (
+        <div className="mb-6 p-4 rounded-2xl bg-grafito/60 border border-lavanda/25">
+          <p className="flex items-center gap-2 text-sm font-medium text-marfil">
+            <KeyRound className="w-4 h-4 text-lavanda" />
+            Este candado aún no tiene contraseña
+          </p>
+          <p className="mt-1 mb-3 text-xs text-niebla">
+            Ahora cualquiera que entre aquí lo ve. Pon una y se pedirá siempre para entrar.
+          </p>
+          <CambiarClave primera onHecho={nuevaLlave} />
+        </div>
+      )}
+      {conClave && cambiandoClave && <CambiarClave primera={false} onHecho={nuevaLlave} />}
 
       {/* Barra de accion: aparece solo cuando hay algo marcado. */}
       <div className="sticky z-20 mb-4 flex items-center justify-between gap-3 flex-wrap" style={{ top: 'env(safe-area-inset-top, 0px)' }}>
@@ -359,7 +426,12 @@ function Visor({ file, onClose, onMostrar }: { file: MediaFile; onClose: () => v
   );
 }
 
-function CambiarClave({ onHecho }: { onHecho: () => void }) {
+/**
+ * Poner la contraseña (`primera`: no hay ninguna, no se pide la actual) o
+ * cambiarla. Devuelve la llave nueva que da el servidor: quien la pone sigue
+ * dentro.
+ */
+function CambiarClave({ primera, onHecho }: { primera: boolean; onHecho: (llave: string | null) => void }) {
   const [actual, setActual] = useState('');
   const [nueva, setNueva] = useState('');
   const [repetida, setRepetida] = useState('');
@@ -367,32 +439,37 @@ function CambiarClave({ onHecho }: { onHecho: () => void }) {
 
   const guardar = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (nueva !== repetida) { setError('Las dos claves nuevas no coinciden'); return; }
+    if (nueva !== repetida) { setError('Las dos no coinciden'); return; }
     try {
-      await api.cambiarClaveOcultos(actual, nueva);
-      toast.success('Clave cambiada');
-      onHecho();
+      const r = await api.cambiarClaveOcultos(primera ? '' : actual, nueva);
+      toast.success(primera ? 'Contraseña puesta: se pedirá cada vez que entres' : 'Clave cambiada');
+      onHecho(r.data?.llave || null);
     } catch (err: any) {
-      setError(err?.message || 'No se pudo cambiar');
+      setError(err?.message || 'No se pudo guardar');
     }
   };
 
   const campo = 'px-3 py-2 rounded-xl bg-tinta border border-pizarra text-marfil text-sm focus:outline-none focus:ring-2 focus:ring-lavanda';
   return (
-    <form onSubmit={guardar} className="mb-6 p-4 rounded-2xl bg-grafito/60 border border-borde-sutil flex flex-wrap items-end gap-3">
+    <form onSubmit={guardar} className={`flex flex-wrap items-end gap-3 ${primera ? '' : 'mb-6 p-4 rounded-2xl bg-grafito/60 border border-borde-sutil'}`}>
+      {!primera && (
+        <label className="flex flex-col gap-1 text-xs text-humo">
+          Clave actual
+          <input type="password" value={actual} onChange={e => { setActual(e.target.value); setError(''); }} className={campo} autoFocus />
+        </label>
+      )}
       <label className="flex flex-col gap-1 text-xs text-humo">
-        Clave actual
-        <input type="password" value={actual} onChange={e => { setActual(e.target.value); setError(''); }} className={campo} autoFocus />
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-humo">
-        Nueva
+        {primera ? 'Contraseña' : 'Nueva'}
         <input type="password" value={nueva} onChange={e => { setNueva(e.target.value); setError(''); }} className={campo} />
       </label>
       <label className="flex flex-col gap-1 text-xs text-humo">
         Repítela
         <input type="password" value={repetida} onChange={e => { setRepetida(e.target.value); setError(''); }} className={campo} />
       </label>
-      <button type="submit" disabled={!actual || nueva.length < 4} className="btn-primary text-sm disabled:opacity-40">Guardar</button>
+      <button type="submit" disabled={(!primera && !actual) || nueva.length < 4} className="btn-primary text-sm disabled:opacity-40">
+        {primera ? 'Poner contraseña' : 'Guardar'}
+      </button>
+      <p className="w-full text-xs text-humo">Al menos 4 caracteres.</p>
       {error && <p className="w-full text-xs text-estado-error">{error}</p>}
     </form>
   );

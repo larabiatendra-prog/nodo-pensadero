@@ -622,7 +622,8 @@ class ApiService {
   // Ocultar no pide clave; ver o liberar si. La llave va en cabecera, nunca
   // en la URL, para que no quede en el historial.
   async getOcultosEstado() {
-    return this.fetchWithErrorHandling<ApiResponse<{ total: number }>>(`${API_BASE_URL}/ocultos/estado`);
+    // conClave: sin contraseña puesta, la caja se abre sin pedirla.
+    return this.fetchWithErrorHandling<ApiResponse<{ total: number; conClave: boolean }>>(`${API_BASE_URL}/ocultos/estado`);
   }
 
   async ocultar(ids: string[]) {
@@ -719,8 +720,9 @@ class ApiService {
     });
   }
 
+  /** Pone la contraseña (la primera vez, `actual` vacia) o la cambia. Devuelve una llave nueva. */
   async cambiarClaveOcultos(actual: string, nueva: string) {
-    return this.fetchWithErrorHandling<ApiResponse<unknown>>(`${API_BASE_URL}/ocultos/clave`, {
+    return this.fetchWithErrorHandling<ApiResponse<{ llave: string; caduca: number }>>(`${API_BASE_URL}/ocultos/clave`, {
       method: 'POST',
       body: JSON.stringify({ actual, nueva }),
     });

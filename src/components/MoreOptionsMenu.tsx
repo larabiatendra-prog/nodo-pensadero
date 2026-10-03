@@ -56,7 +56,7 @@ export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom'
     { id: 'duplicates',  icon: Copy,       label: 'Tomas gemelas',        description: 'Material casi idéntico agrupado para quedarte con una' },
     { id: 'statistics',  icon: BarChart3,  label: 'Estadísticas',         description: 'Ver métricas y análisis' },
     { id: 'paths',       icon: FolderSync, label: 'Administrar Rutas',    description: 'Configurar directorios escaneados' },
-    { id: 'ocultos',     icon: Lock,       label: 'Material oculto',      description: 'Lo que está bajo candado. Pide la clave' },
+    { id: 'ocultos',     icon: Lock,       label: 'Material oculto',      description: 'Lo que has puesto bajo candado' },
     { id: 'papelera',    icon: Trash2,     label: 'Papelera',             description: 'Lo que has sacado del archivo. Se puede restaurar' },
   ];
 

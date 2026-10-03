@@ -49,6 +49,7 @@ backend/cartas_persistent.json
 backend/respaldos/
 # Material bajo candado: lleva los nombres de lo que el usuario oculta.
 backend/ocultos_persistent.json
+backend/restablecer_clave_candado
 # Portada de inicio preparada en la ultima sincronizacion (regenerable).
 backend/portada_cache.json
 backend/scan_paths.json

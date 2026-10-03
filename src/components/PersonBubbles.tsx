@@ -22,6 +22,8 @@ interface PersonBubblesProps {
    * sync inicial); sin esto la barra se quedaba en "sin personas" hasta
    * refrescar la pagina a mano. */
   refreshKey?: number;
+  /** Fotos y videos con alguna cara (con nombre o sin el): cambia el aviso vacio. */
+  archivosConCaras?: number;
 }
 
 // Hash estable de un string a un entero no negativo (para derivar color)
@@ -58,7 +60,7 @@ function avatarFullUrl(relativePath: string): string {
 const MIN_BUBBLES = 10;
 const MAX_BUBBLES = 28;
 
-export default function PersonBubbles({ selectedPersonIds, onSelectionChange, grupos = [], gruposActivos = [], onGruposChange, onVerLineaDeVida, refreshKey }: PersonBubblesProps) {
+export default function PersonBubbles({ selectedPersonIds, onSelectionChange, grupos = [], gruposActivos = [], onGruposChange, onVerLineaDeVida, refreshKey, archivosConCaras = 0 }: PersonBubblesProps) {
   // "Guardar como grupo" con varias caras elegidas: el nombre se escribe aqui mismo.
   const [nombrando, setNombrando] = useState(false);
   const [nombreGrupo, setNombreGrupo] = useState('');
@@ -160,7 +162,9 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, gr
   if (persons.length === 0) {
     return (
       <div className="text-humo italic text-xs">
-        Sin personas detectadas todavia. Anade una en Personas con fotos de referencia,<br/>o usa "Descubrir caras" para identificar las que ya aparecen en la biblioteca.
+        {archivosConCaras > 0
+          ? <>Hay caras en {archivosConCaras.toLocaleString('es-ES')} {archivosConCaras === 1 ? 'archivo' : 'archivos'} y aún no tienen nombre.<br/>Ponles nombre en Personas, en «Caras sin nombre».</>
+          : <>Aún no hay personas. Escanea con las caras encendidas, o añade a alguien<br/>en Personas con unas fotos de referencia.</>}
       </div>
     );
   }

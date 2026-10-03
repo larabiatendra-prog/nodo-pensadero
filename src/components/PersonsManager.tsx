@@ -3,7 +3,7 @@ import { Plus, Trash2, Star, RefreshCw, X, ArrowLeft, ImagePlus, Brain, AlertTri
 import { api } from '../services/api';
 import { API_CONFIG, config } from '../config';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { slugifyPersonId } from '../utils/persons';
+import { archivosConCaras, slugifyPersonId } from '../utils/persons';
 import Avatar from './Avatar';
 import Loader from './Loader';
 import PersonaAcciones from './PersonaAcciones';
@@ -302,8 +302,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
    * no se distinguian porque todas las fichas se pintaban igual.
    */
   const censo = useMemo(() => {
-    let caras = 0;
-    for (const f of (mediaFiles || [])) caras += (f.faces || []).length;
+    const caras = archivosConCaras(mediaFiles || []);
     const conMaterial: Person[] = [];
     const vacias: Person[] = [];
     for (const pp of persons) {
@@ -1092,7 +1091,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           era un chip suelto ("133 entrenadas") que contaba fichas, no personas
           con material — y de esas 133, 71 no salen en ningún archivo. */}
       <div className="mb-5 rounded-2xl px-5 py-4 flex flex-wrap items-center gap-x-9 gap-y-4" style={glass}>
-        <Cifra valor={censo.caras} etiqueta="caras detectadas" />
+        <Cifra valor={censo.caras} etiqueta="archivos con caras" />
         <Cifra valor={censo.conMaterial.length} etiqueta="personas con material" acento />
         <Cifra
           valor={censo.vacias.length}
@@ -1100,11 +1099,14 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
           aviso
           onClick={censo.vacias.length > 0 ? () => { setPersonFilter('vacias'); setQuery(''); } : undefined}
         />
+        {/* Sin grupos calculados (o caducados) no se sabe cuantas hay: "—" y
+            se puede pulsar para buscarlas. Antes decia 0 y parecia que no habia. */}
         <Cifra
-          valor={unidentifiedCount}
+          valor={clusters ? unidentifiedCount : null}
           etiqueta="caras sin nombre"
           aviso
-          onClick={unidentifiedCount > 0 ? () => { setView('clusters'); if (!clusters) loadClusters(); } : undefined}
+          titulo={clusters ? undefined : 'Aún sin buscar: pulsa para buscarlas'}
+          onClick={!clusters || unidentifiedCount > 0 ? () => { setView('clusters'); if (!clusters) loadClusters(); } : undefined}
         />
         <span className="flex-1 min-w-[8px]" />
         {faceStatus && (
@@ -2531,22 +2533,24 @@ function RecorteCara({ src, bbox, ancho, alto }: {
  * Una cifra del panel de estado. Si lleva `onClick` se comporta como filtro:
  * el numero es el sitio natural para pulsar cuando quieres ver "esos".
  */
-function Cifra({ valor, etiqueta, acento, aviso, onClick }: {
-  valor: number; etiqueta: string; acento?: boolean; aviso?: boolean; onClick?: () => void;
+/** Una cifra del panel de estado. `valor` null = aun no se sabe ("—"). */
+function Cifra({ valor, etiqueta, acento, aviso, titulo, onClick }: {
+  valor: number | null; etiqueta: string; acento?: boolean; aviso?: boolean; titulo?: string; onClick?: () => void;
 }) {
-  const color = aviso && valor > 0 ? 'text-melocoton' : acento ? 'text-lavanda' : 'text-marfil';
+  const color = valor === null ? 'text-humo' : aviso && valor > 0 ? 'text-melocoton' : acento ? 'text-lavanda' : 'text-marfil';
   const cuerpo = (
     <>
       <span className={`block text-[26px] font-bold leading-none tabular-nums ${color}`}>
-        {valor.toLocaleString('es-ES')}
+        {valor === null ? '—' : valor.toLocaleString('es-ES')}
       </span>
       <span className="mt-1.5 block font-mono text-[10px] tracking-wider uppercase text-humo">{etiqueta}</span>
     </>
   );
-  if (!onClick) return <div>{cuerpo}</div>;
+  if (!onClick) return <div title={titulo}>{cuerpo}</div>;
   return (
     <button
       onClick={onClick}
+      title={titulo}
       className="text-left rounded-lg -mx-2 px-2 py-1 hover:bg-pizarra/60 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda"
     >
       {cuerpo}

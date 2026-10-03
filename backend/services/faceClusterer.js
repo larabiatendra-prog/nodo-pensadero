@@ -15,7 +15,8 @@
  *  - Greedy online: O(N x K) donde K es numero de clusters. Para 50K caras
  *    y K~100, son segundos en CPU puro (solo producto escalar).
  *  - Solo procesa entries con identity.detections (scans nuevos post-2026-05-19).
- *  - Filtra clusters pequeños (< minClusterSize) para reducir ruido.
+ *  - Filtra clusters pequeños para reducir ruido: hacen falta caras de al
+ *    menos minClusterSize ARCHIVOS distintos (`archivosDistintos`), no caras.
  *  - Cache en memoria con TTL: re-ejecutar es rapido, pero evitamos repetir
  *    si el usuario reabre la vista.
  */
@@ -34,6 +35,25 @@ const GENDER_MAP = { 0: 'mujer', 1: 'hombre' };
 const DEFAULT_CLUSTER_THRESHOLD = parseFloat(process.env.FACE_CLUSTER_THRESHOLD || '0.55');
 const DEFAULT_MIN_CLUSTER_SIZE = parseInt(process.env.FACE_CLUSTER_MIN_SIZE || '3', 10);
 const MAX_SAMPLES_PER_CLUSTER = 9;
+
+/**
+ * En cuantos archivos distintos sale un grupo. El minimo de un grupo se cuenta
+ * asi y no en caras: una persona no sale tres veces en una foto, y tres caras
+ * pequeñas y de espaldas de la misma foto se parecian entre si y se proponian
+ * como "una persona". En un video, varios fotogramas de la misma cara tampoco
+ * bastan para proponer a alguien.
+ */
+function archivosDistintos(faces) {
+  const vistos = new Set();
+  for (const f of faces || []) vistos.add(`${f.folder}/${f.basename}`);
+  return vistos.size;
+}
+
+/** ¿Se propone este grupo? Los fusionados o sembrados a mano se respetan siempre. */
+function seProponeGrupo(c, minClusterSize = DEFAULT_MIN_CLUSTER_SIZE) {
+  if (c && typeof c.cluster_id === 'string' && /^(merged|seed)_/.test(c.cluster_id)) return true;
+  return archivosDistintos(c && c.faces) >= minClusterSize;
+}
 // TTL del cache: 24h. Se persiste a disco para sobrevivir reinicios. El usuario
 // puede forzar recompute con "Re-clusterizar" en la UI cuando añada fotos.
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -103,6 +123,8 @@ function loadCacheFromDiskSync() {
     // esta sesion; se volvera stale en cuanto una mutacion del registry suba el
     // contador.
     parsed.dataVersion = peopleRegistry.getDataVersion();
+    // Un cache de antes del minimo por archivos aun trae grupos de una sola foto.
+    parsed.clusters = parsed.clusters.filter(c => seProponeGrupo(c));
     _cache = parsed;
     const ageMin = Math.round((Date.now() - parsed.computedAt) / 60000);
     console.log(`[faceClusterer] cache cargado de disco: ${parsed.clusters.length} clusters (computado hace ${ageMin} min)`);
@@ -350,7 +372,7 @@ async function clusterAll(opts = {}) {
 
   // Filtrar clusters pequeños y enriquecer con IDs estables + ranking
   const usable = clusters
-    .filter(c => c.count >= minClusterSize)
+    .filter(c => archivosDistintos(c.faces) >= minClusterSize)
     .sort((a, b) => b.count - a.count)
     .map((c, idx) => {
       // Demografia: tomar la moda
@@ -790,4 +812,4 @@ async function seedClusterFromFace({ folder, basename, face_index, threshold, ro
   return cluster;
 }
 
-module.exports = { clusterAll, getCached, invalidateCache, removeClusterFromCache, getCluster, getJobStatus, cancelJob, mergeClusters, computeSimilarityGroups, seedClusterFromFace };
+module.exports = { archivosDistintos, seProponeGrupo, clusterAll, getCached, invalidateCache, removeClusterFromCache, getCluster, getJobStatus, cancelJob, mergeClusters, computeSimilarityGroups, seedClusterFromFace };

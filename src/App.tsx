@@ -53,6 +53,7 @@ import { aTextoDiaLocal, finDelDia } from './utils/dateUtils';
 import { descripcionNormalizada, etiquetasNormalizadas, frecuenciasCatalogo, llevaEtiquetaNormalizada, sugerirAcotar } from './utils/acotar';
 import { normalizeText } from './utils/smartTags';
 import type { Quitar, Valor } from './utils/pista';
+import { archivosConCaras } from './utils/persons';
 import { leerFrame, type ContextoLote, type Muestra, type VistaProgreso } from './utils/progresoProceso';
 
 // ── Routing por URL (Eje B) ────────────────────────────────────────────────
@@ -1425,6 +1426,9 @@ function App() {
       }, 1000)
     }
   }, []);
+
+  // Para el aviso de Inicio cuando hay caras pero nadie con nombre.
+  const numArchivosConCaras = React.useMemo(() => archivosConCaras(mediaFiles), [mediaFiles]);
 
   const handleDownload = React.useCallback(async (file: MediaFile) => {
     try {
@@ -3361,6 +3365,7 @@ function App() {
                     onGruposChange={setGruposActivos}
                     onVerLineaDeVida={(pid) => navigate('/persona/' + encodeURIComponent(pid) + '/vida')}
                     refreshKey={personsRefreshKey}
+                    archivosConCaras={numArchivosConCaras}
                   />
                 </div>
               )}

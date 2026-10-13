@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Download, Heart, Plus, X, Sparkles, FolderOpen, Lock } from 'lucide-react';
+import { Download, Heart, Plus, X, Sparkles, FolderOpen, Lock, Clapperboard } from 'lucide-react';
 import { MediaFile, VideoItem } from '../types';
 import { fechaDeArchivo } from '../utils/dateUtils';
 import { normalizePath } from '../utils/formatData';
@@ -52,6 +52,8 @@ export interface MediaCardProps {
   file: MediaFile;
   isSecondary?: boolean;     // tramo "menos probables" (búsqueda natural) → atenuado
   isSelected: boolean;       // = selectedFiles.has(file.id), derivado en MediaGrid
+  /** Esta en la cesta «Para Premiere»: marco morado y claqueta. */
+  enPremiere?: boolean;
   isScanning: boolean;       // = scanningFiles.has(file.id)
   isDownloading: boolean;    // = downloadingFiles.has(file.id)
   note?: string;             // = fileNotes?.[file.id]
@@ -72,6 +74,7 @@ function MediaCardBase({
   file,
   isSecondary = false,
   isSelected,
+  enPremiere = false,
   isScanning,
   isDownloading,
   note,
@@ -98,7 +101,7 @@ function MediaCardBase({
       data-file-id={file.id}
       className={`bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group cursor-pointer relative mb-3 md:mb-6 ${
         isSecondary ? 'opacity-60 hover:opacity-100' : ''
-      } ${isSelected ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : ''}`}
+      } ${isSelected ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : enPremiere ? 'halo-premiere' : ''}`}
       onClick={(e) => onFileClick(file, e)}
     >
       <div className="relative bg-slate-900 overflow-hidden"
@@ -176,6 +179,15 @@ function MediaCardBase({
         <button disabled={updatingFavs} onClick={(e) => { e.stopPropagation(); onToggleFavorite(file.id); }} className={`absolute top-2 right-2 p-2 rounded-full transition-all duration-200 backdrop-blur-sm ${file.isFavorite ? 'bg-lavanda/90 text-white' : 'bg-noche/30 text-white opacity-70 hover:opacity-100 hover:bg-noche/50'} ${updatingFavs ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
           {!updatingFavs ? <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} /> : <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
         </button>
+        {enPremiere && (
+          <div
+            className="absolute top-2 right-12 w-8 h-8 rounded-full bg-lavanda-archivo text-white flex items-center justify-center shadow-md"
+            title="En la cesta de Premiere"
+            aria-label="En la cesta de Premiere"
+          >
+            <Clapperboard className="w-4 h-4" />
+          </div>
+        )}
         {isSelectionMode && (
           <div className="absolute top-2 left-2 z-10">
             <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-lavanda border-lavanda' : 'bg-tinta/90 border-white backdrop-blur-sm'}`}>
@@ -201,6 +213,7 @@ function MediaCardBase({
 function areEqual(prev: MediaCardProps, next: MediaCardProps): boolean {
   if (
     prev.isSelected !== next.isSelected ||
+    prev.enPremiere !== next.enPremiere ||
     prev.isScanning !== next.isScanning ||
     prev.isDownloading !== next.isDownloading ||
     prev.isSelectionMode !== next.isSelectionMode ||

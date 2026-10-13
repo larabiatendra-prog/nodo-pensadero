@@ -296,3 +296,40 @@
 /* El foco se marca en el carril, no con un halo alrededor del pomo: un halo
    volveria a sobresalir justo por donde el usuario pidio que no sobresaliera. */
 .umbral:focus-visible { box-shadow: 0 0 0 2px rgba(200, 182, 255, .55); }
+
+/* Cesta de Premiere: lo que esta dentro lleva un halo. Un borde en degradado
+   que gira (pintado por dentro de la tarjeta: no mueve el layout ni lo corta
+   el overflow) y un brillo que respira alrededor. Colores de la paleta. */
+@property --halo-giro {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.halo-premiere {
+  animation: halo-brillo 3.2s ease-in-out infinite;
+}
+.halo-premiere::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 3px;
+  pointer-events: none;
+  z-index: 20;
+  background: conic-gradient(from var(--halo-giro), #7C6BB2, #C8B6FF, #F2B8A0, #8EA4FF, #7C6BB2);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: halo-giro 5s linear infinite;
+}
+@keyframes halo-giro {
+  to { --halo-giro: 360deg; }
+}
+@keyframes halo-brillo {
+  0%, 100% { box-shadow: 0 0 10px 1px rgba(124, 107, 178, 0.45); }
+  50% { box-shadow: 0 0 24px 5px rgba(200, 182, 255, 0.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .halo-premiere,
+  .halo-premiere::after { animation: none; }
+}

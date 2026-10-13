@@ -32,6 +32,85 @@ export interface ArchivosPersona {
   muestra: string[];
 }
 
+// Llevar a Premiere: opciones de la tarjeta y lo que devuelve el servidor.
+export type OrdenPremiere = 'dia' | 'persona' | 'carpeta' | 'todo';
+export interface OpcionesPremiere {
+  ids: string[];
+  nombre: string;
+  ordenar: OrdenPremiere;
+  marcadores: boolean;
+  secuencia: boolean;
+  /** Importar otra vez lo que el proyecto ya tiene (si no, se usa el que hay). */
+  duplicar?: boolean;
+}
+export interface XmlPremiere {
+  token: string;
+  /** Nombre del archivo, «Boda Ana y Pablo.xml». */
+  archivo: string;
+  /** Ruta relativa al servidor (/api/premiere/xml/...). */
+  url: string;
+  resumen: { clips: number; videos: number; fotos: number; audios: number; bandejas: number; secuencia: boolean };
+  avisos: {
+    desconectados: Array<{ disco: string; n: number }>;
+    /** Videos o audios sin duración conocida (disco desconectado y sin escanear). */
+    sinDatos: number;
+    /** Pedidos que no se pueden llevar (bajo candado o que ya no están). */
+    fuera: number;
+    /** Vídeos o audios que no se pueden leer (¿dañados?): no se envían. */
+    ilegibles: string[];
+    /** Cadencias distintas en la secuencia (solo si hay más de una). */
+    cadencias: number[];
+  };
+  /** Cómo quedará la secuencia (solo si se pide). */
+  prevision: PrevisionPremiere | null;
+}
+
+export interface EstadoPremiere {
+  conectado: boolean;
+  /** Nombre del proyecto abierto («Boda.prproj»); null en la pantalla de inicio. */
+  proyecto: string | null;
+  version: string | null;
+  /** Hay un Premiere en marcha (aunque la extensión no responda). */
+  abierto?: boolean;
+  /** La extensión está en la carpeta de extensiones de Adobe. */
+  instalada?: boolean;
+  /** Versión del puente de la extensión que responde; menor que puenteActual = reiniciar Premiere. */
+  puente?: number | null;
+  puenteActual?: number;
+  /** La extensión responde pero no consigue hablar con Premiere (host.jsx sin cargar). */
+  fallo?: string | null;
+}
+export interface ResumenEnvioPremiere {
+  importados: number;
+  total: number;
+  bandeja: string;
+  secuencia: { nombre: string; ancho: number; alto: number; fps: number } | null;
+  /** Lo que ya estaba en el proyecto: se usó sin duplicarlo («» = la raíz). */
+  reutilizados?: { n: number; bandejas: string[] };
+  /** Lo que conviene saber, en frases (faltan, no se pudo importar, formas, cadencias...). */
+  avisos: string[];
+}
+export interface EnvioPremiere {
+  id: string;
+  estado: 'pendiente' | 'entregado' | 'hecho' | 'error';
+  error: string | null;
+  proyecto: string | null;
+  archivo: string;
+  /** Por dónde va la extensión («Importando 40 de 124…»). */
+  progreso: string | null;
+  resumen: ResumenEnvioPremiere | null;
+}
+export interface PrevisionPremiere {
+  ancho: number;
+  alto: number;
+  fps: number;
+  forma: 'horizontal' | 'vertical' | 'cuadrado' | null;
+  fpsTexto: string;
+  otraForma: number;
+  otroTamano: number;
+  otraCadencia: number;
+}
+
 export interface LotePapelera {
   id: string;
   motivo: string;
@@ -404,6 +483,51 @@ class ApiService {
    * algo que descargar y se lanza con el motivo si no.
    * @returns cuántos archivos van en el ZIP y cuántos se pidieron
    */
+  /** Prepara el XML para Premiere (vive una hora en el servidor). */
+  async prepararPremiere(opciones: OpcionesPremiere): Promise<XmlPremiere> {
+    const r = await this.fetchWithErrorHandling<ApiResponse<XmlPremiere>>(
+      `${API_BASE_URL}/premiere/xml`,
+      { method: 'POST', body: JSON.stringify(opciones) },
+    );
+    if (!r.data) throw new Error(r.error || 'No se ha podido preparar el XML');
+    return r.data;
+  }
+
+  /** ¿Hay un Premiere con la extensión de Pensadero, y con qué proyecto? */
+  async estadoPremiere(): Promise<EstadoPremiere> {
+    const r = await this.fetchWithErrorHandling<ApiResponse<EstadoPremiere>>(`${API_BASE_URL}/premiere/estado`);
+    return r.data || { conectado: false, proyecto: null, version: null };
+  }
+
+  /** Manda a Premiere un XML ya preparado; devuelve el id del envío. */
+  async enviarPremiere(token: string): Promise<string> {
+    const r = await this.fetchWithErrorHandling<ApiResponse<{ id: string }>>(
+      `${API_BASE_URL}/premiere/enviar`,
+      { method: 'POST', body: JSON.stringify({ token }) },
+    );
+    if (!r.data) throw new Error(r.error || 'No se ha podido enviar');
+    return r.data.id;
+  }
+
+  async envioPremiere(id: string): Promise<EnvioPremiere> {
+    const r = await this.fetchWithErrorHandling<ApiResponse<EnvioPremiere>>(`${API_BASE_URL}/premiere/envios/${id}`);
+    if (!r.data) throw new Error(r.error || 'Ese envío ya no está');
+    return r.data;
+  }
+
+  /** Instala la extensión de Pensadero en Premiere (un clic desde la cesta). */
+  async instalarPremiere(): Promise<void> {
+    await this.fetchWithErrorHandling<ApiResponse<unknown>>(`${API_BASE_URL}/premiere/instalar`, { method: 'POST' });
+  }
+
+  /** Lo guarda en Descargas y abre el explorador con el archivo marcado. */
+  async mostrarPremiere(token: string): Promise<{ ruta: string }> {
+    return this.fetchWithErrorHandling<{ ruta: string }>(
+      `${API_BASE_URL}/premiere/xml/${token}/mostrar`,
+      { method: 'POST' },
+    );
+  }
+
   async descargarZip(fileIds: string[], nombre?: string): Promise<{ disponibles: number; total: number }> {
     const r = await this.fetchWithErrorHandling<ApiResponse<{ disponibles: number; total: number }>>(
       `${API_BASE_URL}/download/zip/comprobar`,

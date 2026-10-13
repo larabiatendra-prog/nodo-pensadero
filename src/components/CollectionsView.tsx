@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowLeft, Plus, Wand2, Download, Image as ImageIcon, Pencil, Trash2, Loader, GripVertical,
+  ArrowLeft, Plus, Wand2, Download, Image as ImageIcon, Pencil, Trash2, Loader, GripVertical, Clapperboard,
 } from 'lucide-react';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent,
@@ -37,6 +37,8 @@ interface CollectionsViewProps {
   onEditCollection: (id: string) => void;
   onDeleteCollection: (id: string) => void;
   onDownloadCollection: (id: string, e?: React.MouseEvent) => void;
+  /** Abre «A Premiere» con la colección entera, en su orden. */
+  onPremiereCollection?: (id: string) => void;
   onEditCover?: (id: string) => void;
   onCollectionsReorder?: (reordered: Collection[]) => void;
   downloadingCollectionId?: string | null;
@@ -130,7 +132,7 @@ function describirRegla(r: Regla, nombrePersona: (id: string) => string): string
 
 export default function CollectionsView({
   onBack, collections, mediaFiles, onCollectionSelect, onCreateCollection,
-  onEditCollection, onDeleteCollection, onDownloadCollection, onEditCover,
+  onEditCollection, onDeleteCollection, onDownloadCollection, onPremiereCollection, onEditCover,
   onCollectionsReorder, downloadingCollectionId,
 }: CollectionsViewProps) {
   const [orden, setOrden] = useState<Collection[]>(collections);
@@ -280,6 +282,7 @@ export default function CollectionsView({
                   onEditar={() => onEditCollection(c.id)}
                   onBorrar={() => onDeleteCollection(c.id)}
                   onDescargar={(e) => onDownloadCollection(c.id, e)}
+                  onPremiere={onPremiereCollection ? () => onPremiereCollection(c.id) : undefined}
                   onPortada={onEditCover ? () => onEditCover(c.id) : undefined}
                 />
               ))}
@@ -340,7 +343,7 @@ function Mosaico({ archivos, nombre }: { archivos: MediaFile[]; nombre: string }
 
 function TarjetaColeccion({
   coleccion, archivos, total, nombrePersona, descargando,
-  onAbrir, onEditar, onBorrar, onDescargar, onPortada,
+  onAbrir, onEditar, onBorrar, onDescargar, onPremiere, onPortada,
 }: {
   coleccion: Collection;
   archivos: MediaFile[];
@@ -351,6 +354,7 @@ function TarjetaColeccion({
   onEditar: () => void;
   onBorrar: () => void;
   onDescargar: (e: React.MouseEvent) => void;
+  onPremiere?: () => void;
   onPortada?: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -395,6 +399,16 @@ function TarjetaColeccion({
           >
             {descargando ? <Loader className="w-3.5 h-3.5 animate-spin text-lavanda" /> : <Download className="w-3.5 h-3.5" />}
           </button>
+          {onPremiere && (
+            <button
+              data-premiere-abre
+              onClick={e => parar(e, onPremiere)}
+              title="Llevar a Premiere"
+              className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-marfil hover:bg-noche"
+            >
+              <Clapperboard className="w-3.5 h-3.5" />
+            </button>
+          )}
           {onPortada && (
             <button
               onClick={e => parar(e, onPortada)}

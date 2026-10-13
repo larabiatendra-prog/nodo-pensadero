@@ -8,6 +8,7 @@ import { SessionCard, SessionHeader, SessionShowMore, SessionBoundaryCard } from
 import { normalizePath } from '../utils/formatData';
 import MediaCard, { formatFileSize, formatDuration } from './MediaCard';
 import { noteFor } from '../utils/mediaNotes';
+import { useCestaPremiere } from '../hooks/useCestaPremiere';
 
 interface MediaGridProps {
   files: MediaFile[];
@@ -81,6 +82,9 @@ export default function MediaGrid({
   updatingFavs = false,
   secondaryStartIndex
 }: MediaGridProps) {
+  // Lo que esta en la cesta «Para Premiere» lleva marco morado.
+  const cesta = useCestaPremiere();
+  const enCesta = useMemo(() => new Set(cesta.ids), [cesta.ids]);
   // Determina si hay split en dos tramos (primary / secondary). Memoizado para
   // no recrear los slices (y forzar relayout de Masonry) en cada render cuando
   // `files` no ha cambiado.
@@ -126,6 +130,7 @@ export default function MediaGrid({
       file={file}
       isSecondary={isSecondary}
       isSelected={selectedFiles.has(file.id)}
+      enPremiere={enCesta.has(file.id)}
       isScanning={scanningFiles.has(file.id)}
       isDownloading={downloadingFiles.has(file.id)}
       note={noteFor(fileNotes, file)}
@@ -202,6 +207,7 @@ export default function MediaGrid({
                 onPlaySession={onPlaySession}
                 onOcultar={onOcultar}
                 dimmed={item.dimmed}
+                enPremiere={item.files.reduce((n, f) => n + (enCesta.has(f.id) ? 1 : 0), 0)}
               />
             );
             return item.dimmed ? wrapDimmed(card, `dim-session-${item.key}`) : card;

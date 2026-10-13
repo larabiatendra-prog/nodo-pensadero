@@ -93,7 +93,7 @@ test('argumentos NVIDIA: todo en la grafica reduce con scale_cuda y sin -pix_fmt
   assert.ok(gpu.includes('h264_nvenc'));
   const lee = args('gpu-lee');
   assert.deepStrictEqual(lee.slice(0, 4), ['-y', '-hwaccel', 'cuda', '-i']);
-  assert.ok(lee.includes('scale=2048:1080') && lee.includes('yuv420p'));
+  assert.ok(lee.includes('scale=2048:1080,setsar=1') && lee.includes('yuv420p'));
 });
 
 test('argumentos AMD e Intel: su codificador, nv12, objetivo 4M con techo 5M; leer con d3d11va', () => {
@@ -104,7 +104,7 @@ test('argumentos AMD e Intel: su codificador, nv12, objetivo 4M con techo 5M; le
     assert.strictEqual(a[a.indexOf('-b:v') + 1], '4M', modo);
     assert.strictEqual(a[a.indexOf('-maxrate') + 1], '5M', modo);
     assert.strictEqual(a.includes('d3d11va'), lee, modo);
-    assert.ok(a.includes('scale=2048:1080'), modo);
+    assert.ok(a.includes('scale=2048:1080,setsar=1'), modo);
   }
 });
 

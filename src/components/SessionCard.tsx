@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, ChevronUp, Pencil, Play, Lock } from 'lucide-react';
+import { Layers, ChevronUp, Pencil, Play, Lock, Clapperboard } from 'lucide-react';
 import { MediaFile } from '../types';
 
 // ─── SessionCard (grupo colapsado) ──────────────────────────────────────────
@@ -21,9 +21,11 @@ interface SessionCardProps {
   onPlaySession?: (files: MediaFile[]) => void;
   /** Pone la sesion entera bajo candado. */
   onOcultar?: (fileIds: string[]) => void;
+  /** Cuantos de sus archivos estan en la cesta «Para Premiere». */
+  enPremiere?: number;
 }
 
-function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, onSelectAll, note, onEditNote, dimmed, onPlaySession, onOcultar }: SessionCardProps) {
+function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, onSelectAll, note, onEditNote, dimmed, onPlaySession, onOcultar, enPremiere = 0 }: SessionCardProps) {
   // Seleccionar 4 thumbnails representativas (0%, 25%, 50%, 100%)
   const count = files.length;
   const indices = [
@@ -48,9 +50,17 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
     <div
       className={`relative bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden cursor-pointer group mb-3 md:mb-6 ${
         dimmed ? 'opacity-50 hover:opacity-100' : ''
-      }`}
+      } ${enPremiere > 0 ? 'halo-premiere' : ''}`}
       onClick={handleClick}
     >
+      {enPremiere > 0 && (
+        <div
+          className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 px-2 py-1 rounded-full bg-lavanda-archivo text-white text-xs font-medium shadow-md"
+          title={`${enPremiere} de ${files.length} en la cesta de Premiere`}
+        >
+          <Clapperboard className="w-3.5 h-3.5" /> {enPremiere === files.length ? 'Todos' : enPremiere}
+        </div>
+      )}
       {/* Mosaico 2×2 */}
       <div className="grid grid-cols-2 gap-0 aspect-square">
         {thumbFiles.map((file, i) => (
@@ -149,6 +159,7 @@ function sessionCardEqual(prev: SessionCardProps, next: SessionCardProps): boole
     prev.files === next.files &&
     prev.note === next.note &&
     prev.dimmed === next.dimmed &&
+    prev.enPremiere === next.enPremiere &&
     prev.isSelectionMode === next.isSelectionMode &&
     prev.label.line1 === next.label.line1 &&
     prev.label.line2 === next.label.line2 &&

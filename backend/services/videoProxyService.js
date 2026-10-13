@@ -330,19 +330,37 @@ function classify(info) {
 }
 
 // ---------------------------------------------------------------------------
-// Dimensiones de salida (cap a MAX_HEIGHT, dimensiones pares)
+// Dimensiones de salida (el lado corto a MAX_HEIGHT como mucho, pares)
 // ---------------------------------------------------------------------------
-function outputDims(srcW, srcH) {
-  if (!srcW || !srcH || srcH <= MAX_HEIGHT) return { outW: srcW, outH: srcH, downscaled: false };
-  const outH = MAX_HEIGHT;
-  const outW = Math.round((srcW * MAX_HEIGHT) / srcH / 2) * 2;
-  return { outW, outH, downscaled: true };
+/**
+ * Medidas de la version ligera TAL COMO SE VE, ya girada: ffmpeg endereza solo
+ * un video con giro (la camara en vertical guarda 4096x2160 con "gira 90") y
+ * el escalado va despues. Antes se calculaba con las medidas sin girar
+ * (2048x1080) y un video vertical salia aplastado en un cuadro apaisado.
+ * Se limita el lado corto: un vertical de 4K queda 1080x2048, no 570x1080.
+ */
+function outputDims(srcW, srcH, rot = 0) {
+  const girado = rot === 90 || rot === 270;
+  const w = girado ? srcH : srcW;
+  const h = girado ? srcW : srcH;
+  const corto = Math.min(w, h);
+  if (!w || !h || corto <= MAX_HEIGHT) return { outW: w, outH: h, downscaled: false };
+  const par = (n) => Math.max(2, Math.round(n / 2) * 2);
+  return { outW: par((w * MAX_HEIGHT) / corto), outH: par((h * MAX_HEIGHT) / corto), downscaled: true };
 }
 
 // Solo el transcode tiene dimensiones propias (reescala por encima de MAX_HEIGHT).
-function dimsForKind(kind, srcW, srcH) {
-  if (kind === 'transcode') return outputDims(srcW, srcH);
+function dimsForKind(kind, srcW, srcH, rot = 0) {
+  if (kind === 'transcode') return outputDims(srcW, srcH, rot);
   return { outW: srcW, outH: srcH, downscaled: false };
+}
+
+/**
+ * Version ligera hecha con la regla vieja de un video con giro que se redujo:
+ * salio aplastada. Se rehace (las nuevas llevan `giroBien`).
+ */
+function malGirado(e) {
+  return !!e && e.status === 'ready' && !!e.downscaled && (e.rot === 90 || e.rot === 270) && !e.giroBien;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +523,8 @@ function buildArgs({ kind, input, output, dims, modo = 'nvenc' }) {
     const h = Math.floor((dims.outH || 0) / 2) * 2;
     return [...common, ...venc, '-vf', `scale_cuda=${w}:${h}:format=nv12`, ...tail];
   }
-  const scale = dims.downscaled ? ['-vf', `scale=${dims.outW}:${dims.outH}`] : [];
+  // setsar=1: pixeles cuadrados siempre; el navegador no siempre respeta otra proporcion.
+  const scale = dims.downscaled ? ['-vf', `scale=${dims.outW}:${dims.outH},setsar=1`] : [];
   return [...common, ...venc, '-pix_fmt', pixfmt, ...scale, ...tail];
 }
 
@@ -715,7 +734,7 @@ async function generate(file, kind, info) {
     const p = await probe(file.fullPath);
     if (p) info = { ...info, ...p };
   }
-  const dims = dimsForKind(kind, info.width, info.height);
+  const dims = dimsForKind(kind, info.width, info.height, info.rotacion);
   const tmp = `${loc.proxyPath}.tmp.mp4`;
 
   const { r } = await conRespaldo(info, async (modo) => {
@@ -745,6 +764,8 @@ async function generate(file, kind, info) {
   entry.outW = dims.outW;
   entry.outH = dims.outH;
   entry.downscaled = dims.downscaled;
+  entry.rot = info.rotacion;
+  entry.giroBien = true;
   entry.srcMtime = file.srcMtime;
   delete entry.error;
   index[file.id] = entry;
@@ -787,6 +808,12 @@ async function getPlayable(file, opts = {}) {
   if (cached && cached.srcMtime === srcMtime && cached.kind && cached.v === VERSION_CLASIFICACION
     && (cached.srcW > 0 || cached.kind === 'ilegible')) {
     kind = cached.kind;
+    // Las versiones ligeras reducidas de antes de mirar el giro no lo saben:
+    // se pregunta una vez, para rehacer las que salieron aplastadas.
+    if (cached.rot === undefined && cached.status === 'ready' && cached.downscaled) {
+      const p = await probe(file.fullPath);
+      if (p) { cached.rot = p.rotacion; scheduleSave(); }
+    }
     info = { width: cached.srcW, height: cached.srcH, bitrate: cached.bitrate, rotacion: cached.rot, vcodec: cached.vcodec, pixfmt: cached.pixfmt };
   } else {
     const probed = await probe(file.fullPath);
@@ -801,7 +828,7 @@ async function getPlayable(file, opts = {}) {
     // (transcode) y sigue haciendo falta. Un remux era una copia: se ignora y,
     // si el video aun necesita proxy, se prepara uno ligero.
     const aprovechable = !!cached && cached.srcMtime === srcMtime && cached.kind === 'transcode'
-      && cached.status === 'ready' && kind === 'transcode';
+      && cached.status === 'ready' && kind === 'transcode' && !malGirado({ ...cached, rot: probed.rotacion });
     index[file.id] = {
       ...(aprovechable ? cached : {}),
       v: VERSION_CLASIFICACION,
@@ -845,8 +872,15 @@ async function getPlayable(file, opts = {}) {
 
   // Necesita proxy. Resolver ubicacion y comprobar si ya esta listo.
   const loc = pathsConfig.resolveProxyLocation({ fullPath: file.fullPath, fileId: file.id });
-  const dims = dimsForKind(kind, info.width, info.height);
+  const dims = dimsForKind(kind, info.width, info.height, info.rotacion);
   const existente = await rutaProxyExistente(file);
+
+  // Aplastada por la regla vieja: se rehace (mientras, sirve el original si se puede).
+  if (malGirado(cached)) {
+    index[file.id] = { ...cached, status: 'pending' };
+    scheduleSave();
+    cached = index[file.id];
+  }
 
   if (existente && cached.status === 'ready' && cached.srcMtime === srcMtime) {
     // Se apunta cuando se usa: el presupuesto borra primero lo que no se ve.
@@ -993,7 +1027,7 @@ async function medirVelocidad(muestras) {
     // Desde el 20 % del video: el principio suele ser un plano quieto y engaña.
     const desde = dur > trozo * 3 ? Math.floor(dur * 0.2) : 0;
     const salida = path.join(os.tmpdir(), `pensadero-medida-${process.pid}-${Date.now()}.mp4`);
-    const dims = dimsForKind('transcode', info.width, info.height);
+    const dims = dimsForKind('transcode', info.width, info.height, info.rotacion);
     // Con los mismos niveles que el lote: se mide lo que de verdad va a pasar.
     let seg = 0;
     const { r } = await conRespaldo(info, async (modo) => {
@@ -1062,7 +1096,8 @@ let lote = null;
 /** ¿Ya esta resuelto este archivo? (nada que preparar) */
 function yaListo(id) {
   const e = index && index[id];
-  return !!e && e.v === VERSION_CLASIFICACION && (e.status === 'ready' || e.status === 'native');
+  // Una aplastada por la regla vieja no cuenta como hecha: el lote la rehace.
+  return !!e && e.v === VERSION_CLASIFICACION && (e.status === 'ready' || e.status === 'native') && !malGirado(e);
 }
 
 /**
@@ -1266,6 +1301,8 @@ module.exports = {
   // Para pruebas: los niveles y los argumentos de ffmpeg.
   _modosPara: modosPara,
   _buildArgs: buildArgs,
+  _outputDims: outputDims,
+  _malGirado: malGirado,
   _conRespaldo: conRespaldo,
   _reiniciarAprendido: () => {
     for (const m of Object.values(aprendido)) { m.codifica = null; m.lee = null; }

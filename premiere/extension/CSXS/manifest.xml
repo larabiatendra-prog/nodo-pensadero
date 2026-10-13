@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Pensadero en Premiere. Dos piezas con el mismo codigo (enlace.js):
+  - «fondo»: invisible, arranca sola al abrir Premiere. Es la que se usa.
+  - «panel»: Ventana > Extensiones > Pensadero. Enseña si esta conectado y
+    sirve de respaldo si la de fondo no arrancara.
+  Necesita Node (para hablar con Pensadero en localhost y escribir el XML en
+  la carpeta temporal).
+-->
+<ExtensionManifest Version="7.0" ExtensionBundleId="local.pensadero.premiere" ExtensionBundleVersion="2.0.0" ExtensionBundleName="Pensadero">
+  <ExtensionList>
+    <Extension Id="local.pensadero.premiere.fondo" Version="2.0.0"/>
+    <Extension Id="local.pensadero.premiere.panel" Version="2.0.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[13.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="9.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="local.pensadero.premiere.fondo">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./fondo.html</MainPath>
+          <ScriptPath>./host.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+          <StartOn>
+            <Event>com.adobe.csxs.events.ApplicationActivate</Event>
+            <Event>applicationActivate</Event>
+          </StartOn>
+        </Lifecycle>
+        <UI>
+          <Type>Custom</Type>
+          <Geometry>
+            <Size>
+              <Height>1</Height>
+              <Width>1</Width>
+            </Size>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+    <Extension Id="local.pensadero.premiere.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./host.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Pensadero</Menu>
+          <Geometry>
+            <Size>
+              <Height>160</Height>
+              <Width>300</Width>
+            </Size>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

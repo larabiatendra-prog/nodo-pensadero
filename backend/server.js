@@ -59,6 +59,7 @@ const createMomentosRoutes = require('./routes/momentosRoutes');
 const createPersonaArchivosRoutes = require('./routes/personaArchivosRoutes');
 const createGruposRoutes = require('./routes/gruposRoutes');
 const createCopiasRoutes = require('./routes/copiasRoutes');
+const createPremiereRoutes = require('./routes/premiereRoutes');
 const copiasExactas = require('./services/copiasExactas');
 const notesManager = require('./notesManager');
 const ocultosManager = require('./ocultosManager');
@@ -2143,6 +2144,9 @@ app.use('/api', ocultosRoutes);
 // === VIDEOS PREPARADOS (estado y tope por disco) ===
 // Proxies: solo de lo que se ve (una copia exacta escondida no necesita el suyo).
 app.use('/api', createProxiesRoutes({ getMediaFiles: mediaFilesVisibles }));
+
+// === LLEVAR A PREMIERE (XML de Final Cut 7 con lo visible) ===
+app.use('/api', createPremiereRoutes({ getMediaFiles: mediaFilesVisibles, notesManager, loadScanPaths }));
 
 // === MOMENTOS DE LOS VIDEOS (varias huellas por clip para la busqueda visual) ===
 app.use('/api', createMomentosRoutes({ getMediaFiles: () => mediaFiles }));

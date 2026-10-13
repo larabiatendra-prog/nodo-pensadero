@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { List, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock, Loader2 } from 'lucide-react';
+import { List, RefreshCw, Download, Monitor, Shuffle, ChevronLeft, FolderPlus, ArrowLeft, Lock, Loader2, Clapperboard, X } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
 import { noteFor } from './utils/mediaNotes';
 import Ecos from './components/Ecos';
@@ -41,6 +41,8 @@ import AvisoProxies from './components/AvisoProxies';
 import Carta from './components/Carta';
 import OcultosView from './components/OcultosView';
 import PapeleraView from './components/PapeleraView';
+import CestaPremiere from './components/CestaPremiere';
+import { cestaPremiere } from './hooks/useCestaPremiere';
 import Portada, { type OpcionesEntrar } from './components/Portada';
 
 import { CoverImageSelector } from './components/CoverImageSelector';
@@ -968,11 +970,20 @@ function App() {
     }
   }, [mediaFiles, selectedPersonIds, filtrosGrupo, presenciaDia, selectedTypes, includedTags, excludedTags, currentSearchQuery, currentSearchFilters, showFavoritesOnly, naturalSearchIds, colorFilterFileIds, imageSearchFileIds, ecoActivo, descartadas]);
 
+  // La tecla P añade lo seleccionado a la cesta de Premiere; la funcion se declara mas abajo.
+  const anadirSeleccionRef = useRef<() => void>(() => {});
+
   // Listener para la tecla ESC para salir del modo selección
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && isSelectionMode) {
         exitSelectionMode();
+      }
+      // P: añadir lo seleccionado a la cesta de Premiere (no escribiendo en un campo).
+      if ((event.key === 'p' || event.key === 'P') && isSelectionMode && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const el = event.target as HTMLElement | null;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+        anadirSeleccionRef.current();
       }
     };
 
@@ -1657,17 +1668,65 @@ function App() {
     setSelectedFiles(new Set());
   };
 
+  /**
+   * El nombre que propone la cesta de Premiere: el de la colección abierta
+   * o lo que se está buscando (texto, etiquetas, personas). Si no hay nada,
+   * «Pensadero · 10 oct 2026».
+   */
+  const nombreParaPremiere = () => {
+    const col = selectedCollectionId ? collections.find(c => c.id === selectedCollectionId) : null;
+    if (col?.name) return col.name;
+    const personas = selectedPersonIds.map(pid => {
+      for (const f of mediaFiles) {
+        const cara = f.faces?.find(x => x.person_id === pid);
+        if (cara?.display_name) return cara.display_name;
+      }
+      return '';
+    });
+    const partes = [currentSearchQuery, ...currentSearchTerms, ...includedTags, ...personas]
+      .map(x => String(x || '').trim()).filter(Boolean);
+    const unicas = Array.from(new Set(partes));
+    if (unicas.length) return unicas.join(' · ').slice(0, 80);
+    const hoy = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '');
+    return `Pensadero · ${hoy}`;
+  };
+
+  /**
+   * Añade a la cesta «Para Premiere» (la burbuja de abajo a la izquierda). El
+   * nombre solo cuenta si la cesta estaba vacia: lo pone lo primero que entra.
+   */
+  const anadirACesta = (ids: string[], nombre: string) => {
+    if (ids.length === 0) return;
+    const r = cestaPremiere.anadir(ids, nombre);
+    if (r.nuevos === 0) toast(ids.length === 1 ? 'Ya estaba en la cesta de Premiere' : 'Ya estaban todos en la cesta de Premiere');
+  };
+
+  /** Lo seleccionado, en el orden en que se ve; la seleccion se suelta para seguir buscando. */
+  const anadirSeleccionACesta = () => {
+    if (selectedFiles.size === 0) return;
+    const enOrden = getAllDisplayFiles().filter(f => selectedFiles.has(f.id)).map(f => f.id);
+    const vistos = new Set(enOrden);
+    const resto = Array.from(selectedFiles).filter(id => !vistos.has(id));
+    anadirACesta([...enOrden, ...resto], nombreParaPremiere());
+    exitSelectionMode();
+  };
+  anadirSeleccionRef.current = anadirSeleccionACesta;
+
+  /** Una colección entera, en su orden manual. */
+  const anadirColeccionACesta = (collectionId: string) => {
+    const col = collections.find(c => c.id === collectionId);
+    if (!col) return;
+    const claves = clavesDeColeccion(col);
+    const posicion = new Map((col.mediaFiles || []).map((ref, i) => [ref, i]));
+    const pos = (f: MediaFile) => posicion.get(f.id) ?? (f.fullPath ? posicion.get(normalizePath(f.fullPath)) : undefined) ?? Infinity;
+    const ids = mediaFiles.filter(f => estaEnColeccion(claves, f)).sort((a, b) => pos(a) - pos(b)).map(f => f.id);
+    if (ids.length === 0) { toast('Esa colección está vacía'); return; }
+    anadirACesta(ids, col.name);
+  };
+
   const selectAllFiles = () => {
     const allFiles = getAllDisplayFiles(); // Select all files, not just current page
     setSelectedFiles(new Set(allFiles.map(file => file.id)));
-  };
-
-  const selectLoadedFiles = () => {
-    const loadedFiles = getDisplayFiles(); // Select loaded files (with infinite scroll)
-    const currentSelection = new Set(selectedFiles);
-    loadedFiles.forEach(file => currentSelection.add(file.id));
-    setSelectedFiles(currentSelection);
-    console.log(`✅ Seleccionados ${loadedFiles.length} archivos cargados`);
   };
 
   // Randomizer functions - Optimized to work with IDs instead of full objects
@@ -3138,6 +3197,7 @@ function App() {
                 handleDeleteCollection(id, e);
               }}
               onDownloadCollection={handleDownloadCollection}
+              onPremiereCollection={anadirColeccionACesta}
               onEditCover={handleEditCollectionCover}
               onCollectionsReorder={handleCollectionsReorder}
               downloadingCollectionId={downloadingCollectionId}
@@ -3276,6 +3336,16 @@ function App() {
                   >
                     <Shuffle className="w-4 h-4" />
                   </button>
+                  {(hasActiveFilters || selectedCollectionId) && getAllDisplayFiles().length > 0 && (
+                    <button
+                      onClick={() => anadirACesta(getAllDisplayFiles().map(f => f.id), nombreParaPremiere())}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm transition-colors text-lavanda-archivo hover:bg-pizarra hover:text-lavanda"
+                      title={`Añadir los ${getAllDisplayFiles().length.toLocaleString('es-ES')} que se ven a la cesta de Premiere`}
+                    >
+                      <Clapperboard className="w-4 h-4" />
+                      <span className="hidden md:inline">Añadir a Premiere</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowPresentationMode(true)}
                     className="p-2 rounded-full text-lavanda-archivo hover:bg-pizarra transition-colors"
@@ -3466,90 +3536,60 @@ function App() {
                 </div>
               )}
 
-              {/* Floating Action Buttons for Selection Mode */}
-              {isSelectionMode && selectedFiles.size > 0 && (
-                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 md:gap-3 bg-tinta/95 backdrop-blur-sm shadow-2xl rounded-full px-3 py-2 md:px-6 md:py-3 border border-borde-sutil">
-                  {/* Counter Badge */}
-                  <div className="flex items-center gap-2 pr-3 border-r border-borde-sutil">
-                    <div className="w-8 h-8 bg-bruma text-noche rounded-full flex items-center justify-center font-semibold text-sm">
-                      {selectedFiles.size}
+              {/* Barra de seleccion: cuantos hay, y cada accion con su nombre
+                  (antes eran siete circulos sin texto, dos de ellos casi iguales). */}
+              {isSelectionMode && selectedFiles.size > 0 && (() => {
+                const boton = 'flex items-center gap-2 h-10 px-3 md:px-4 rounded-full text-sm text-marfil bg-grafito hover:bg-pizarra transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+                const todos = allDisplayFiles.length;
+                return (
+                  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1.5 md:gap-2 bg-tinta/95 backdrop-blur-sm shadow-2xl rounded-full pl-4 pr-2 py-2 border border-pizarra max-w-[calc(100vw-1rem)]">
+                    <div className="flex flex-col leading-tight pr-2 md:pr-3 mr-1 border-r border-pizarra">
+                      <span className="text-sm font-medium text-marfil whitespace-nowrap">
+                        {selectedFiles.size.toLocaleString('es-ES')} {selectedFiles.size === 1 ? 'seleccionado' : 'seleccionados'}
+                      </span>
+                      {selectedFiles.size < todos && (
+                        <button onClick={selectAllFiles} className="text-xs text-bruma hover:underline text-left whitespace-nowrap">
+                          Seleccionar los {todos.toLocaleString('es-ES')}
+                        </button>
+                      )}
                     </div>
+
+                    <button
+                      onClick={() => anadirSeleccionACesta()}
+                      className="flex items-center gap-2 h-10 px-3 md:px-4 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda-claro transition-colors"
+                      title="Añadir a la cesta para Premiere (P)"
+                    >
+                      <Clapperboard className="w-4 h-4" />
+                      <span className="hidden md:inline whitespace-nowrap">Añadir a Premiere</span>
+                    </button>
+                    <button onClick={() => setShowBulkAddToCollection(true)} className={boton} title="Añadir a una colección">
+                      <FolderPlus className="w-4 h-4 text-lavanda" />
+                      <span className="hidden md:inline">Colección</span>
+                    </button>
+                    <button onClick={handleBulkDownload} disabled={isDownloadingZip} className={boton} title="Descargar los seleccionados">
+                      {isDownloadingZip ? <Loader2 className="w-4 h-4 animate-spin text-lavanda" /> : <Download className="w-4 h-4 text-lavanda" />}
+                      <span className="hidden md:inline">Descargar</span>
+                    </button>
+                    <button
+                      onClick={() => { const ids = Array.from(selectedFiles); exitSelectionMode(); ocultarArchivos(ids); }}
+                      className={boton}
+                      title="Ocultar los seleccionados bajo candado"
+                    >
+                      <Lock className="w-4 h-4 text-lavanda" />
+                      <span className="hidden md:inline">Ocultar</span>
+                    </button>
+
+                    <button
+                      onClick={exitSelectionMode}
+                      className="ml-1 w-10 h-10 rounded-full text-niebla hover:text-marfil hover:bg-pizarra flex items-center justify-center transition-colors"
+                      title="Salir de la selección (Esc)"
+                      aria-label="Salir de la selección"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
                   </div>
-
-                  {/* Select Loaded Files Button */}
-                  <button
-                    onClick={selectLoadedFiles}
-                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-grafito hover:bg-lavanda-claro text-bruma hover:text-noche flex items-center justify-center transition-colors"
-                    title={`Seleccionar archivos cargados (${getDisplayFiles().length})`}
-                  >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="2" />
-                      <path d="M7 12l3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
-
-                  {/* Select All Button */}
-                  <button
-                    onClick={selectAllFiles}
-                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-lavanda-claro hover:bg-melocoton text-noche flex items-center justify-center transition-colors"
-                    title={`Seleccionar todos (${allDisplayFiles.length})`}
-                  >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="2" />
-                      <path d="M7 12l3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
-
-                  {/* Candado para toda la seleccion */}
-                  <button
-                    onClick={() => { const ids = Array.from(selectedFiles); exitSelectionMode(); ocultarArchivos(ids); }}
-                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-grafito hover:bg-pizarra text-lavanda flex items-center justify-center transition-colors"
-                    title="Ocultar seleccionados bajo candado"
-                  >
-                    <Lock className="w-5 h-5" />
-                  </button>
-
-                  {/* Add to Collection Button */}
-                  <button
-                    onClick={() => setShowBulkAddToCollection(true)}
-                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-lavanda-claro hover:bg-melocoton text-lavanda-archivo flex items-center justify-center transition-colors"
-                    title="Añadir a colección"
-                  >
-                    <FolderPlus className="w-5 h-5" />
-                  </button>
-
-                  {/* Download Button */}
-                  <button
-                    onClick={handleBulkDownload}
-                    disabled={isDownloadingZip}
-                    className={`w-9 h-9 md:w-12 md:h-12 rounded-full text-noche flex items-center justify-center transition-colors ${isDownloadingZip
-                      ? 'bg-pizarra text-lavanda-archivo cursor-not-allowed'
-                      : 'bg-lavanda hover:bg-opacity-90'
-                      }`}
-                    title="Descargar seleccionados"
-                  >
-                    {isDownloadingZip ? (
-                      <div className="w-5 h-5 border-2 border-lavanda-archivo border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <Download className="w-5 h-5" />
-                    )}
-                  </button>
-
-                  {/* Divider */}
-                  <div className="w-px h-8 bg-borde-sutil mx-1 hidden sm:block"></div>
-
-                  {/* Exit Button */}
-                  <button
-                    onClick={exitSelectionMode}
-                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-estado-error hover:bg-estado-error/80 text-noche flex items-center justify-center transition-colors"
-                    title="Salir (ESC)"
-                  >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M6 18L18 6M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
-                </div>
-              )}
+                );
+              })()}
 
 
               {/* Reposo activo: el archivo propone antes de que preguntes. */}
@@ -4094,23 +4134,33 @@ function App() {
         isModalOpen || showPresentationMode || quickPreviewFile || modalLoading || modalError || isDraggingImage
         || showCreateCollection || editingCollectionId !== null || showCoverSelector
         || showAddToCollection || showBulkAddToCollection
-        || editingSessionNote || (isSelectionMode && selectedFiles.size > 0)
+        || editingSessionNote
       ) && (
         <>
-        {/* Avisos de abajo a la izquierda, solo en la home: copias exactas por
-            decidir y videos sin version ligera. Apilados (el primero, abajo).
-            Se esconden con los mismos overlays que la burbuja de la derecha. */}
-        {activeView === 'home' && !portada && (
-          <div className="fixed bottom-6 left-6 z-40 w-[calc(100vw-3rem)] max-w-[340px] flex flex-col-reverse gap-3">
-            <AvisoCopias recarga={mediaFiles} onRevisar={() => navigate('/gemelas/copias')} />
-            <AvisoProxies recarga={mediaFiles} onAjustes={() => navigate(VIEW_TO_PATH.statistics)} />
+        {/* Abajo a la izquierda: la cesta «Para Premiere» (en todas las vistas)
+            y, en la home, los avisos de copias exactas por decidir y videos sin
+            version ligera. Apilados (la cesta, abajo del todo). Los avisos se
+            apartan mientras se selecciona; la cesta no, que es donde va lo
+            seleccionado. */}
+        {!portada && (
+          <div className="fixed bottom-6 left-6 z-40 w-[calc(100vw-3rem)] max-w-[340px] flex flex-col-reverse gap-3 pointer-events-none [&>*]:pointer-events-auto">
+            <CestaPremiere archivos={mediaFiles} />
+            {activeView === 'home' && !(isSelectionMode && selectedFiles.size > 0) && (
+              <>
+                <AvisoCopias recarga={mediaFiles} onRevisar={() => navigate('/gemelas/copias')} />
+                <AvisoProxies recarga={mediaFiles} onAjustes={() => navigate(VIEW_TO_PATH.statistics)} />
+              </>
+            )}
           </div>
         )}
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
-          {/* Scroll to Top Button — solo en home */}
+          {/* Volver arriba — solo en home; tambien mientras se selecciona, que
+              es cuando mas se baja por la galeria. */}
           {activeView === 'home' && <ScrollToTopButton />}
 
-          {/* Navegacion global: punto unico de acceso (sustituye al header). */}
+          {/* Navegacion global: punto unico de acceso (sustituye al header).
+              Se aparta mientras se selecciona: la barra de seleccion manda. */}
+          {!(isSelectionMode && selectedFiles.size > 0) && (
           <MoreOptionsMenu
             activeView={activeView}
             variant="bubble"
@@ -4128,6 +4178,7 @@ function App() {
               setActiveView(view);
             }}
           />
+          )}
         </div>
         </>
       )}

@@ -14,8 +14,10 @@ import {
   Search,
   Pencil,
   Check,
-  FolderOpen
+  FolderOpen,
+  Clapperboard
 } from 'lucide-react';
+import { cestaPremiere, useCestaPremiere } from '../hooks/useCestaPremiere';
 import { MediaFile, FaceBox } from '../types';
 import { api } from '../services/api';
 import { config } from '../config';
@@ -83,6 +85,8 @@ export default function MediaModal({
   onOcultar
 }: MediaModalProps) {
   const [relatedFilesStartIndex, setRelatedFilesStartIndex] = useState(0);
+  const cesta = useCestaPremiere();
+  const enCesta = !!file && cesta.ids.includes(file.id);
   // Encadenar clips: al terminar un video salta al siguiente. Se recuerda entre
   // sesiones porque es una preferencia de visionado, no un dato del archivo.
   const [encadenarClips, setEncadenarClips] = useState<boolean>(() => {
@@ -875,6 +879,20 @@ export default function MediaModal({
                   className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
                 >
                   <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} />
+                </button>
+                {/* A la cesta de Premiere (la burbuja de abajo a la izquierda); otra vez, la quita. */}
+                <button
+                  onClick={() => (enCesta
+                    ? cestaPremiere.quitar([file.id])
+                    : cestaPremiere.anadir([file.id], file.folderName || file.name))}
+                  title={enCesta ? 'Quitar de la cesta de Premiere' : 'Añadir a la cesta de Premiere'}
+                  aria-pressed={enCesta}
+                  className={`h-10 px-3.5 rounded-full flex items-center gap-1.5 text-sm transition-colors ${enCesta
+                    ? 'bg-lavanda text-noche'
+                    : 'bg-lavanda-claro text-noche hover:bg-opacity-80'}`}
+                >
+                  {enCesta ? <Check className="w-4 h-4" /> : <Clapperboard className="w-4 h-4" />}
+                  {enCesta ? 'En la cesta' : 'Premiere'}
                 </button>
                 <button
                   onClick={() => onDownload(file)}

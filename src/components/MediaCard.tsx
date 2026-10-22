@@ -99,9 +99,9 @@ function MediaCardBase({
   return (
     <div
       data-file-id={file.id}
-      className={`bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group cursor-pointer relative mb-3 md:mb-6 ${
+      className={`bg-tinta rounded-xl shadow-xs hover:shadow-lg transition-all duration-300 overflow-hidden group cursor-pointer relative mb-3 md:mb-6 ${
         isSecondary ? 'opacity-60 hover:opacity-100' : ''
-      } ${isSelected ? 'ring-4 ring-lavanda ring-opacity-50 bg-grafito' : enPremiere ? 'halo-premiere' : ''}`}
+      } ${isSelected ? 'ring-4 ring-lavanda/50 bg-grafito' : enPremiere ? 'halo-premiere' : ''}`}
       onClick={(e) => onFileClick(file, e)}
     >
       <div className="relative bg-slate-900 overflow-hidden"
@@ -122,7 +122,7 @@ function MediaCardBase({
             }}
           />
         )}
-        <div className="absolute inset-0 bg-noche bg-opacity-0 group-hover:bg-opacity-40 transition-all duration-300" />
+        <div className="absolute inset-0 bg-noche/0 group-hover:bg-noche/40 transition-all duration-300" />
         <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-all duration-300 p-3 md:p-4 flex flex-col justify-end text-white">
           {file.tags.length > 0 && (
             <div className="flex flex-wrap gap-1 mb-3">
@@ -147,36 +147,36 @@ function MediaCardBase({
           </div>
           <div className="flex justify-end space-x-2">
             {onAddToCollection && (
-              <button onClick={(e) => { e.stopPropagation(); onAddToCollection(normalizePath(file.fullPath!)); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-lavanda/20 text-white hover:bg-lavanda/30" title="Añadir a colección"><Plus className="w-4 h-4" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onAddToCollection(normalizePath(file.fullPath!)); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-xs transition-colors bg-lavanda/20 text-white hover:bg-lavanda/30" title="Añadir a colección"><Plus className="w-4 h-4" /></button>
             )}
             {onRemoveFromCollection && (
-              <button onClick={(e) => { e.stopPropagation(); onRemoveFromCollection(normalizePath(file.fullPath!)); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-red-500/20 text-white hover:bg-red-500/30" title="Eliminar de colección"><X className="w-4 h-4" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onRemoveFromCollection(normalizePath(file.fullPath!)); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-xs transition-colors bg-red-500/20 text-white hover:bg-red-500/30" title="Eliminar de colección"><X className="w-4 h-4" /></button>
             )}
             {onScanFile && file.type !== 'audio' && (
               <button
                 onClick={(e) => { e.stopPropagation(); onScanFile(file); }}
                 disabled={isScanning}
-                className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${isScanning ? 'bg-lavanda/30 text-white cursor-wait' : 'bg-lavanda/20 text-white hover:bg-lavanda/30'}`}
+                className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-xs transition-colors ${isScanning ? 'bg-lavanda/30 text-white cursor-wait' : 'bg-lavanda/20 text-white hover:bg-lavanda/30'}`}
                 title={isScanning ? 'Escaneando...' : (file.visual_description ? 'Re-escanear visualmente (IA)' : 'Escanear visualmente (IA)')}
               >
                 {isScanning ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Sparkles className="w-4 h-4" />}
               </button>
             )}
             {onOpenPath && (
-              <button onClick={(e) => { e.stopPropagation(); onOpenPath(file.id); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-bruma/20 text-white hover:bg-bruma/30" title="Ir a ruta (abrir carpeta)"><FolderOpen className="w-4 h-4" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onOpenPath(file.id); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-xs transition-colors bg-bruma/20 text-white hover:bg-bruma/30" title="Ir a ruta (abrir carpeta)"><FolderOpen className="w-4 h-4" /></button>
             )}
             {onOcultar && (
-              <button onClick={(e) => { e.stopPropagation(); onOcultar([file.id]); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors bg-noche/40 text-white hover:bg-noche/70" title="Ocultar (bajo candado)" aria-label="Ocultar bajo candado"><Lock className="w-4 h-4" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onOcultar([file.id]); }} className="p-2.5 sm:p-2 rounded-lg backdrop-blur-xs transition-colors bg-noche/40 text-white hover:bg-noche/70" title="Ocultar (bajo candado)" aria-label="Ocultar bajo candado"><Lock className="w-4 h-4" /></button>
             )}
-            <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} disabled={isDownloading} className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-sm transition-colors ${isDownloading ? 'bg-bruma/30 text-white cursor-not-allowed' : 'bg-bruma/20 text-white hover:bg-bruma/30'}`} title="Descargar">
+            <button onClick={(e) => { e.stopPropagation(); onDownload(file); }} disabled={isDownloading} className={`p-2.5 sm:p-2 rounded-lg backdrop-blur-xs transition-colors ${isDownloading ? 'bg-bruma/30 text-white cursor-not-allowed' : 'bg-bruma/20 text-white hover:bg-bruma/30'}`} title="Descargar">
               {isDownloading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Download className="w-4 h-4" />}
             </button>
           </div>
         </div>
         {file.duration && (
-          <div className="absolute bottom-2 right-2 bg-noche/75 text-white text-xs px-2 py-1 rounded backdrop-blur-sm">{formatDuration(file.duration)}</div>
+          <div className="absolute bottom-2 right-2 bg-noche/75 text-white text-xs px-2 py-1 rounded-sm backdrop-blur-xs">{formatDuration(file.duration)}</div>
         )}
-        <button disabled={updatingFavs} onClick={(e) => { e.stopPropagation(); onToggleFavorite(file.id); }} className={`absolute top-2 right-2 p-2 rounded-full transition-all duration-200 backdrop-blur-sm ${file.isFavorite ? 'bg-lavanda/90 text-white' : 'bg-noche/30 text-white opacity-70 hover:opacity-100 hover:bg-noche/50'} ${updatingFavs ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+        <button disabled={updatingFavs} onClick={(e) => { e.stopPropagation(); onToggleFavorite(file.id); }} className={`absolute top-2 right-2 p-2 rounded-full transition-all duration-200 backdrop-blur-xs ${file.isFavorite ? 'bg-lavanda/90 text-white' : 'bg-noche/30 text-white opacity-70 hover:opacity-100 hover:bg-noche/50'} ${updatingFavs ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
           {!updatingFavs ? <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} /> : <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
         </button>
         {enPremiere && (
@@ -190,7 +190,7 @@ function MediaCardBase({
         )}
         {isSelectionMode && (
           <div className="absolute top-2 left-2 z-10">
-            <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-lavanda border-lavanda' : 'bg-tinta/90 border-white backdrop-blur-sm'}`}>
+            <div className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-lavanda border-lavanda' : 'bg-tinta/90 border-white backdrop-blur-xs'}`}>
               {isSelected && <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
             </div>
           </div>

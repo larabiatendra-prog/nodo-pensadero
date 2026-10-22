@@ -158,7 +158,7 @@ export default function PersonaAcciones({ persona, onCerrar, onOlvidada }: Props
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-noche/75 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-80 flex items-center justify-center bg-noche/75 backdrop-blur-xs p-4"
       onClick={() => { if (!ocupado) onCerrar(); }}
       role="dialog"
       aria-label={`Qué hacer con ${nombre}`}
@@ -305,7 +305,7 @@ export default function PersonaAcciones({ persona, onCerrar, onOlvidada }: Props
                           onChange={(e) => setEscrito(e.target.value)}
                           onKeyDown={(e) => { if (e.key === 'Enter' && nombreBien) aPapelera(); }}
                           placeholder={nombre}
-                          className="flex-1 min-w-[180px] h-9 px-3 rounded-lg bg-noche border border-borde-sutil text-[13px] text-marfil focus:outline-none focus:border-estado-error/60"
+                          className="flex-1 min-w-[180px] h-9 px-3 rounded-lg bg-noche border border-borde-sutil text-[13px] text-marfil focus:outline-hidden focus:border-estado-error/60"
                         />
                         <button
                           onClick={aPapelera}

@@ -1,83 +1,221 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
 
-/* ============================================
+@theme {
+  --color-noche: #0f111a;
+  --color-tinta: #151927;
+  --color-grafito: #1c2033;
+  --color-pizarra: #252a42;
+  --color-lavanda: #c8b6ff;
+  --color-lavanda-claro: #dacdff;
+  --color-lavanda-archivo: #7c6bb2;
+  --color-melocoton: #f2b8a0;
+  --color-salvia: #9cb7a5;
+  --color-bruma: #8ea4ff;
+  --color-marfil: #f5f1ff;
+  --color-niebla: #b8b3c9;
+  --color-humo: #7d8197;
+  --color-estado-exito: #a8d5ba;
+  --color-estado-aviso: #e6c177;
+  --color-estado-error: #e58b9b;
+  --color-borde-sutil: rgba(37, 42, 66, 0.6);
+  --color-jaffa: #c8b6ff;
+  --color-apricot: #dacdff;
+  --color-romantic: #f2b8a0;
+  --color-st-tropaz: #8ea4ff;
+  --color-russett: #7c6bb2;
+  --color-spring-wood: #1c2033;
+  --color-tundora: #f5f1ff;
+  --color-ebb: #252a42;
+  --color-wild-sand: #0f111a;
+  --color-primary: #c8b6ff;
+  --color-primary-soft: #dacdff;
+  --color-secondary: #8ea4ff;
+  --color-text-primary: #f5f1ff;
+  --color-text-secondary: #b8b3c9;
+  --color-bg-primary: #0f111a;
+  --color-bg-secondary: #151927;
+  --color-bg-tertiary: #1c2033;
+  --color-border: rgba(37, 42, 66, 0.6);
+
+  --font-sans: Geist, Inter, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-geist: Geist, Inter, system-ui, sans-serif;
+  --font-telegraf: Geist, Inter, system-ui, sans-serif;
+
+  --animate-fadeIn: fadeIn 0.2s ease-out;
+
+  @keyframes fadeIn {
+    0% {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  /* Tailwind 4 deja los botones con el cursor normal y el placeholder del
+     color del texto a media opacidad; esto conserva lo de Tailwind 3. */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-gray-400);
+  }
+}
+
+/* Estilos personalizados — paleta Pensadero */
+
+@utility btn-primary {
+  /* Botón principal — Lavanda memoria */
+  @apply px-6 py-3 bg-lavanda text-noche rounded-full font-medium transition-all duration-200;
+  @apply hover:bg-lavanda-claro hover:shadow-lg;
+  @apply active:scale-95;
+  @apply disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed;
+}
+
+@utility btn-secondary {
+  /* Botón secundario — Bruma (azul) */
+  @apply px-6 py-3 bg-bruma text-noche rounded-full font-medium transition-all duration-200;
+  @apply hover:bg-bruma/90 hover:shadow-lg;
+  @apply active:scale-95;
+  @apply disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed;
+}
+
+@utility btn-tertiary {
+  /* Botón terciario — Suave (Lavanda claro) */
+  @apply px-6 py-3 bg-lavanda-claro text-noche rounded-full font-medium transition-all duration-200;
+  @apply hover:bg-lavanda-claro/90 hover:shadow-lg;
+  @apply active:scale-95;
+  @apply disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed;
+}
+
+@utility btn-outline {
+  /* Botón outline */
+  @apply px-6 py-3 bg-transparent text-marfil rounded-full font-medium transition-all duration-200;
+  @apply border-2 border-lavanda-archivo;
+  @apply hover:bg-lavanda hover:text-noche hover:border-lavanda hover:shadow-lg;
+  @apply active:scale-95;
+}
+
+@utility card-primary {
+  /* Card principal — superficie grafito */
+  @apply bg-grafito rounded-3xl p-6 shadow-xs border border-borde-sutil;
+  @apply hover:shadow-md transition-shadow duration-200;
+}
+
+@utility card-secondary {
+  /* Card secundaria — superficie elevada pizarra */
+  @apply bg-pizarra rounded-3xl p-6 shadow-xs border border-borde-sutil;
+  @apply hover:shadow-md transition-shadow duration-200;
+}
+
+@utility card-white {
+  /* Card sutil — fondo tinta */
+  @apply bg-tinta rounded-3xl p-6 shadow-xs border border-borde-sutil;
+  @apply hover:shadow-md transition-shadow duration-200;
+}
+
+@layer utilities {
+  /* ============================================
    Pensadero — estilos base
    Paleta noche/lavanda · tipografía Geist
    ============================================ */
 
-/* ---- Fuentes locales (servidas desde public/fonts) ---- */
-@font-face {
-  font-family: 'Geist';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/Geist-400.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Geist';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('/fonts/Geist-500.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Geist';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('/fonts/Geist-600.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'Geist';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/Geist-700.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/IBMPlexMono-400.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('/fonts/IBMPlexMono-500.woff2') format('woff2');
-}
-
-/* Animación fade-in para fullscreen */
-@keyframes fade-in {
-  from {
-    opacity: 0;
+  /* ---- Fuentes locales (servidas desde public/fonts) ---- */
+  @font-face {
+    font-family: 'Geist';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/fonts/Geist-400.woff2') format('woff2');
   }
-  to {
-    opacity: 1;
+  @font-face {
+    font-family: 'Geist';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/fonts/Geist-500.woff2') format('woff2');
   }
-}
-
-.animate-fade-in {
-  animation: fade-in 0.3s ease-in-out;
-}
-
-/* Animación slide-in para toasts */
-@keyframes slideIn {
-  from {
-    transform: translateY(100%);
-    opacity: 0;
+  @font-face {
+    font-family: 'Geist';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('/fonts/Geist-600.woff2') format('woff2');
   }
-  to {
-    transform: translateY(0);
-    opacity: 1;
+  @font-face {
+    font-family: 'Geist';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('/fonts/Geist-700.woff2') format('woff2');
   }
-}
+  @font-face {
+    font-family: 'IBM Plex Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/fonts/IBMPlexMono-400.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'IBM Plex Mono';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/fonts/IBMPlexMono-500.woff2') format('woff2');
+  }
 
-/* Aplicar fuente Geist + paleta noche globalmente */
+  /* Animación fade-in para fullscreen */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-in-out;
+  }
+
+  /* Animación slide-in para toasts */
+  @keyframes slideIn {
+    from {
+      transform: translateY(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  /* Aplicar fuente Geist + paleta noche globalmente */
+}
 @layer base {
   html {
     font-family: 'Geist', system-ui, sans-serif;
@@ -96,59 +234,6 @@
   code, pre, kbd, samp,
   .font-mono {
     font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  }
-}
-
-/* Estilos personalizados — paleta Pensadero */
-@layer components {
-  /* Botón principal — Lavanda memoria */
-  .btn-primary {
-    @apply px-6 py-3 bg-lavanda text-noche rounded-full font-medium transition-all duration-200;
-    @apply hover:bg-lavanda-claro hover:shadow-lg;
-    @apply active:scale-95;
-    @apply disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed;
-  }
-
-  /* Botón secundario — Bruma (azul) */
-  .btn-secondary {
-    @apply px-6 py-3 bg-bruma text-noche rounded-full font-medium transition-all duration-200;
-    @apply hover:bg-opacity-90 hover:shadow-lg;
-    @apply active:scale-95;
-    @apply disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed;
-  }
-
-  /* Botón terciario — Suave (Lavanda claro) */
-  .btn-tertiary {
-    @apply px-6 py-3 bg-lavanda-claro text-noche rounded-full font-medium transition-all duration-200;
-    @apply hover:bg-opacity-90 hover:shadow-lg;
-    @apply active:scale-95;
-    @apply disabled:bg-pizarra disabled:text-humo disabled:cursor-not-allowed;
-  }
-
-  /* Botón outline */
-  .btn-outline {
-    @apply px-6 py-3 bg-transparent text-marfil rounded-full font-medium transition-all duration-200;
-    @apply border-2 border-lavanda-archivo;
-    @apply hover:bg-lavanda hover:text-noche hover:border-lavanda hover:shadow-lg;
-    @apply active:scale-95;
-  }
-
-  /* Card principal — superficie grafito */
-  .card-primary {
-    @apply bg-grafito rounded-3xl p-6 shadow-sm border border-borde-sutil;
-    @apply hover:shadow-md transition-shadow duration-200;
-  }
-
-  /* Card secundaria — superficie elevada pizarra */
-  .card-secondary {
-    @apply bg-pizarra rounded-3xl p-6 shadow-sm border border-borde-sutil;
-    @apply hover:shadow-md transition-shadow duration-200;
-  }
-
-  /* Card sutil — fondo tinta */
-  .card-white {
-    @apply bg-tinta rounded-3xl p-6 shadow-sm border border-borde-sutil;
-    @apply hover:shadow-md transition-shadow duration-200;
   }
 }
 

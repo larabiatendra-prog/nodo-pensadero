@@ -48,7 +48,7 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
 
   return (
     <div
-      className={`relative bg-tinta rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden cursor-pointer group mb-3 md:mb-6 ${
+      className={`relative bg-tinta rounded-xl shadow-xs hover:shadow-lg transition-all duration-300 overflow-hidden cursor-pointer group mb-3 md:mb-6 ${
         dimmed ? 'opacity-50 hover:opacity-100' : ''
       } ${enPremiere > 0 ? 'halo-premiere' : ''}`}
       onClick={handleClick}
@@ -78,10 +78,10 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
       </div>
 
       {/* Overlay oscuro en hover */}
-      <div className="absolute inset-0 bg-noche bg-opacity-0 group-hover:bg-opacity-30 transition-all duration-300" />
+      <div className="absolute inset-0 bg-noche/0 group-hover:bg-noche/30 transition-all duration-300" />
 
       {/* Badge con total de archivos */}
-      <div className="absolute top-2 right-2 flex items-center gap-1 bg-noche/70 text-white text-xs font-semibold px-2 py-1 rounded-full backdrop-blur-sm">
+      <div className="absolute top-2 right-2 flex items-center gap-1 bg-noche/70 text-white text-xs font-semibold px-2 py-1 rounded-full backdrop-blur-xs">
         <Layers className="w-3 h-3" />
         <span>{count}</span>
       </div>
@@ -91,7 +91,7 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
         <button
           onClick={(e) => { e.stopPropagation(); onEditNote(sessionKey, label); }}
           title={note ? 'Editar nota de la sesion' : 'Anadir nota a la sesion'}
-          className={`absolute top-2 left-2 z-10 p-1.5 rounded-full backdrop-blur-sm transition-colors ${
+          className={`absolute top-2 left-2 z-10 p-1.5 rounded-full backdrop-blur-xs transition-colors ${
             note
               ? 'bg-lavanda/90 text-noche'
               : 'bg-noche/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-noche/70'
@@ -107,14 +107,14 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
           onClick={(e) => { e.stopPropagation(); onOcultar(files.map(f => f.id)); }}
           title={`Ocultar la sesion entera (${count} archivos) bajo candado`}
           aria-label="Ocultar la sesion bajo candado"
-          className={`absolute top-2 ${onEditNote ? 'left-11' : 'left-2'} z-10 p-1.5 rounded-full backdrop-blur-sm bg-noche/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-noche/70 transition-colors`}
+          className={`absolute top-2 ${onEditNote ? 'left-11' : 'left-2'} z-10 p-1.5 rounded-full backdrop-blur-xs bg-noche/40 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-noche/70 transition-colors`}
         >
           <Lock className="w-3.5 h-3.5" />
         </button>
       )}
 
       {/* Gradiente inferior + etiqueta + nota humana */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-3">
+      <div className="absolute bottom-0 left-0 right-0 bg-linear-to-t from-black/85 via-black/45 to-transparent p-3">
         <p className="text-white text-xs font-medium leading-tight truncate">{label.line1}</p>
         {label.line2 && (
           <p className="text-white/80 text-xs leading-tight truncate mt-0.5">{label.line2}</p>
@@ -142,7 +142,7 @@ function SessionCardBase({ sessionKey, files, label, onExpand, isSelectionMode, 
 
       {/* Botón "Abrir" visible en hover */}
       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-        <span className="bg-tinta/90 text-slate-900 text-sm font-semibold px-4 py-1.5 rounded-full shadow">
+        <span className="bg-tinta/90 text-slate-900 text-sm font-semibold px-4 py-1.5 rounded-full shadow-sm">
           {isSelectionMode ? 'Seleccionar todos' : 'Abrir sesión'}
         </span>
       </div>
@@ -186,20 +186,20 @@ export function SessionHeader({ sessionKey, files, label, onCollapse }: SessionH
   return (
     <div className="col-span-full flex items-center justify-between bg-pizarra/60 rounded-xl px-4 py-3 mb-1 mt-2">
       <div className="flex items-center gap-3 min-w-0">
-        <Layers className="w-4 h-4 text-lavanda-archivo flex-shrink-0" />
+        <Layers className="w-4 h-4 text-lavanda-archivo shrink-0" />
         <div className="min-w-0">
           <span className="font-semibold text-marfil text-sm truncate block">{label.line1}</span>
           {label.line2 && (
             <span className="text-lavanda-archivo text-xs truncate block">{label.line2}</span>
           )}
         </div>
-        <span className="flex-shrink-0 text-xs text-lavanda-archivo bg-lavanda-claro px-2 py-0.5 rounded-full font-medium">
+        <span className="shrink-0 text-xs text-lavanda-archivo bg-lavanda-claro px-2 py-0.5 rounded-full font-medium">
           {files.length} archivos
         </span>
       </div>
       <button
         onClick={() => onCollapse(sessionKey)}
-        className="flex items-center gap-1.5 text-xs text-lavanda-archivo hover:text-marfil font-medium px-3 py-1.5 rounded-lg hover:bg-lavanda-claro transition-colors flex-shrink-0 ml-3"
+        className="flex items-center gap-1.5 text-xs text-lavanda-archivo hover:text-marfil font-medium px-3 py-1.5 rounded-lg hover:bg-lavanda-claro transition-colors shrink-0 ml-3"
       >
         <ChevronUp className="w-3.5 h-3.5" />
         Colapsar
@@ -231,9 +231,9 @@ export function SessionBoundaryCard({ sessionKey, refFile, label, variant, onCol
       style={{ aspectRatio: aspect }}
     >
       <div className="text-center px-3">
-        <p className="text-white text-sm font-semibold leading-tight break-words">{label.line1}</p>
+        <p className="text-white text-sm font-semibold leading-tight wrap-break-word">{label.line1}</p>
         {label.line2 && (
-          <p className="text-white/80 text-xs mt-1 break-words">{label.line2}</p>
+          <p className="text-white/80 text-xs mt-1 wrap-break-word">{label.line2}</p>
         )}
         <p className="text-white/70 text-[11px] mt-2 inline-flex items-center gap-1">
           <ChevronUp className="w-3 h-3" />

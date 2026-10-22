@@ -39,7 +39,7 @@ export function GrupoAvatares({ grupo, persons, tam = 20, max = 3, borde = 'bord
     .sort((a, b) => Number(!!b.avatar_url) - Number(!!a.avatar_url))
     .slice(0, max);
   return (
-    <span className="inline-flex items-center flex-shrink-0">
+    <span className="inline-flex items-center shrink-0">
       {miembros.map((p, i) => (
         <span
           key={p.person_id}

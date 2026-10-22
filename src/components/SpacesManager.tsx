@@ -368,9 +368,9 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
           clipStatus.ready ? 'bg-pizarra border-pizarra' : 'bg-pizarra border-bruma/40'
         }`}>
           {clipStatus.ready ? (
-            <Brain className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5" />
+            <Brain className="w-5 h-5 text-lavanda shrink-0 mt-0.5" />
           ) : (
-            <AlertTriangle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+            <AlertTriangle className="w-5 h-5 text-bruma shrink-0 mt-0.5" />
           )}
           <div className="flex-1 text-sm">
             {clipStatus.ready ? (
@@ -416,7 +416,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
           {reidJob.total > 0 && reidJob.status === 'running' && (
             <div className="w-full bg-grafito rounded-full h-2 overflow-hidden mb-2">
               <div
-                className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
+                className="bg-linear-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
                 style={{ width: `${Math.round((reidJob.done / reidJob.total) * 100)}%` }}
               />
             </div>
@@ -482,7 +482,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
 
       {/* Modal: crear espacio */}
       {showCreate && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">Nuevo espacio</h2>
@@ -498,7 +498,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                   value={newSpaceId}
                   onChange={e => setNewSpaceId(e.target.value)}
                   placeholder="auditorio_edem, marina_empresas..."
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                   autoFocus
                 />
               </div>
@@ -509,7 +509,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                   value={newDisplayName}
                   onChange={e => setNewDisplayName(e.target.value)}
                   placeholder="Auditorio EDEM"
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                 />
               </div>
               <div>
@@ -519,7 +519,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                   value={newAliases}
                   onChange={e => setNewAliases(e.target.value)}
                   placeholder="EDEM, Auditorio principal"
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                 />
               </div>
             </div>
@@ -555,7 +555,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                     selectedSpace?.space_id === space.space_id ? 'bg-lavanda/10 border-lavanda' : 'bg-tinta border-pizarra hover:border-lavanda-archivo'
                   }`}
                 >
-                  <div className="w-10 h-10 rounded-xl bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-xl bg-pizarra overflow-hidden shrink-0 flex items-center justify-center">
                     {coverSrc(space) ? (
                       <img src={coverSrc(space)!} alt={space.display_name} className="w-full h-full object-cover" />
                     ) : (
@@ -743,7 +743,7 @@ export default function SpacesManager({ onBack, mediaFiles, onSelectFile, onFilt
                         >
                           <img src={file.thumbnail || file.url} alt={file.name} className="w-full h-full object-cover" loading="lazy" />
                           {file.type === 'video' && (
-                            <span className="absolute bottom-1 right-1 text-[10px] bg-noche/80 text-marfil px-1.5 py-0.5 rounded">VIDEO</span>
+                            <span className="absolute bottom-1 right-1 text-[10px] bg-noche/80 text-marfil px-1.5 py-0.5 rounded-sm">VIDEO</span>
                           )}
                         </button>
                       ))}
@@ -806,7 +806,7 @@ function AliasesEditor({ initialAliases, onSave }: { initialAliases: string[]; o
       onBlur={save}
       onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
       placeholder="EDEM, Auditorio principal"
-      className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda text-sm"
+      className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda text-sm"
     />
   );
 }

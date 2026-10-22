@@ -103,7 +103,7 @@ export default function Carta({ files, onSelectFile }: Props) {
       <section aria-label="La carta del archivo" className="mb-6 mt-1">
         <button
           onClick={recuperar}
-          className="group/vuelve flex items-center gap-3 text-left focus:outline-none"
+          className="group/vuelve flex items-center gap-3 text-left focus:outline-hidden"
           title="Volver a leer la carta de esta semana"
         >
           <span
@@ -126,7 +126,7 @@ export default function Carta({ files, onSelectFile }: Props) {
             linea de vida. Ancla el parrafo sin meterlo en una caja. */}
         <div
           aria-hidden="true"
-          className="w-px self-stretch shrink-0 mt-2 bg-gradient-to-b from-lavanda/70 via-lavanda-archivo/40 to-transparent"
+          className="w-px self-stretch shrink-0 mt-2 bg-linear-to-b from-lavanda/70 via-lavanda-archivo/40 to-transparent"
         />
 
         <div className="min-w-0 flex-1">
@@ -181,7 +181,7 @@ export default function Carta({ files, onSelectFile }: Props) {
                   onClick={() => onSelectFile(file)}
                   title={file.displayName || file.name}
                   style={{ zIndex: clips.length - i }}
-                  className={`relative w-20 h-20 rounded-xl overflow-hidden bg-grafito ring-2 ring-noche transition-all duration-500 ease-out hover:z-10 hover:scale-105 focus:outline-none focus-visible:ring-lavanda ${
+                  className={`relative w-20 h-20 rounded-xl overflow-hidden bg-grafito ring-2 ring-noche transition-all duration-500 ease-out hover:z-10 hover:scale-105 focus:outline-hidden focus-visible:ring-lavanda ${
                     i > 0 ? '-ml-5 group-hover/carta:ml-1' : ''
                   }`}
                 >
@@ -207,7 +207,7 @@ export default function Carta({ files, onSelectFile }: Props) {
               disabled={indice >= lista.length - 1}
               title="Carta anterior"
               aria-label="Carta anterior"
-              className="p-1 rounded text-humo hover:text-niebla disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda"
+              className="p-1 rounded-sm text-humo hover:text-niebla disabled:opacity-30 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -217,7 +217,7 @@ export default function Carta({ files, onSelectFile }: Props) {
               disabled={indice === 0}
               title="Carta siguiente"
               aria-label="Carta siguiente"
-              className="p-1 rounded text-humo hover:text-niebla disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda"
+              className="p-1 rounded-sm text-humo hover:text-niebla disabled:opacity-30 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -228,7 +228,7 @@ export default function Carta({ files, onSelectFile }: Props) {
           onClick={ocultar}
           title="Ocultar esta carta"
           aria-label="Ocultar esta carta"
-          className="shrink-0 hidden sm:block p-1 mt-1 rounded text-humo opacity-0 group-hover/carta:opacity-100 hover:text-niebla transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda focus-visible:opacity-100"
+          className="shrink-0 hidden sm:block p-1 mt-1 rounded-sm text-humo opacity-0 group-hover/carta:opacity-100 hover:text-niebla transition-all focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda focus-visible:opacity-100"
         >
           <X className="w-3.5 h-3.5" />
         </button>

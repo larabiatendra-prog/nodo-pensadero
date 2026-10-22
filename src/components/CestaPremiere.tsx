@@ -316,7 +316,7 @@ export default function CestaPremiere({ archivos }: Props) {
     <div ref={cajaRef} className="relative z-10 self-start">
       {/* ── El resumen de lo enviado ── */}
       {resultado && !abierta && (
-        <div role="status" className="absolute bottom-full left-0 mb-3 w-[min(24rem,calc(100vw-3rem))] bg-tinta/95 backdrop-blur-sm border border-pizarra rounded-2xl shadow-2xl p-4 animate-fadeIn">
+        <div role="status" className="absolute bottom-full left-0 mb-3 w-[min(24rem,calc(100vw-3rem))] bg-tinta/95 backdrop-blur-xs border border-pizarra rounded-2xl shadow-2xl p-4 animate-fadeIn">
           <div className="flex items-start gap-2">
             {resultado.ok
               ? <Check className="w-5 h-5 text-estado-exito shrink-0 mt-0.5" />
@@ -389,7 +389,7 @@ export default function CestaPremiere({ archivos }: Props) {
         <div
           role="dialog"
           aria-label="Para Premiere"
-          className="absolute bottom-full left-0 mb-3 w-[min(26rem,calc(100vw-3rem))] max-h-[calc(100vh-8rem)] overflow-y-auto bg-tinta/95 backdrop-blur-sm border border-pizarra rounded-2xl shadow-2xl p-4 animate-fadeIn"
+          className="absolute bottom-full left-0 mb-3 w-[min(26rem,calc(100vw-3rem))] max-h-[calc(100vh-8rem)] overflow-y-auto bg-tinta/95 backdrop-blur-xs border border-pizarra rounded-2xl shadow-2xl p-4 animate-fadeIn"
         >
           <div className="flex items-center justify-between gap-3 mb-3">
             <h2 className="text-marfil font-medium flex items-center gap-2">
@@ -433,7 +433,7 @@ export default function CestaPremiere({ archivos }: Props) {
             placeholder={nombrePorDefecto()}
             onChange={e => cestaPremiere.renombrar(e.target.value)}
             maxLength={120}
-            className="w-full bg-grafito border border-pizarra rounded-lg px-3 py-2 text-sm text-marfil placeholder:text-humo focus:outline-none focus:border-lavanda-archivo mb-3"
+            className="w-full bg-grafito border border-pizarra rounded-lg px-3 py-2 text-sm text-marfil placeholder:text-humo focus:outline-hidden focus:border-lavanda-archivo mb-3"
           />
 
           <div className="text-xs text-niebla mb-1">Ordenar dentro</div>
@@ -580,7 +580,7 @@ export default function CestaPremiere({ archivos }: Props) {
       )}
 
       {/* ── La burbuja: abrir (izquierda) y enviar (derecha) ── */}
-      <div className={`flex items-stretch rounded-full shadow-2xl border overflow-hidden ${abierta ? 'border-lavanda' : 'border-pizarra'} bg-tinta/95 backdrop-blur-sm`}>
+      <div className={`flex items-stretch rounded-full shadow-2xl border overflow-hidden ${abierta ? 'border-lavanda' : 'border-pizarra'} bg-tinta/95 backdrop-blur-xs`}>
         <button
           onClick={() => { setResultado(null); setAbierta(a => !a); }}
           disabled={!hay}
@@ -589,7 +589,7 @@ export default function CestaPremiere({ archivos }: Props) {
         >
           <Clapperboard className={`w-5 h-5 ${abierta ? '' : 'text-lavanda'}`} />
           <span className="text-sm font-medium whitespace-nowrap">Para Premiere</span>
-          <span className={`min-w-[1.5rem] h-6 px-1.5 rounded-full text-xs font-semibold flex items-center justify-center ${abierta ? 'bg-noche text-lavanda' : 'bg-lavanda text-noche'} ${pulso ? 'animate-bounce' : ''}`}>
+          <span className={`min-w-6 h-6 px-1.5 rounded-full text-xs font-semibold flex items-center justify-center ${abierta ? 'bg-noche text-lavanda' : 'bg-lavanda text-noche'} ${pulso ? 'animate-bounce' : ''}`}>
             {numero(cesta.ids.length)}
           </span>
           {pulso !== null && (
@@ -599,7 +599,7 @@ export default function CestaPremiere({ archivos }: Props) {
           )}
         </button>
         {ocupado ? (
-          <span className="flex items-center gap-2 px-3 text-xs text-niebla border-l border-pizarra max-w-[12rem]">
+          <span className="flex items-center gap-2 px-3 text-xs text-niebla border-l border-pizarra max-w-48">
             <Loader2 className="w-4 h-4 animate-spin text-lavanda shrink-0" />
             <span className="truncate">{fase.tipo === 'enviando' ? fase.texto : 'Preparando…'}</span>
           </span>

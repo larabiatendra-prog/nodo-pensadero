@@ -376,13 +376,13 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
             if (!def) return null;
             return (
               <div key={idx} className="flex items-center gap-2 p-2 bg-pizarra/40 rounded-xl">
-                <span className="flex-shrink-0 text-xs text-lavanda-archivo whitespace-nowrap">{def.label}:</span>
+                <span className="shrink-0 text-xs text-lavanda-archivo whitespace-nowrap">{def.label}:</span>
                 <div className="flex-1 min-w-0">
                   {def.input.kind === 'enum' && (
                     <select
                       value={row.value}
                       onChange={e => updateRow(idx, e.target.value)}
-                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                     >
                       {def.input.options!.map(opt => (
                         <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -395,7 +395,7 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
                       value={row.value || ''}
                       onChange={e => updateRow(idx, e.target.value)}
                       placeholder={def.input.placeholder}
-                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                     />
                   )}
                   {def.input.kind === 'date' && (
@@ -403,14 +403,14 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
                       type="date"
                       value={row.value || ''}
                       onChange={e => updateRow(idx, e.target.value)}
-                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                     />
                   )}
                   {def.input.kind === 'person' && (
                     <select
                       value={row.value || ''}
                       onChange={e => updateRow(idx, e.target.value)}
-                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                     >
                       {persons.length === 0 && <option value="">(sin personas registradas)</option>}
                       {persons.map(p => (
@@ -422,7 +422,7 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
                     <select
                       value={row.value || ''}
                       onChange={e => updateRow(idx, e.target.value)}
-                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                      className="w-full px-2 py-1 bg-grafito border border-pizarra rounded-lg text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                     >
                       {spaces.length === 0 && <option value="">(sin espacios registrados)</option>}
                       {spaces.map(s => (
@@ -436,7 +436,7 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
                         type="color"
                         value={row.value?.hex || '#ff6600'}
                         onChange={e => updateRow(idx, { ...row.value, hex: e.target.value })}
-                        className="w-9 h-7 rounded cursor-pointer border border-pizarra"
+                        className="w-9 h-7 rounded-sm cursor-pointer border border-pizarra"
                       />
                       <span className="font-mono text-xs text-marfil">{row.value?.hex || '#ff6600'}</span>
                       <span className="text-xs text-lavanda-archivo ml-2">tolerancia</span>
@@ -457,7 +457,7 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
                 </div>
                 <button
                   onClick={() => removeRow(idx)}
-                  className="p-1.5 text-lavanda-archivo hover:text-red-400 hover:bg-pizarra rounded-lg flex-shrink-0"
+                  className="p-1.5 text-lavanda-archivo hover:text-red-400 hover:bg-pizarra rounded-lg shrink-0"
                   title="Quitar regla"
                 >
                   <X className="w-4 h-4" />
@@ -474,7 +474,7 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
         <select
           value=""
           onChange={e => { if (e.target.value) { addRow(e.target.value); e.target.value = ''; } }}
-          className="w-full px-3 py-2 bg-pizarra border border-grafito rounded-2xl text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+          className="w-full px-3 py-2 bg-pizarra border border-grafito rounded-2xl text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
         >
           <option value="">— Selecciona un criterio —</option>
           {FIELD_GROUPS.map(group => (
@@ -489,7 +489,7 @@ export default function RulesEditor({ rules, combinator, onChange }: RulesEditor
 
       {/* Preview en vivo */}
       <div className="p-3 bg-lavanda/10 border border-lavanda/30 rounded-2xl flex items-center gap-2 text-sm">
-        <Wand2 className="w-4 h-4 text-lavanda flex-shrink-0" />
+        <Wand2 className="w-4 h-4 text-lavanda shrink-0" />
         {rows.length === 0 ? (
           <span className="text-lavanda-archivo">Sin reglas todavia.</span>
         ) : previewing ? (

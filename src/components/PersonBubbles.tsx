@@ -313,7 +313,7 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, gr
           onSubmit={(e) => { e.preventDefault(); guardarGrupo(); }}
           className="flex items-center gap-1.5 pl-3 pr-1 h-9 rounded-full bg-pizarra border border-lavanda/50"
         >
-          <Users className="w-3.5 h-3.5 text-lavanda flex-shrink-0" />
+          <Users className="w-3.5 h-3.5 text-lavanda shrink-0" />
           <input
             ref={nombreRef}
             value={nombreGrupo}
@@ -321,7 +321,7 @@ export default function PersonBubbles({ selectedPersonIds, onSelectionChange, gr
             onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setNombrando(false); } }}
             placeholder={`Nombre para estas ${selectedPersonIds.length}`}
             maxLength={40}
-            className="w-44 bg-transparent outline-none text-sm text-marfil placeholder:text-humo"
+            className="w-44 bg-transparent outline-hidden text-sm text-marfil placeholder:text-humo"
           />
           <button
             type="submit"

@@ -183,7 +183,7 @@ export default function ColorWheelFilter({ onColorFilterChange, activeHex }: Col
         className={`flex items-center gap-2 px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
           buttonActive
             ? 'bg-lavanda text-white shadow-md'
-            : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda hover:bg-opacity-20'
+            : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda/20'
         }`}
         title="Filtrar por color dominante"
       >

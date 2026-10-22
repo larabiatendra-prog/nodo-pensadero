@@ -230,7 +230,7 @@ const TimelineWave: React.FC<TimelineWaveProps> = ({ sortedDateValues, loadedCou
                 style={{ top: `${(hoverInfo.frac * 100).toFixed(2)}%` }}
               />
               <div
-                className="absolute right-full mr-1 -translate-y-1/2 whitespace-nowrap rounded bg-grafito px-2 py-1 text-[10px] text-marfil shadow-lg border border-pizarra pointer-events-none"
+                className="absolute right-full mr-1 -translate-y-1/2 whitespace-nowrap rounded-sm bg-grafito px-2 py-1 text-[10px] text-marfil shadow-lg border border-pizarra pointer-events-none"
                 style={{ top: `${(hoverInfo.frac * 100).toFixed(2)}%` }}
               >
                 {hoverInfo.label} · {hoverInfo.count}

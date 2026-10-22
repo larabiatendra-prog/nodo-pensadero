@@ -202,9 +202,9 @@ export default function DateRangeFilter({
     let base = 'w-9 h-9 flex items-center justify-center text-sm cursor-pointer transition-all duration-150 ';
 
     if (isStart || isEnd) {
-      base += 'bg-lavanda text-white rounded-full font-semibold shadow-sm ';
+      base += 'bg-lavanda text-white rounded-full font-semibold shadow-xs ';
     } else if (inRange) {
-      base += 'bg-lavanda-claro bg-opacity-40 text-marfil ';
+      base += 'bg-lavanda-claro/40 text-marfil ';
       // Round edges for range visual
       if (dateFrom && day.getTime() === dateFrom.getTime() + 86400000) {
         base += 'rounded-l-full ';
@@ -226,7 +226,7 @@ export default function DateRangeFilter({
         className={`flex items-center gap-1.5 px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
           hasFilter
             ? 'bg-lavanda-claro text-noche shadow-md'
-            : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
+            : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro/30'
         }`}
       >
         <Calendar className="w-4 h-4" />
@@ -234,7 +234,7 @@ export default function DateRangeFilter({
         {hasFilter && (
           <span
             onClick={handleClear}
-            className="ml-0.5 hover:bg-marfil hover:bg-opacity-20 rounded-full p-0.5 transition-colors"
+            className="ml-0.5 hover:bg-marfil/20 rounded-full p-0.5 transition-colors"
           >
             <X className="w-3 h-3" />
           </span>

@@ -43,7 +43,7 @@ export default function QuickFilters({
               className={`px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
                 isSelected
                   ? 'bg-lavanda-claro text-noche shadow-md'
-                  : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
+                  : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro/30'
               }`}
             >
               {type === 'image' ? 'Fotos' :
@@ -66,7 +66,7 @@ export default function QuickFilters({
             className={`flex items-center space-x-2 px-3 md:px-4 py-1.5 md:py-2 rounded-full text-sm font-medium transition-all duration-200 ${
               showFavoritesOnly
                 ? 'bg-lavanda text-white shadow-md'
-                : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda hover:bg-opacity-20'
+                : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda/20'
             }`}
             title={showFavoritesOnly ? 'Mostrar todos los archivos' : 'Mostrar solo favoritos'}
           >
@@ -93,13 +93,13 @@ export default function QuickFilters({
                 ? 'opacity-40 cursor-not-allowed bg-pizarra text-lavanda-archivo'
                 : groupingEnabled
                   ? 'bg-lavanda-claro text-noche shadow-md'
-                  : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
+                  : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro/30'
             }`}
             title={groupingDisabled ? 'Solo disponible en vista cuadrícula' : groupingEnabled ? 'Desactivar agrupación por sesiones' : 'Agrupar por sesiones'}
           >
             {/* Toggle switch pill */}
             <div
-              className={`relative w-8 h-4 rounded-full transition-colors duration-200 flex-shrink-0 ${
+              className={`relative w-8 h-4 rounded-full transition-colors duration-200 shrink-0 ${
                 groupingEnabled && !groupingDisabled ? 'bg-lavanda' : 'bg-slate-300'
               }`}
             >

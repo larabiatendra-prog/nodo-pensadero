@@ -727,13 +727,13 @@ export default function DuplicatesView({
                         <button
                           onClick={() => alternar(file.id)}
                           title="Apartar esta"
-                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-noche/85 text-niebla backdrop-blur-sm opacity-0 group-hover:opacity-100 hover:text-marfil transition-all"
+                          className="absolute bottom-1.5 right-1.5 flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-noche/85 text-niebla backdrop-blur-xs opacity-0 group-hover:opacity-100 hover:text-marfil transition-all"
                         >
                           <Undo2 className="w-3 h-3" />
                           Apartar
                         </button>
                       )}
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-noche to-transparent p-1.5 pointer-events-none">
+                      <div className="absolute inset-x-0 bottom-0 bg-linear-to-t from-noche to-transparent p-1.5 pointer-events-none">
                         <span className="block text-[11px] font-mono text-marfil truncate">
                           {file.displayName || file.name}
                         </span>
@@ -824,7 +824,7 @@ export default function DuplicatesView({
                 key={file.id}
                 onClick={() => alternar(file.id)}
                 title={`${file.displayName || file.name} — quedármela también`}
-                className="group relative w-[150px] aspect-video rounded-lg overflow-hidden bg-grafito opacity-55 hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda transition-opacity"
+                className="group relative w-[150px] aspect-video rounded-lg overflow-hidden bg-grafito opacity-55 hover:opacity-100 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda transition-opacity"
               >
                 <img
                   src={file.thumbnail}
@@ -836,7 +836,7 @@ export default function DuplicatesView({
                 <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-noche/80 text-lavanda flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <Plus className="w-3 h-3" />
                 </div>
-                <div className="absolute inset-x-0 top-0 p-1 bg-gradient-to-b from-noche/80 to-transparent pointer-events-none">
+                <div className="absolute inset-x-0 top-0 p-1 bg-linear-to-b from-noche/80 to-transparent pointer-events-none">
                   <span className="block text-[10px] font-mono text-marfil truncate text-left">
                     {file.displayName || file.name}
                   </span>

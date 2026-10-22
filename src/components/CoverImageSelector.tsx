@@ -212,12 +212,12 @@ export function CoverImageSelector({
                     value={customImageUrl}
                     onChange={(e) => setCustomImageUrl(e.target.value)}
                     placeholder="https://ejemplo.com/imagen.jpg"
-                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-lavanda"
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                   />
                   <button
                     onClick={handleCustomUrlSubmit}
                     disabled={!customImageUrl.trim()}
-                    className="px-4 py-2 bg-lavanda text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="px-4 py-2 bg-lavanda text-white rounded-lg hover:bg-lavanda/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     Usar
                   </button>
@@ -255,7 +255,7 @@ export function CoverImageSelector({
           <button
             onClick={onClose}
             disabled={!selectedCover}
-            className="px-4 py-2 bg-lavanda text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="px-4 py-2 bg-lavanda text-white rounded-lg hover:bg-lavanda/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Seleccionar
           </button>

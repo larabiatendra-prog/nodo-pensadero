@@ -60,7 +60,7 @@ export function CreateCollectionModal({ isOpen, onClose, onCreate, mediaFiles }:
   };
 
   return (
-    <div className="fixed inset-0 bg-noche bg-opacity-70 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-noche/70 flex items-center justify-center p-4 z-50">
       <div className="bg-tinta text-marfil rounded-3xl max-w-lg w-full border border-borde-sutil max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-6 border-b border-pizarra">
           <h2 className="text-xl font-semibold flex items-center gap-2">
@@ -119,7 +119,7 @@ export function CreateCollectionModal({ isOpen, onClose, onCreate, mediaFiles }:
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder={collectionType === 'smart' ? 'Ej: Retratos con luz dorada' : 'Ej: Fotos de vacaciones'}
-              className="w-full px-3 py-2 border border-pizarra rounded-full focus:outline-none focus:ring-2 focus:ring-lavanda bg-pizarra/50 text-marfil"
+              className="w-full px-3 py-2 border border-pizarra rounded-full focus:outline-hidden focus:ring-2 focus:ring-lavanda bg-pizarra/50 text-marfil"
               autoFocus
               required
             />

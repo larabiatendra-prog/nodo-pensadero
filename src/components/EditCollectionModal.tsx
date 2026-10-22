@@ -110,7 +110,7 @@ export function EditCollectionModal({
               value={name}
               onChange={(e) => { setName(e.target.value); setError(''); }}
               onKeyDown={handleKeyDown}
-              className="w-full px-4 py-3 border border-pizarra rounded-2xl bg-pizarra/40 text-marfil focus:outline-none focus:ring-2 focus:ring-lavanda focus:border-transparent"
+              className="w-full px-4 py-3 border border-pizarra rounded-2xl bg-pizarra/40 text-marfil focus:outline-hidden focus:ring-2 focus:ring-lavanda focus:border-transparent"
               placeholder="Ej: Vacaciones 2024"
               autoFocus
               maxLength={50}
@@ -135,7 +135,7 @@ export function EditCollectionModal({
             <button type="button" onClick={onClose} className="px-6 py-3 bg-pizarra text-marfil rounded-full font-medium hover:bg-grafito transition-colors">
               Cancelar
             </button>
-            <button type="submit" className="px-6 py-3 bg-lavanda text-white rounded-full font-medium hover:bg-opacity-90 transition-colors">
+            <button type="submit" className="px-6 py-3 bg-lavanda text-white rounded-full font-medium hover:bg-lavanda/90 transition-colors">
               Guardar
             </button>
           </div>

@@ -484,7 +484,7 @@ function CampoGB({ valor, guardando, onGuardar }: { valor: number; guardando: bo
         onBlur={confirmar}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
         disabled={guardando}
-        className="w-16 h-7 px-2 rounded bg-grafito border border-borde-sutil text-[12px] text-marfil font-mono tabular-nums focus:outline-none focus:border-lavanda/60 disabled:opacity-50"
+        className="w-16 h-7 px-2 rounded-sm bg-grafito border border-borde-sutil text-[12px] text-marfil font-mono tabular-nums focus:outline-hidden focus:border-lavanda/60 disabled:opacity-50"
       />
       <span className="text-[11px] text-humo">GB</span>
       {guardando && <Loader2 className="w-3 h-3 animate-spin text-lavanda" />}
@@ -593,7 +593,7 @@ export function AvisoTope({ raiz, topeGB, onResuelto }: { raiz: string; topeGB?:
           value={gb}
           onChange={(e) => setGb(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') subir(); }}
-          className="w-20 h-8 px-2 rounded bg-grafito border border-borde-sutil text-xs text-marfil font-mono tabular-nums focus:outline-none focus:border-lavanda/60"
+          className="w-20 h-8 px-2 rounded-sm bg-grafito border border-borde-sutil text-xs text-marfil font-mono tabular-nums focus:outline-hidden focus:border-lavanda/60"
         />
         <button
           onClick={subir}

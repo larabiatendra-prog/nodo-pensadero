@@ -27,14 +27,14 @@ export default function Acotar({ sugerencias, onElegir }: AcotarProps) {
 
   return (
     <div className="mt-2 flex items-center gap-1.5 overflow-x-auto md:flex-wrap md:overflow-visible pb-1 md:pb-0 px-1">
-      <span className="flex-shrink-0 text-xs text-humo mr-0.5">Acotar:</span>
+      <span className="shrink-0 text-xs text-humo mr-0.5">Acotar:</span>
       {visibles.map(s => (
         <button
           key={s.etiqueta}
           type="button"
           onClick={() => onElegir(s.etiqueta)}
           title={`Acotar a los ${s.n} archivos con "${s.etiqueta}"`}
-          className="group flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs border border-borde-sutil bg-grafito/60 text-niebla opacity-70 whitespace-nowrap transition-all duration-150 hover:opacity-100 hover:bg-lavanda hover:border-lavanda hover:text-noche focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-lavanda"
+          className="group shrink-0 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs border border-borde-sutil bg-grafito/60 text-niebla opacity-70 whitespace-nowrap transition-all duration-150 hover:opacity-100 hover:bg-lavanda hover:border-lavanda hover:text-noche focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-lavanda"
         >
           <span>{s.etiqueta}</span>
           <span className="text-humo group-hover:text-noche/70">{s.n}</span>
@@ -44,7 +44,7 @@ export default function Acotar({ sugerencias, onElegir }: AcotarProps) {
         <button
           type="button"
           onClick={() => setAbierto(a => !a)}
-          className="flex-shrink-0 px-1.5 text-xs text-lavanda-archivo hover:text-lavanda whitespace-nowrap transition-colors"
+          className="shrink-0 px-1.5 text-xs text-lavanda-archivo hover:text-lavanda whitespace-nowrap transition-colors"
         >
           {abierto ? 'Mostrar menos' : `+${ocultas} más`}
         </button>

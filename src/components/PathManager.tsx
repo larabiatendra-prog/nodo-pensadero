@@ -224,7 +224,7 @@ function Interruptor({ encendido, onCambiar, etiqueta, deshabilitado = false, pe
       aria-label={etiqueta}
       disabled={deshabilitado}
       onClick={() => onCambiar(!encendido)}
-      className={`relative inline-flex ${ancho} shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda focus-visible:ring-offset-2 focus-visible:ring-offset-noche disabled:opacity-40 disabled:cursor-not-allowed ${
+      className={`relative inline-flex ${ancho} shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda focus-visible:ring-offset-2 focus-visible:ring-offset-noche disabled:opacity-40 disabled:cursor-not-allowed ${
         encendido ? 'bg-lavanda' : 'bg-pizarra'
       }`}
     >
@@ -1136,7 +1136,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
             value={newPath}
             onChange={(e) => setNewPath(e.target.value)}
             placeholder="Ruta de la carpeta, p. ej. D:\Fotos"
-            className="flex-1 min-w-[14rem] px-4 py-2 rounded-full bg-tinta border border-pizarra text-marfil placeholder:text-humo focus:outline-none focus:ring-2 focus:ring-lavanda"
+            className="flex-1 min-w-56 px-4 py-2 rounded-full bg-tinta border border-pizarra text-marfil placeholder:text-humo focus:outline-hidden focus:ring-2 focus:ring-lavanda"
             autoFocus
           />
           <button type="submit" disabled={!newPath.trim()} className="px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda-claro disabled:opacity-40 transition-colors">
@@ -1153,7 +1153,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
       {mismoDisco && (
         <div role="alert" className="mb-8 -mt-4 flex items-start gap-3 flex-wrap rounded-xl border border-lavanda/30 bg-lavanda/10 px-4 py-3">
           <HardDrive className="w-4 h-4 mt-0.5 text-lavanda shrink-0" />
-          <div className="flex-1 min-w-[14rem]">
+          <div className="flex-1 min-w-56">
             <p className="text-[13px] text-marfil">Ese disco ya está añadido como «{mismoDisco.nombre}».</p>
             <p className="text-[12px] text-niebla break-all">
               Estaba en <span className="font-mono">{mismoDisco.ruta}</span> y ahora está en <span className="font-mono text-marfil">{mismoDisco.nuevaRuta}</span>.
@@ -1180,7 +1180,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
 
       {/* ── Lo que queda por hacer / lo que esta pasando ────────────────── */}
       <section aria-label="Estado del escaneo" className="mb-10 flex items-stretch gap-4">
-        <div aria-hidden="true" className="w-px shrink-0 bg-gradient-to-b from-lavanda/70 via-lavanda-archivo/40 to-transparent" />
+        <div aria-hidden="true" className="w-px shrink-0 bg-linear-to-b from-lavanda/70 via-lavanda-archivo/40 to-transparent" />
         <div className="flex-1 flex items-center justify-between gap-4 flex-wrap py-1">
           {batchScan?.running ? (
             <>
@@ -1420,7 +1420,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                               // Letras cruzadas: dos discos distintos. Antes decia
                               // "son el mismo disco: quita una", y no lo eran.
                               <>
-                                <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
+                                <p className="flex-1 min-w-48 text-[12px] text-niebla">
                                   Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>, pero esa ruta la tiene «{path.sugerencia.ocupadaPor.nombre}», que es <b className="text-marfil font-medium">otro disco</b>
                                   {path.sugerencia.ocupadaPor.suDisco
                                     ? <> (ahora en <span className="font-mono text-marfil">{path.sugerencia.ocupadaPor.suDisco}</span>). Windows les ha cruzado las letras: no quites ninguna.</>
@@ -1442,12 +1442,12 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                                 )}
                               </>
                             ) : path.sugerencia.ocupadaPor ? (
-                              <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
+                              <p className="flex-1 min-w-48 text-[12px] text-niebla">
                                 Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>, pero esa carpeta ya está añadida como «{path.sugerencia.ocupadaPor.nombre}». Son el mismo disco: quita una de las dos.
                               </p>
                             ) : (
                               <>
-                                <p className="flex-1 min-w-[12rem] text-[12px] text-niebla">
+                                <p className="flex-1 min-w-48 text-[12px] text-niebla">
                                   Este disco está ahora en <span className="font-mono text-marfil">{path.sugerencia.ruta}</span>.
                                 </p>
                                 <button
@@ -1489,7 +1489,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                               value={ubicacion!.valor}
                               onChange={(e) => setUbicacion({ id: path.id, valor: e.target.value })}
                               aria-label={`Nueva ubicación de ${nombre}`}
-                              className="flex-1 min-w-[12rem] px-3 py-1.5 rounded-full bg-tinta border border-pizarra text-[13px] text-marfil font-mono focus:outline-none focus:ring-2 focus:ring-lavanda"
+                              className="flex-1 min-w-48 px-3 py-1.5 rounded-full bg-tinta border border-pizarra text-[13px] text-marfil font-mono focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                               autoFocus
                             />
                             <button
@@ -1766,7 +1766,7 @@ export default function PathManager({ onSyncComplete }: PathManagerProps = {}) {
                                   setSelectedModel(model);
                                   await api.setScanModel(model).catch(() => toast.error('No se pudo cambiar el modelo'));
                                 }}
-                                className="flex-1 min-w-0 bg-tinta border border-pizarra rounded-lg px-2 py-1 text-[12px] text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                                className="flex-1 min-w-0 bg-tinta border border-pizarra rounded-lg px-2 py-1 text-[12px] text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                               >
                                 {TIER_ORDER.filter(t => availableModels.some(m => m.tier === t)).map(tier => (
                                   <optgroup key={tier} label={TIER_LABEL[tier]}>

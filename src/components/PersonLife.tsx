@@ -157,7 +157,7 @@ export default function PersonLife({ personId, files, onBack, onSelectFile, onVe
                     key={file.id}
                     onClick={() => onSelectFile(file)}
                     title={`${getSessionLabelSource(file) || file.name} · ${mesYAnio(fecha)}`}
-                    className="group relative w-20 h-20 md:w-24 md:h-24 rounded-lg overflow-hidden bg-grafito focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda"
+                    className="group relative w-20 h-20 md:w-24 md:h-24 rounded-lg overflow-hidden bg-grafito focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda"
                   >
                     <img
                       src={file.thumbnail}
@@ -166,7 +166,7 @@ export default function PersonLife({ personId, files, onBack, onSelectFile, onVe
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       onError={(e) => { e.currentTarget.style.display = 'none'; }}
                     />
-                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-noche to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-1">
+                    <div className="absolute inset-x-0 bottom-0 bg-linear-to-t from-noche to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-1">
                       <span className="block text-[10px] font-mono text-marfil truncate">
                         {MESES[Math.floor((fecha % 10000) / 100) - 1]?.slice(0, 3) || ''}
                       </span>

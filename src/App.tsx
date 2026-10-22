@@ -3261,7 +3261,7 @@ function App() {
               <p className="text-lavanda-archivo mb-4">La ruta solicitada no existe.</p>
               <button
                 onClick={() => navigate('/')}
-                className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-opacity-90 transition-colors"
+                className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda/90 transition-colors"
               >
                 Volver al inicio
               </button>
@@ -3329,7 +3329,7 @@ function App() {
                   <button
                     onClick={toggleRandomizer}
                     className={`p-2 rounded-full transition-colors ${isRandomized
-                      ? 'text-lavanda bg-lavanda bg-opacity-10 hover:bg-opacity-20'
+                      ? 'text-lavanda bg-lavanda/10 hover:bg-lavanda/20'
                       : 'text-lavanda-archivo hover:bg-pizarra'
                       }`}
                     title={isRandomized ? "Desactivar randomizador - Volver al orden original" : "Activar randomizador - Mostrar archivos en orden aleatorio"}
@@ -3403,8 +3403,8 @@ function App() {
               {activeView === 'home' && imageSearchFileIds !== null && (
                 <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-full bg-lavanda/10 border border-lavanda/30 w-fit">
                   {imageSearchPreview
-                    ? <img src={imageSearchPreview} alt="" className="w-8 h-8 rounded object-cover border border-lavanda/40" />
-                    : <span className="w-8 h-8 rounded border border-lavanda/40 flex items-center justify-center text-lavanda text-xs">{imageSearchConsulta?.esVideo ? '▶' : '▣'}</span>}
+                    ? <img src={imageSearchPreview} alt="" className="w-8 h-8 rounded-sm object-cover border border-lavanda/40" />
+                    : <span className="w-8 h-8 rounded-sm border border-lavanda/40 flex items-center justify-center text-lavanda text-xs">{imageSearchConsulta?.esVideo ? '▶' : '▣'}</span>}
                   <span className="text-sm text-marfil">
                     {/* Lo que se ve, no lo que devolvio el servidor: los filtros activos (tipo, persona...) se aplican encima. */}
                     {filteredFiles.length === 0
@@ -3487,7 +3487,7 @@ function App() {
               {connectionError && (
                 <div className="mb-6 card-primary">
                   <div className="flex items-center">
-                    <div className="flex-shrink-0">
+                    <div className="shrink-0">
                       <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
                         <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                       </svg>
@@ -3542,7 +3542,7 @@ function App() {
                 const boton = 'flex items-center gap-2 h-10 px-3 md:px-4 rounded-full text-sm text-marfil bg-grafito hover:bg-pizarra transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
                 const todos = allDisplayFiles.length;
                 return (
-                  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1.5 md:gap-2 bg-tinta/95 backdrop-blur-sm shadow-2xl rounded-full pl-4 pr-2 py-2 border border-pizarra max-w-[calc(100vw-1rem)]">
+                  <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1.5 md:gap-2 bg-tinta/95 backdrop-blur-xs shadow-2xl rounded-full pl-4 pr-2 py-2 border border-pizarra max-w-[calc(100vw-1rem)]">
                     <div className="flex flex-col leading-tight pr-2 md:pr-3 mr-1 border-r border-pizarra">
                       <span className="text-sm font-medium text-marfil whitespace-nowrap">
                         {selectedFiles.size.toLocaleString('es-ES')} {selectedFiles.size === 1 ? 'seleccionado' : 'seleccionados'}
@@ -3697,7 +3697,7 @@ function App() {
                       </button>
                     </>
                   ) : filterDiagnostic && filterDiagnostic.length > 0 ? (
-                    <div className="bg-lavanda-claro/20 border border-lavanda-claro rounded-3xl shadow-sm p-6 max-w-md mx-auto text-left">
+                    <div className="bg-lavanda-claro/20 border border-lavanda-claro rounded-3xl shadow-xs p-6 max-w-md mx-auto text-left">
                       <h3 className="text-base font-bold text-marfil mb-1">Sin resultados con esta combinación</h3>
                       <p className="text-sm text-lavanda-archivo mb-4">Prueba quitando uno de estos filtros:</p>
                       <div className="space-y-2">
@@ -3817,7 +3817,7 @@ function App() {
           imagen sobre Pensadero estando en la vista home. pointer-events-none
           para que el drop llegue al window y no se "coma" el evento. */}
       {isDraggingImage && activeView === 'home' && (
-        <div className="fixed inset-0 z-[100] bg-noche/85 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+        <div className="fixed inset-0 z-100 bg-noche/85 backdrop-blur-xs flex items-center justify-center pointer-events-none">
           <div className="bg-tinta border-4 border-dashed border-lavanda rounded-3xl px-12 py-10 flex flex-col items-center gap-4 shadow-2xl">
             <svg className="w-20 h-20 text-lavanda" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -3832,7 +3832,7 @@ function App() {
           tras soltar el archivo no se veia nada durante segundos (la primera
           vez se carga el modelo visual) y parecia que no habia pasado nada. */}
       {buscandoParecidas && (
-        <div className="fixed inset-0 z-[100] bg-noche/60 backdrop-blur-[2px] flex items-center justify-center" role="status" aria-live="polite">
+        <div className="fixed inset-0 z-100 bg-noche/60 backdrop-blur-[2px] flex items-center justify-center" role="status" aria-live="polite">
           <div className="bg-tinta border border-lavanda/40 rounded-3xl px-8 py-7 flex flex-col items-center gap-4 shadow-2xl max-w-sm mx-4 text-center">
             <div className="relative">
               {buscandoParecidas.preview
@@ -3923,7 +3923,7 @@ function App() {
           espacio vertical superior para el contenido. */}
 
       <main className="bg-noche">
-        <div className={`p-4 md:p-8${showTimeline ? ' md:pr-24' : ''}`}>
+        <div className={`p-4 md:p-8 ${showTimeline ? 'md:pr-24' : ''}`}>
           {renderMainContent()}
         </div>
       </main>
@@ -3992,18 +3992,18 @@ function App() {
       {/* Estado de carga del modal cuando se abre por deep-link (/archivo/:id)
           y el archivo aun no esta cargado. */}
       {modalLoading && (
-        <div className="fixed inset-0 z-[120] bg-noche/80 backdrop-blur-sm flex items-center justify-center">
+        <div className="fixed inset-0 z-120 bg-noche/80 backdrop-blur-xs flex items-center justify-center">
           <Loader variant="cargando" showCaption={false} />
         </div>
       )}
 
       {/* Error: el archivo de la URL no existe o no se pudo cargar. */}
       {modalError && (
-        <div className="fixed inset-0 z-[120] bg-noche/90 backdrop-blur-sm flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="fixed inset-0 z-120 bg-noche/90 backdrop-blur-xs flex flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-marfil">{modalError}</p>
           <button
             onClick={() => navigate('/')}
-            className="px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-opacity-90 transition-colors"
+            className="px-4 py-2 rounded-full text-sm font-medium bg-lavanda text-noche hover:bg-lavanda/90 transition-colors"
           >
             Volver al inicio
           </button>
@@ -4143,7 +4143,7 @@ function App() {
             apartan mientras se selecciona; la cesta no, que es donde va lo
             seleccionado. */}
         {!portada && (
-          <div className="fixed bottom-6 left-6 z-40 w-[calc(100vw-3rem)] max-w-[340px] flex flex-col-reverse gap-3 pointer-events-none [&>*]:pointer-events-auto">
+          <div className="fixed bottom-6 left-6 z-40 w-[calc(100vw-3rem)] max-w-[340px] flex flex-col-reverse gap-3 pointer-events-none *:pointer-events-auto">
             <CestaPremiere archivos={mediaFiles} />
             {activeView === 'home' && !(isSelectionMode && selectedFiles.size > 0) && (
               <>

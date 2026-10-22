@@ -192,7 +192,7 @@ export default function OcultosView({ onBack }: Props) {
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); abrir(); } }}
               placeholder="Clave"
               aria-label="Clave del candado"
-              className={`mt-8 w-full text-center tracking-[0.5em] text-xl px-4 py-3 rounded-2xl bg-tinta border text-marfil placeholder:text-humo placeholder:tracking-normal focus:outline-none focus:ring-2 focus:ring-lavanda transition-colors ${
+              className={`mt-8 w-full text-center tracking-[0.5em] text-xl px-4 py-3 rounded-2xl bg-tinta border text-marfil placeholder:text-humo placeholder:tracking-normal focus:outline-hidden focus:ring-2 focus:ring-lavanda transition-colors ${
                 error ? 'border-estado-error/60' : 'border-pizarra'
               }`}
               style={sacudir ? { animation: 'sacudir 0.4s ease-in-out' } : undefined}
@@ -333,7 +333,7 @@ export default function OcultosView({ onBack }: Props) {
                     onError={(e) => { e.currentTarget.style.display = 'none'; }}
                   />
                 </button>
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-noche/90 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-linear-to-t from-noche/90 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                 <button
                   onClick={() => alternar(f.id)}
                   aria-pressed={marcado}
@@ -398,7 +398,7 @@ function Visor({ file, onClose, onMostrar }: { file: MediaFile; onClose: () => v
   const nombre = useMemo(() => file.displayName || file.name, [file]);
 
   return (
-    <div className="fixed inset-0 z-[80] bg-noche/95 backdrop-blur-sm flex flex-col" role="dialog" aria-label={nombre}>
+    <div className="fixed inset-0 z-80 bg-noche/95 backdrop-blur-xs flex flex-col" role="dialog" aria-label={nombre}>
       <div className="flex items-center justify-between gap-3 p-4">
         <p className="text-sm text-niebla truncate">{nombre}</p>
         <div className="flex items-center gap-2 shrink-0">
@@ -449,7 +449,7 @@ function CambiarClave({ primera, onHecho }: { primera: boolean; onHecho: (llave:
     }
   };
 
-  const campo = 'px-3 py-2 rounded-xl bg-tinta border border-pizarra text-marfil text-sm focus:outline-none focus:ring-2 focus:ring-lavanda';
+  const campo = 'px-3 py-2 rounded-xl bg-tinta border border-pizarra text-marfil text-sm focus:outline-hidden focus:ring-2 focus:ring-lavanda';
   return (
     <form onSubmit={guardar} className={`flex flex-wrap items-end gap-3 ${primera ? '' : 'mb-6 p-4 rounded-2xl bg-grafito/60 border border-borde-sutil'}`}>
       {!primera && (

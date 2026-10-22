@@ -235,7 +235,7 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
   const isLast = idx === slides.length - 1;
 
   return (
-    <div className="fixed inset-0 bg-noche bg-opacity-70 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-noche/70 flex items-center justify-center p-4 z-50">
       <div className="bg-tinta text-marfil rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col border border-pizarra">
         {/* Cabecera */}
         <div className="flex items-center justify-between p-6 border-b border-pizarra">
@@ -263,7 +263,7 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
 
           {loadError && (
             <div className="p-4 bg-pizarra border border-lavanda-archivo rounded-2xl flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+              <AlertCircle className="w-5 h-5 text-bruma shrink-0 mt-0.5" />
               <div>
                 <p className="font-medium text-marfil">No se pudo cargar el inventario</p>
                 <p className="text-sm text-lavanda-archivo">{loadError}</p>
@@ -304,9 +304,9 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
 
               {/* Nombre de la carpeta + conteo */}
               <div className="flex items-start gap-3">
-                <Folder className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5" />
+                <Folder className="w-5 h-5 text-lavanda shrink-0 mt-0.5" />
                 <div className="min-w-0">
-                  <p className="text-lg font-medium text-marfil break-words">{current.displayName}</p>
+                  <p className="text-lg font-medium text-marfil wrap-break-word">{current.displayName}</p>
                   <div className="flex items-center gap-3 text-xs text-lavanda-archivo mt-1">
                     {current.imageCount > 0 && (
                       <span className="flex items-center gap-1"><ImageIcon className="w-3 h-3" />{current.imageCount}</span>
@@ -347,7 +347,7 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
                   }}
                   onBlur={commitPersonaDraft}
                   placeholder="Escribe un nombre y pulsa Enter..."
-                  className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                 />
               </div>
 
@@ -360,7 +360,7 @@ export default function ScanContextModal({ isOpen, rootPath, onClose, onConfirm,
                   onChange={(e) => patchSlide(idx, { notas: e.target.value, dirty: true, saved: false })}
                   rows={6}
                   placeholder="Viaje a París, fin de semana. Priorizar momentos de grupo, ignorar planos de relleno..."
-                  className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-2xl text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
+                  className="w-full px-3 py-2 bg-tinta border border-pizarra rounded-2xl text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda resize-none"
                 />
                 <div className="h-4 mt-1 text-xs">
                   {current.saving && (

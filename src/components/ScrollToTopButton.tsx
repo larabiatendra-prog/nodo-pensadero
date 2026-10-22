@@ -22,7 +22,7 @@ export function ScrollToTopButton() {
   return (
     <button
       onClick={scrollToTop}
-      className="p-6 bg-lavanda text-white rounded-full shadow-lg hover:bg-opacity-90 transition-all duration-300 hover:scale-110"
+      className="p-6 bg-lavanda text-white rounded-full shadow-lg hover:bg-lavanda/90 transition-all duration-300 hover:scale-110"
       aria-label="Volver arriba"
       title="Volver arriba"
     >

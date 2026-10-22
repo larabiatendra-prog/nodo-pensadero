@@ -52,7 +52,7 @@ export function ConnectionBanner({ isConnected }: ConnectionBannerProps) {
     return (
       <div
         role="status"
-        className="fixed top-0 inset-x-0 z-[200] flex items-center justify-center gap-3 px-4 py-2.5 bg-melocoton text-noche shadow-lg"
+        className="fixed top-0 inset-x-0 z-200 flex items-center justify-center gap-3 px-4 py-2.5 bg-melocoton text-noche shadow-lg"
       >
         <AlertTriangle className="w-4 h-4 shrink-0" />
         <span className="text-sm font-medium">
@@ -69,7 +69,7 @@ export function ConnectionBanner({ isConnected }: ConnectionBannerProps) {
     return (
       <div
         role="status"
-        className="fixed top-0 inset-x-0 z-[200] flex items-center justify-center gap-3 px-4 py-2.5 bg-salvia text-noche shadow-lg"
+        className="fixed top-0 inset-x-0 z-200 flex items-center justify-center gap-3 px-4 py-2.5 bg-salvia text-noche shadow-lg"
       >
         <CheckCircle2 className="w-4 h-4 shrink-0" />
         <span className="text-sm font-medium">

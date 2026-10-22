@@ -90,7 +90,7 @@ export default function Pagination({
               <select
                 value={itemsPerPage}
                 onChange={(e) => onItemsPerPageChange(Number(e.target.value))}
-                className="rounded border-gray-300 text-sm focus:border-blue-500 focus:ring-blue-500"
+                className="rounded-sm border-gray-300 text-sm focus:border-blue-500 focus:ring-blue-500"
               >
                 <option value={12}>12</option>
                 <option value={24}>24</option>
@@ -101,7 +101,7 @@ export default function Pagination({
           )}
         </div>
         
-        <nav className="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Paginación">
+        <nav className="isolate inline-flex -space-x-px rounded-md shadow-xs" aria-label="Paginación">
           {/* First page button */}
           <button
             onClick={() => onPageChange(1)}
@@ -134,7 +134,7 @@ export default function Pagination({
                   onClick={() => onPageChange(page as number)}
                   className={`relative inline-flex items-center px-4 py-2 text-sm font-semibold focus:z-20 focus:outline-offset-0 ${
                     currentPage === page
-                      ? 'z-10 bg-lavanda-archivo text-white focus:bg-lavanda-archivo focus:bg-opacity-90'
+                      ? 'z-10 bg-lavanda-archivo text-white focus:bg-lavanda-archivo/90'
                       : 'text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:bg-gray-50'
                   }`}
                 >

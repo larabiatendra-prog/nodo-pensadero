@@ -115,7 +115,7 @@ export default function FolderRenameModal({ isOpen, rootPath, onClose, onSaved }
   const renamedCount = rows.filter((r) => r.original.trim()).length;
 
   return (
-    <div className="fixed inset-0 bg-noche bg-opacity-70 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-noche/70 flex items-center justify-center p-4 z-50">
       <div className="bg-tinta text-marfil rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col border border-pizarra">
         {/* Cabecera */}
         <div className="flex items-center justify-between p-6 border-b border-pizarra">
@@ -144,7 +144,7 @@ export default function FolderRenameModal({ isOpen, rootPath, onClose, onSaved }
 
           {loadError && (
             <div className="p-4 bg-pizarra border border-lavanda-archivo rounded-2xl flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+              <AlertCircle className="w-5 h-5 text-bruma shrink-0 mt-0.5" />
               <div>
                 <p className="font-medium text-marfil">No se pudo cargar el inventario</p>
                 <p className="text-sm text-lavanda-archivo">{loadError}</p>
@@ -163,11 +163,11 @@ export default function FolderRenameModal({ isOpen, rootPath, onClose, onSaved }
               {rows.map((r, i) => (
                 <div key={r.dir} className="bg-grafito rounded-2xl p-3">
                   <div className="flex items-center gap-2 mb-2 text-sm">
-                    <Folder className="w-4 h-4 text-lavanda flex-shrink-0" />
+                    <Folder className="w-4 h-4 text-lavanda shrink-0" />
                     <span className="text-marfil break-all font-medium">
                       {r.relPath === '.' || r.relPath === '' ? '(raíz)' : r.relPath}
                     </span>
-                    <div className="flex items-center gap-2 text-xs text-lavanda-archivo ml-auto flex-shrink-0">
+                    <div className="flex items-center gap-2 text-xs text-lavanda-archivo ml-auto shrink-0">
                       {r.imageCount > 0 && (
                         <span className="flex items-center gap-1"><ImageIcon className="w-3 h-3" />{r.imageCount}</span>
                       )}
@@ -186,7 +186,7 @@ export default function FolderRenameModal({ isOpen, rootPath, onClose, onSaved }
                       }}
                       onBlur={() => saveRow(i)}
                       placeholder="250412_Viaje, Amsterdam"
-                      className="flex-1 px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                      className="flex-1 px-3 py-2 bg-tinta border border-pizarra rounded-full text-sm text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                     />
                     {r.original.trim() && (
                       <button
@@ -197,7 +197,7 @@ export default function FolderRenameModal({ isOpen, rootPath, onClose, onSaved }
                         <RotateCcw className="w-4 h-4" />
                       </button>
                     )}
-                    <div className="w-5 flex-shrink-0 flex items-center justify-center">
+                    <div className="w-5 shrink-0 flex items-center justify-center">
                       {r.saving && <Loader2 className="w-4 h-4 animate-spin text-lavanda-archivo" />}
                       {!r.saving && r.saved && <Check className="w-4 h-4 text-salvia" />}
                     </div>

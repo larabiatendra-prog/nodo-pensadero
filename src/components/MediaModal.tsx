@@ -657,7 +657,7 @@ export default function MediaModal({
               {/* Aviso discreto: lo que se reproduce es un proxy de menor
                   resolución que el original (el original se conserva intacto). */}
               {playable?.status === 'ready' && playable.downscaled && (
-                <div className="absolute bottom-2 left-2 z-10 px-2 py-0.5 bg-noche/80 text-humo text-[10px] rounded backdrop-blur-sm pointer-events-none">
+                <div className="absolute bottom-2 left-2 z-10 px-2 py-0.5 bg-noche/80 text-humo text-[10px] rounded-sm backdrop-blur-xs pointer-events-none">
                   Vista previa {playable.outH}p · original {playable.srcW}×{playable.srcH}
                 </div>
               )}
@@ -680,7 +680,7 @@ export default function MediaModal({
             {boxes.length > 0 && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowFaceBoxes(v => !v); }}
-                className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors"
+                className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-xs rounded-full text-marfil transition-colors"
                 title={showFaceBoxes ? `Caras detectadas en el ${formatDuration(detTime ?? 0) || '0:00'} — salta ahi para verlas` : 'Mostrar caras detectadas'}
               >
                 {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
@@ -689,7 +689,7 @@ export default function MediaModal({
             {hasDescription && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowDescription(v => !v); }}
-                className={`absolute top-2 ${boxes.length > 0 ? 'right-14' : 'right-2'} z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors`}
+                className={`absolute top-2 ${boxes.length > 0 ? 'right-14' : 'right-2'} z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-xs rounded-full text-marfil transition-colors`}
                 title={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
                 aria-label={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
               >
@@ -706,7 +706,7 @@ export default function MediaModal({
                     videoRef.current.currentTime = jumpTarget;
                   }
                 }}
-                className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-lavanda/90 hover:bg-lavanda text-white text-xs rounded-full backdrop-blur-sm transition-colors"
+                className="absolute bottom-12 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-lavanda/90 hover:bg-lavanda text-white text-xs rounded-full backdrop-blur-xs transition-colors"
                 title={`Saltar al momento con caras (${formatDuration(jumpTarget) || "0:00"})`}
               >
                 Caras en el {formatDuration(jumpTarget) || '0:00'} — ir
@@ -717,7 +717,7 @@ export default function MediaModal({
       }
       case 'audio':
         return (
-          <div className="bg-gradient-to-br from-green-400 to-green-600 rounded-lg p-8 flex flex-col items-center justify-center text-white">
+          <div className="bg-linear-to-br from-green-400 to-green-600 rounded-lg p-8 flex flex-col items-center justify-center text-white">
             <Volume2 className="w-20 h-20 mb-4 opacity-80" />
             <h3 className="text-xl font-semibold mb-4" title={file.name}>{file.displayName || file.name}</h3>
             <audio
@@ -778,8 +778,8 @@ export default function MediaModal({
               {/* Hint hover de fullscreen — se oculta cuando hay bboxes visibles
                   o overlay de descripcion abierto para no tapar el contenido. */}
               {!(showFaceBoxes && boxes.length > 0) && !showDescription && (
-                <div className="absolute inset-0 bg-noche bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
-                  <span className="text-white text-sm font-medium px-4 py-2 bg-noche bg-opacity-50 rounded-lg">
+                <div className="absolute inset-0 bg-noche/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
+                  <span className="text-white text-sm font-medium px-4 py-2 bg-noche/50 rounded-lg">
                     Pincha para pantalla completa
                   </span>
                 </div>
@@ -789,7 +789,7 @@ export default function MediaModal({
             {boxes.length > 0 && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowFaceBoxes(v => !v); }}
-                className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors"
+                className="absolute top-2 right-2 z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-xs rounded-full text-marfil transition-colors"
                 title={showFaceBoxes ? 'Ocultar caras' : 'Mostrar caras detectadas'}
               >
                 {showFaceBoxes ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
@@ -798,7 +798,7 @@ export default function MediaModal({
             {hasDescription && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowDescription(v => !v); }}
-                className={`absolute top-2 ${boxes.length > 0 ? 'right-14' : 'right-2'} z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-sm rounded-full text-marfil transition-colors`}
+                className={`absolute top-2 ${boxes.length > 0 ? 'right-14' : 'right-2'} z-10 p-2 bg-noche/70 hover:bg-noche/90 backdrop-blur-xs rounded-full text-marfil transition-colors`}
                 title={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
                 aria-label={showDescription ? 'Ocultar descripcion' : 'Ver descripcion'}
               >
@@ -814,7 +814,7 @@ export default function MediaModal({
   return (
     <>
       <div
-        className="fixed inset-0 bg-noche bg-opacity-50 flex items-center justify-center p-4 z-50"
+        className="fixed inset-0 bg-noche/50 flex items-center justify-center p-4 z-50"
         onMouseDown={(e) => { pulsadoEnFondo.current = e.target === e.currentTarget; }}
         onClick={(e) => {
           if (pulsadoEnFondo.current && e.target === e.currentTarget) onClose();
@@ -829,7 +829,7 @@ export default function MediaModal({
             {/* Left Arrow */}
             <button
               onClick={goToPreviousFile}
-              className="absolute left-1 md:left-2 top-1/2 -translate-y-1/2 z-10 p-2 md:p-3 bg-noche bg-opacity-50 hover:bg-opacity-70 text-white rounded-full transition-all hover:scale-110"
+              className="absolute left-1 md:left-2 top-1/2 -translate-y-1/2 z-10 p-2 md:p-3 bg-noche/50 hover:bg-noche/70 text-white rounded-full transition-all hover:scale-110"
               title="Anterior (←)"
             >
               <ChevronLeft className="w-5 h-5 md:w-6 md:h-6" />
@@ -838,7 +838,7 @@ export default function MediaModal({
             {/* Right Arrow */}
             <button
               onClick={goToNextFile}
-              className="absolute right-1 md:right-2 top-1/2 -translate-y-1/2 z-10 p-2 md:p-3 bg-noche bg-opacity-50 hover:bg-opacity-70 text-white rounded-full transition-all hover:scale-110"
+              className="absolute right-1 md:right-2 top-1/2 -translate-y-1/2 z-10 p-2 md:p-3 bg-noche/50 hover:bg-noche/70 text-white rounded-full transition-all hover:scale-110"
               title="Siguiente (→)"
             >
               <ChevronRight className="w-5 h-5 md:w-6 md:h-6" />
@@ -861,7 +861,7 @@ export default function MediaModal({
                 oscurecido al pasar el raton por encima */}
             <div className="md:col-span-3 relative group/media">
               {renderMediaPreview()}
-              <div className="absolute top-0 inset-x-0 z-20 p-3 rounded-t-lg bg-gradient-to-b from-noche/85 via-noche/40 to-transparent opacity-0 group-hover/media:opacity-100 transition-opacity duration-200 pointer-events-none">
+              <div className="absolute top-0 inset-x-0 z-20 p-3 rounded-t-lg bg-linear-to-b from-noche/85 via-noche/40 to-transparent opacity-0 group-hover/media:opacity-100 transition-opacity duration-200 pointer-events-none">
                 <span className="block text-sm font-medium text-marfil truncate" title={file.displayName ? `Archivo: ${file.name}` : file.name}>
                   {file.displayName || file.name}
                 </span>
@@ -876,7 +876,7 @@ export default function MediaModal({
                   onClick={() => onToggleFavorite(file.id)}
                   title={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
                   aria-label={file.isFavorite ? 'Quitar favorito' : 'Añadir a favoritos'}
-                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-lavanda-claro/80 transition-colors"
                 >
                   <Heart className={`w-4 h-4 ${file.isFavorite ? 'fill-current' : ''}`} />
                 </button>
@@ -889,7 +889,7 @@ export default function MediaModal({
                   aria-pressed={enCesta}
                   className={`h-10 px-3.5 rounded-full flex items-center gap-1.5 text-sm transition-colors ${enCesta
                     ? 'bg-lavanda text-noche'
-                    : 'bg-lavanda-claro text-noche hover:bg-opacity-80'}`}
+                    : 'bg-lavanda-claro text-noche hover:bg-lavanda-claro/80'}`}
                 >
                   {enCesta ? <Check className="w-4 h-4" /> : <Clapperboard className="w-4 h-4" />}
                   {enCesta ? 'En la cesta' : 'Premiere'}
@@ -898,7 +898,7 @@ export default function MediaModal({
                   onClick={() => onDownload(file)}
                   title="Descargar"
                   aria-label="Descargar"
-                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
+                  className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-lavanda-claro/80 transition-colors"
                 >
                   <Download className="w-4 h-4" />
                 </button>
@@ -907,7 +907,7 @@ export default function MediaModal({
                     onClick={() => onOpenPath(file.id)}
                     title="Ir a ruta (abrir carpeta contenedora)"
                     aria-label="Ir a ruta"
-                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
+                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-lavanda-claro/80 transition-colors"
                   >
                     <FolderOpen className="w-4 h-4" />
                   </button>
@@ -917,7 +917,7 @@ export default function MediaModal({
                     onClick={() => onOcultar(file)}
                     title="Ocultar bajo candado: deja de salir en la aplicación; lo encuentras en Material oculto"
                     aria-label="Ocultar bajo candado"
-                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-opacity-80 transition-colors"
+                    className="w-10 h-10 rounded-full flex items-center justify-center bg-lavanda-claro text-noche hover:bg-lavanda-claro/80 transition-colors"
                   >
                     <Lock className="w-4 h-4" />
                   </button>
@@ -936,11 +936,11 @@ export default function MediaModal({
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200 ${
                     encadenarClips
                       ? 'bg-lavanda-claro text-noche shadow-md'
-                      : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro hover:bg-opacity-30'
+                      : 'bg-pizarra text-lavanda-archivo hover:bg-lavanda-claro/30'
                   }`}
                 >
                   <div
-                    className={`relative w-8 h-4 rounded-full transition-colors duration-200 flex-shrink-0 ${
+                    className={`relative w-8 h-4 rounded-full transition-colors duration-200 shrink-0 ${
                       encadenarClips ? 'bg-lavanda' : 'bg-slate-300'
                     }`}
                   >
@@ -989,7 +989,7 @@ export default function MediaModal({
                           // Al abrirla a mano y vacia, se escribe directamente.
                           autoFocus={!noteDraft.trim()}
                           placeholder="Escribe una nota sobre este archivo..."
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-lavanda resize-none"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-lavanda resize-none"
                         />
                         <div className="h-4 mt-0.5 text-xs">
                           {noteSaving && <span className="text-slate-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Guardando...</span>}
@@ -1054,7 +1054,7 @@ export default function MediaModal({
                     title={relatedFile.name}
                     className="group text-left bg-tinta hover:bg-slate-50 border border-slate-200 hover:border-slate-300 rounded-lg p-1.5 transition-all duration-200 hover:shadow-md overflow-hidden"
                   >
-                    <div className="aspect-[4/3] rounded overflow-hidden relative" style={{ backgroundColor: relatedFile.type === 'audio' ? '#f2efe4' : '#f1f5f9' }}>
+                    <div className="aspect-4/3 rounded-sm overflow-hidden relative" style={{ backgroundColor: relatedFile.type === 'audio' ? '#f2efe4' : '#f1f5f9' }}>
                       {relatedFile.type === 'audio' ? (
                         <div className="w-full h-full flex items-center justify-center">
                           <span className="text-3xl text-lavanda">&#9835;</span>
@@ -1109,7 +1109,7 @@ export default function MediaModal({
     {/* Fullscreen Overlay */}
     {isFullscreen && file.type === 'image' && (
       <div
-        className="fixed inset-0 z-[9999] bg-noche bg-opacity-95 flex items-center justify-center cursor-pointer animate-fade-in"
+        className="fixed inset-0 z-9999 bg-noche/95 flex items-center justify-center cursor-pointer animate-fade-in"
         onClick={() => setIsFullscreen(false)}
       >
         <img
@@ -1127,7 +1127,7 @@ export default function MediaModal({
                 e.stopPropagation();
                 goToPreviousFile();
               }}
-              className="absolute left-4 top-1/2 -translate-y-1/2 p-4 bg-noche bg-opacity-50 hover:bg-opacity-70 text-white rounded-full transition-all hover:scale-110"
+              className="absolute left-4 top-1/2 -translate-y-1/2 p-4 bg-noche/50 hover:bg-noche/70 text-white rounded-full transition-all hover:scale-110"
               title="Anterior (←)"
             >
               <ChevronLeft className="w-8 h-8" />
@@ -1138,7 +1138,7 @@ export default function MediaModal({
                 e.stopPropagation();
                 goToNextFile();
               }}
-              className="absolute right-4 top-1/2 -translate-y-1/2 p-4 bg-noche bg-opacity-50 hover:bg-opacity-70 text-white rounded-full transition-all hover:scale-110"
+              className="absolute right-4 top-1/2 -translate-y-1/2 p-4 bg-noche/50 hover:bg-noche/70 text-white rounded-full transition-all hover:scale-110"
               title="Siguiente (→)"
             >
               <ChevronRight className="w-8 h-8" />
@@ -1147,7 +1147,7 @@ export default function MediaModal({
         )}
 
         {/* Close hint */}
-        <div className="absolute top-4 right-4 text-white text-sm bg-noche bg-opacity-50 px-3 py-2 rounded-lg">
+        <div className="absolute top-4 right-4 text-white text-sm bg-noche/50 px-3 py-2 rounded-lg">
           ESC para salir
         </div>
       </div>
@@ -1155,7 +1155,7 @@ export default function MediaModal({
 
     {/* Modal: asignar cara desconocida a persona existente */}
     {assignFaceIdx !== null && (
-      <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-70 flex items-center justify-center p-4">
         <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-sm">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-marfil flex items-center gap-2">
@@ -1179,7 +1179,7 @@ export default function MediaModal({
               value={assignQuery}
               onChange={e => setAssignQuery(e.target.value)}
               placeholder="Buscar persona..."
-              className="w-full pl-9 pr-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda text-sm"
+              className="w-full pl-9 pr-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda text-sm"
               autoFocus
             />
           </div>
@@ -1193,7 +1193,7 @@ export default function MediaModal({
                   disabled={assignSubmitting}
                   className="w-full flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-pizarra text-left transition-colors disabled:opacity-50"
                 >
-                  <div className="w-8 h-8 rounded-full bg-lavanda/20 flex items-center justify-center text-lavanda font-semibold text-sm flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-lavanda/20 flex items-center justify-center text-lavanda font-semibold text-sm shrink-0">
                     {p.display_name.slice(0, 2).toUpperCase()}
                   </div>
                   <span className="text-marfil text-sm">{p.display_name}</span>
@@ -1220,7 +1220,7 @@ export default function MediaModal({
             disabled={assignSubmitting}
             className="mt-2 w-full flex items-center gap-3 px-3 py-2 rounded-xl border border-dashed border-lavanda-archivo/50 hover:bg-pizarra text-left transition-colors disabled:opacity-50"
           >
-            <div className="w-8 h-8 rounded-full bg-lavanda/10 flex items-center justify-center text-lavanda flex-shrink-0">
+            <div className="w-8 h-8 rounded-full bg-lavanda/10 flex items-center justify-center text-lavanda shrink-0">
               <UserPlus className="w-4 h-4" />
             </div>
             <span className="text-marfil text-sm">
@@ -1244,7 +1244,7 @@ export default function MediaModal({
 
     {/* Toast: asignacion correcta */}
     {assignSuccess && (
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-lavanda/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-60 bg-tinta border border-lavanda/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
         <UserPlus className="w-4 h-4 text-lavanda" />
         <span className="text-sm text-marfil">
           Cara asignada a <strong className="text-lavanda">{assignSuccess}</strong>. Re-identificando en segundo plano…
@@ -1254,7 +1254,7 @@ export default function MediaModal({
 
     {/* Toast: cargando busqueda de caras similares */}
     {seedingLoading && (
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-melocoton/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-60 bg-tinta border border-melocoton/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
         <Search className="w-4 h-4 text-melocoton animate-pulse" />
         <span className="text-sm text-marfil">Buscando caras similares en tu archivo...</span>
       </div>
@@ -1262,7 +1262,7 @@ export default function MediaModal({
 
     {/* Toast de error en seed */}
     {seedingError && !seedingCluster && !seedingLoading && (
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-tinta border border-red-400/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-60 bg-tinta border border-red-400/40 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
         <span className="text-sm text-red-300">{seedingError}</span>
         <button onClick={() => setSeedingError(null)} className="text-red-300 hover:text-red-200">
           <X className="w-4 h-4" />
@@ -1272,7 +1272,7 @@ export default function MediaModal({
 
     {/* Modal: crear persona desde caras similares */}
     {seedingCluster && (
-      <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4 overflow-y-auto">
+      <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-70 flex items-center justify-center p-4 overflow-y-auto">
         <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-3xl my-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-marfil flex items-center gap-2">
@@ -1346,7 +1346,7 @@ export default function MediaModal({
                 value={seedingDisplayName}
                 onChange={e => setSeedingDisplayName(e.target.value)}
                 placeholder="Ester Garcia, Jose Carlos..."
-                className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                 autoFocus
               />
               {seedingDisplayName.trim() && (
@@ -1479,7 +1479,7 @@ function FaceBoxesOverlay({
               }`}
             />
             <div
-              className={`absolute whitespace-nowrap text-xs px-1.5 py-0.5 rounded-md backdrop-blur-sm transition-opacity ${
+              className={`absolute whitespace-nowrap text-xs px-1.5 py-0.5 rounded-md backdrop-blur-xs transition-opacity ${
                 isKnown
                   ? 'bg-lavanda/90 text-white group-hover/face:bg-lavanda'
                   : assignable
@@ -1514,7 +1514,7 @@ function TagsList({ tags, onTagClick }: { tags: string[]; onTagClick: (t: string
         <button
           key={tag}
           onClick={() => onTagClick(tag)}
-          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-lavanda-claro text-noche font-medium hover:bg-opacity-80 border border-transparent transition-all duration-200 cursor-pointer group"
+          className="inline-flex items-center px-3 py-1 rounded-full text-xs bg-lavanda-claro text-noche font-medium hover:bg-lavanda-claro/80 border border-transparent transition-all duration-200 cursor-pointer group"
           title={`Filtrar por etiqueta: ${tag}`}
         >
           <span className="group-hover:scale-105 transition-transform duration-200">{tag}</span>
@@ -1602,7 +1602,7 @@ function DescriptionOverlay({ file, onClose }: { file: MediaFile; onClose: () =>
 
   return (
     <div
-      className="absolute inset-0 z-20 bg-noche/85 backdrop-blur-sm overflow-auto cursor-default"
+      className="absolute inset-0 z-20 bg-noche/85 backdrop-blur-xs overflow-auto cursor-default"
       onClick={(e) => { e.stopPropagation(); onClose(); }}
     >
       <div
@@ -1756,7 +1756,7 @@ function FilePersonsBubbles({
                 isThisHovered ? 'bg-lavanda text-white ring-2 ring-lavanda-claro' : 'bg-pizarra hover:bg-lavanda hover:text-white'
               } ${otherHovered ? 'opacity-30' : 'opacity-100'}`}
             >
-              <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0">
+              <div className="w-7 h-7 rounded-full overflow-hidden shrink-0">
                 {showFallback ? (
                   <div
                     className="w-full h-full flex items-center justify-center text-noche font-semibold text-[10px]"

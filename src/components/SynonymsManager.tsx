@@ -212,7 +212,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
             Agrupa palabras parecidas (saltar/salto/brincar) para que la busqueda las encuentre como si fueran la misma. Stage 1 expande las queries automaticamente usando estos grupos.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={handlePropose}
             disabled={proposing}
@@ -239,7 +239,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
       {error && (
         <div className="mb-4 p-3 bg-pizarra border border-red-400/30 rounded-2xl text-sm text-red-300 flex items-start justify-between gap-3">
           <span className="flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
             {error}
           </span>
           <button onClick={() => setError(null)} className="text-red-300 hover:text-red-200"><X className="w-4 h-4" /></button>
@@ -297,14 +297,14 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
                               type="text"
                               value={cur.canonical}
                               onChange={e => updateProposalCanonical(idx, e.target.value)}
-                              className="w-full mb-2 px-3 py-1.5 bg-pizarra border border-grafito rounded-xl text-marfil text-sm focus:outline-none focus:ring-1 focus:ring-lavanda"
+                              className="w-full mb-2 px-3 py-1.5 bg-pizarra border border-grafito rounded-xl text-marfil text-sm focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                             />
                             <label className="block text-xs text-lavanda-archivo mb-1">Sinonimos (coma)</label>
                             <input
                               type="text"
                               value={cur.aliases.join(', ')}
                               onChange={e => updateProposalAliases(idx, e.target.value)}
-                              className="w-full px-3 py-1.5 bg-pizarra border border-grafito rounded-xl text-marfil text-sm focus:outline-none focus:ring-1 focus:ring-lavanda"
+                              className="w-full px-3 py-1.5 bg-pizarra border border-grafito rounded-xl text-marfil text-sm focus:outline-hidden focus:ring-1 focus:ring-lavanda"
                             />
                           </>
                         ) : (
@@ -320,7 +320,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
                           </>
                         )}
                       </div>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           onClick={() => handleAcceptProposal(idx)}
                           className="p-2 bg-lavanda/20 text-lavanda hover:bg-lavanda hover:text-white rounded-lg transition-colors"
@@ -354,7 +354,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
 
       {/* Modal de creacion/edicion manual */}
       {creating && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">
@@ -372,7 +372,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
                   value={formCanonical}
                   onChange={e => setFormCanonical(e.target.value)}
                   placeholder="saltar"
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                   autoFocus
                 />
                 <p className="text-xs text-lavanda-archivo mt-1">La forma "principal" del grupo. Cuando buscas, expande a todos los sinonimos.</p>
@@ -384,7 +384,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
                   value={formAliases}
                   onChange={e => setFormAliases(e.target.value)}
                   placeholder="salto, saltito, brincar, brinco"
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                 />
                 <p className="text-xs text-lavanda-archivo mt-1">Separados por comas. Sin tildes especificas — la busqueda es insensible.</p>
               </div>
@@ -443,7 +443,7 @@ export default function SynonymsManager({ onBack }: SynonymsManagerProps) {
                       ))}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       onClick={() => startEditGroup(idx)}
                       className="p-2 bg-pizarra text-lavanda hover:bg-lavanda hover:text-white rounded-lg transition-colors"

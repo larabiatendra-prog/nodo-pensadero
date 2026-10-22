@@ -20,7 +20,7 @@ interface Props {
 }
 
 const Tecla = ({ children }: { children: ReactNode }) => (
-  <kbd className="px-1.5 py-px rounded border border-pizarra bg-grafito text-marfil font-sans text-[10px]">{children}</kbd>
+  <kbd className="px-1.5 py-px rounded-sm border border-pizarra bg-grafito text-marfil font-sans text-[10px]">{children}</kbd>
 );
 
 /** Lo que el usuario ve escrito en Windows: se pinta igual para reconocerlo. */

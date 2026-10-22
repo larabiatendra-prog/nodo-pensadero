@@ -166,7 +166,7 @@ export default function PapeleraView({ onBack }: Props) {
                         onChange={(e) => setEscrito(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter' && escrito.trim().toLowerCase() === 'vaciar') vaciar(l); }}
                         placeholder="vaciar"
-                        className="w-44 h-9 px-3 rounded-lg bg-noche border border-borde-sutil text-[13px] text-marfil focus:outline-none focus:border-estado-error/60"
+                        className="w-44 h-9 px-3 rounded-lg bg-noche border border-borde-sutil text-[13px] text-marfil focus:outline-hidden focus:border-estado-error/60"
                       />
                       <button
                         onClick={() => vaciar(l)}

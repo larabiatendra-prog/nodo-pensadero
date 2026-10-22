@@ -59,7 +59,7 @@ export default function AvisoCopias({ recarga, onRevisar }: Props) {
   return (
     <div
       role="status"
-      className="rounded-2xl bg-tinta/95 backdrop-blur-sm border border-borde-sutil shadow-2xl p-4"
+      className="rounded-2xl bg-tinta/95 backdrop-blur-xs border border-borde-sutil shadow-2xl p-4"
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 w-8 h-8 rounded-full bg-pizarra text-lavanda flex items-center justify-center shrink-0">

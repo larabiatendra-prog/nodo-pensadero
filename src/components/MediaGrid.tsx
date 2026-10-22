@@ -233,7 +233,7 @@ export default function MediaGrid({
 
   if (viewMode === 'list') {
     return (
-      <div className="bg-tinta rounded-lg shadow-sm overflow-hidden">
+      <div className="bg-tinta rounded-lg shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-slate-50 border-b">
@@ -284,7 +284,7 @@ export default function MediaGrid({
                   )}
                   <td className="py-4 px-3 md:px-4">
                     <div className="flex items-center space-x-3">
-                      <div className={`relative w-12 h-12 rounded-lg overflow-hidden bg-slate-900 flex-shrink-0 ${isStoriesFormat(file) ? 'flex items-center justify-center' : ''
+                      <div className={`relative w-12 h-12 rounded-lg overflow-hidden bg-slate-900 shrink-0 ${isStoriesFormat(file) ? 'flex items-center justify-center' : ''
                         }`}>
                         <img
                           src={file.thumbnail}
@@ -297,7 +297,7 @@ export default function MediaGrid({
                             e.currentTarget.src = `data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><rect width="48" height="48" fill="%236366f1"/><text x="24" y="24" font-family="Arial" font-size="16" fill="white" text-anchor="middle">📹</text></svg>`;
                           }}
                         />
-                        <div className="absolute inset-0 flex items-center justify-center text-white bg-noche bg-opacity-40">
+                        <div className="absolute inset-0 flex items-center justify-center text-white bg-noche/40">
                           {getTypeIcon(file.type)}
                         </div>
                       </div>
@@ -344,7 +344,7 @@ export default function MediaGrid({
                       <button
                         onClick={() => onToggleFavorite(file.id)}
                         className={`p-2 rounded-lg transition-colors ${file.isFavorite
-                            ? 'text-lavanda hover:bg-lavanda hover:bg-opacity-10'
+                            ? 'text-lavanda hover:bg-lavanda/10'
                             : 'text-slate-400 hover:bg-slate-100'
                           }`}
                         title="Favorito"
@@ -354,7 +354,7 @@ export default function MediaGrid({
                       {onAddToCollection && (
                         <button
                           onClick={() => onAddToCollection(normalizePath(file.fullPath!))}
-                          className="p-2 rounded-lg text-slate-400 hover:bg-lavanda hover:bg-opacity-10 hover:text-lavanda transition-colors"
+                          className="p-2 rounded-lg text-slate-400 hover:bg-lavanda/10 hover:text-lavanda transition-colors"
                           title="Añadir a colección"
                         >
                           <Plus className="w-4 h-4" />
@@ -366,7 +366,7 @@ export default function MediaGrid({
                             e.stopPropagation();
                             onRemoveFromCollection(normalizePath(file.fullPath!));
                           }}
-                          className="p-2 rounded-lg text-slate-400 hover:bg-red-500 hover:bg-opacity-10 hover:text-red-500 transition-colors"
+                          className="p-2 rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors"
                           title="Eliminar de colección"
                         >
                           <X className="w-4 h-4" />
@@ -377,7 +377,7 @@ export default function MediaGrid({
                         disabled={downloadingFiles.has(file.id)}
                         className={`p-2 rounded-lg transition-colors ${downloadingFiles.has(file.id)
                             ? 'text-bruma cursor-not-allowed'
-                            : 'text-slate-400 hover:bg-bruma hover:bg-opacity-10 hover:text-bruma'
+                            : 'text-slate-400 hover:bg-bruma/10 hover:text-bruma'
                           }`}
                         title="Descargar"
                       >

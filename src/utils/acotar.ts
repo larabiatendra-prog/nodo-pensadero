@@ -17,7 +17,7 @@
 //    lleva la etiqueta lleva tambien a la persona, es ella con otro nombre"
 //    quitaba justo lo mas revelador. Filtrando por el novio de una boda,
 //    "corbata" le acompañaba en el 76 %, "novios" en el 61 %, "ramo" en el
-//    52 %; con otras personas, "espada" en el 100 % o "ring de boxeo" en el
+//    52 %; con otras personas, "espada" en el 100 % o "ring-3 de boxeo" en el
 //    82 %. Y la etiqueta que SI era ella (su nombre, de la carpeta de su
 //    cumpleaños) solo le acompañaba en el 47 %: la cara no sale en todas las
 //    tomas. Asi que es alias lo que se llama como ella.

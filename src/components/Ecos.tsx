@@ -81,7 +81,7 @@ export default function Ecos({ ecos, activoId, onAbrir, onCerrar, onDescartar, o
         {onBarajar && (
           <button
             onClick={onBarajar}
-            className="group/barajar text-xs text-humo hover:text-niebla transition-colors flex items-center gap-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda rounded px-1.5 py-0.5"
+            className="group/barajar text-xs text-humo hover:text-niebla transition-colors flex items-center gap-1.5 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda rounded-sm px-1.5 py-0.5"
             title="Otra selección de recuerdos"
           >
             <Shuffle className="w-3 h-3 transition-transform duration-500 group-hover/barajar:rotate-180" aria-hidden="true" />
@@ -90,7 +90,7 @@ export default function Ecos({ ecos, activoId, onAbrir, onCerrar, onDescartar, o
         )}
         <button
           onClick={onDescartar}
-          className="text-xs text-humo hover:text-niebla transition-colors flex items-center gap-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda rounded px-1.5 py-0.5"
+          className="text-xs text-humo hover:text-niebla transition-colors flex items-center gap-1 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda rounded-sm px-1.5 py-0.5"
           title="Ocultar hasta mañana"
         >
           <X className="w-3 h-3" aria-hidden="true" />
@@ -102,7 +102,7 @@ export default function Ecos({ ecos, activoId, onAbrir, onCerrar, onDescartar, o
         <div
           ref={filaRef}
           onScroll={medir}
-          className="flex gap-3 overflow-x-auto snap-x snap-mandatory scroll-smooth pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="flex gap-3 overflow-x-auto snap-x snap-mandatory scroll-smooth pb-1 scrollbar-none [&::-webkit-scrollbar]:hidden"
         >
           {ecos.map((eco, i) => (
             <Tarjeta
@@ -119,11 +119,11 @@ export default function Ecos({ ecos, activoId, onAbrir, onCerrar, onDescartar, o
         {/* Bordes que se desvanecen y flechas: dicen "hay mas" sin rotulo. */}
         {bordes.izq && (
           <>
-            <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-noche to-transparent" />
+            <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-linear-to-r from-noche to-transparent" />
             <button
               onClick={() => desplazar(-1)}
               aria-label="Recuerdos anteriores"
-              className="hidden md:flex absolute left-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-noche/80 backdrop-blur text-marfil items-center justify-center opacity-0 group-hover/fila:opacity-100 hover:bg-grafito transition-opacity"
+              className="hidden md:flex absolute left-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-noche/80 backdrop-blur-sm text-marfil items-center justify-center opacity-0 group-hover/fila:opacity-100 hover:bg-grafito transition-opacity"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -131,11 +131,11 @@ export default function Ecos({ ecos, activoId, onAbrir, onCerrar, onDescartar, o
         )}
         {bordes.der && (
           <>
-            <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-noche to-transparent" />
+            <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-linear-to-l from-noche to-transparent" />
             <button
               onClick={() => desplazar(1)}
               aria-label="Más recuerdos"
-              className="hidden md:flex absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-noche/80 backdrop-blur text-marfil items-center justify-center opacity-0 group-hover/fila:opacity-100 hover:bg-grafito transition-opacity"
+              className="hidden md:flex absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-noche/80 backdrop-blur-sm text-marfil items-center justify-center opacity-0 group-hover/fila:opacity-100 hover:bg-grafito transition-opacity"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -175,14 +175,14 @@ function Tarjeta({ eco, destacada, orden, activo, onPulsar }: {
       onClick={onPulsar}
       aria-pressed={activo}
       style={{ animation: `eco-entra .55s cubic-bezier(.2,.7,.2,1) ${orden * 70}ms both` }}
-      className={`eco-tarjeta group snap-start shrink-0 relative h-36 md:h-40 overflow-hidden rounded-2xl text-left bg-grafito shadow-sm hover:shadow-xl transition-shadow duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda ${
-        destacada ? 'w-[85vw] sm:w-[26rem]' : 'w-[70vw] sm:w-[17rem]'
+      className={`eco-tarjeta group snap-start shrink-0 relative h-36 md:h-40 overflow-hidden rounded-2xl text-left bg-grafito shadow-xs hover:shadow-xl transition-shadow duration-300 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda ${
+        destacada ? 'w-[85vw] sm:w-104' : 'w-[70vw] sm:w-68'
       } ${activo ? 'ring-2 ring-lavanda' : ''}`}
     >
       {/* Tira de pelicula con el propio material */}
       <div className="absolute inset-0 overflow-hidden">
         <div
-          className="eco-tira h-full flex transition-transform ease-linear group-hover:[transform:translateX(var(--eco-desplaza))] group-focus-visible:[transform:translateX(var(--eco-desplaza))]"
+          className="eco-tira h-full flex transition-transform ease-linear group-hover:transform-[translateX(var(--eco-desplaza))] group-focus-visible:transform-[translateX(var(--eco-desplaza))]"
           style={{
             width: anchoTira,
             transitionDuration: `${Math.max(3, sobran * 1.6)}s`,
@@ -204,11 +204,11 @@ function Tarjeta({ eco, destacada, orden, activo, onPulsar }: {
       </div>
 
       {/* Velo: la imagen se ve, el texto se apoya en el degradado */}
-      <div className={`absolute inset-0 bg-gradient-to-t ${esNota ? 'from-noche via-noche/80 to-noche/40' : 'from-noche via-noche/55 to-transparent'}`} />
+      <div className={`absolute inset-0 bg-linear-to-t ${esNota ? 'from-noche via-noche/80 to-noche/40' : 'from-noche via-noche/55 to-transparent'}`} />
 
       {/* Gesto propio de cada tipo */}
       {eco.tipo === 'aniversario' && eco.extra?.anio && (
-        <span aria-hidden="true" className="absolute -right-1 -bottom-5 text-[5.5rem] leading-none font-extralight tracking-tighter text-white/[0.13] select-none">
+        <span aria-hidden="true" className="absolute -right-1 -bottom-5 text-[5.5rem] leading-none font-extralight tracking-tighter text-white/13 select-none">
           {eco.extra.anio}
         </span>
       )}
@@ -230,7 +230,7 @@ function Tarjeta({ eco, destacada, orden, activo, onPulsar }: {
             ))}
           </span>
         ) : (
-          <span className={`p-1.5 rounded-full backdrop-blur-sm transition-colors ${activo ? 'bg-lavanda text-noche' : 'bg-noche/60 text-lavanda'}`}>
+          <span className={`p-1.5 rounded-full backdrop-blur-xs transition-colors ${activo ? 'bg-lavanda text-noche' : 'bg-noche/60 text-lavanda'}`}>
             <Icono className="w-3.5 h-3.5" aria-hidden="true" />
           </span>
         )}
@@ -241,7 +241,7 @@ function Tarjeta({ eco, destacada, orden, activo, onPulsar }: {
         {eco.tipo === 'color' && (eco.extra?.colores || []).map(hex => (
           <span key={hex} aria-hidden="true" className="w-3.5 h-3.5 rounded-full ring-1 ring-white/30" style={{ background: hex }} />
         ))}
-        <span className="flex items-center gap-1 bg-noche/70 text-white text-xs font-semibold px-2 py-1 rounded-full backdrop-blur-sm">
+        <span className="flex items-center gap-1 bg-noche/70 text-white text-xs font-semibold px-2 py-1 rounded-full backdrop-blur-xs">
           <Layers className="w-3 h-3" aria-hidden="true" />
           {eco.total}
         </span>

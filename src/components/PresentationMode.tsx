@@ -295,7 +295,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
   return (
     <div
       ref={containerRef}
-      className="fixed inset-0 bg-noche z-[9999] flex items-center justify-center"
+      className="fixed inset-0 bg-noche z-9999 flex items-center justify-center"
       onMouseMove={handleMouseMove}
       style={{ cursor: showControls ? 'default' : 'none' }}
     >
@@ -345,7 +345,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         }`}
       >
         {/* Header con informacion del video */}
-        <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/70 to-transparent p-6">
+        <div className="absolute top-0 left-0 right-0 bg-linear-to-b from-black/70 to-transparent p-6">
           <div className="flex items-center justify-between">
             <div className="text-white">
               <h1 className="text-xl font-semibold mb-2" title={currentVideo.name}>{currentVideo.displayName || currentVideo.name}</h1>
@@ -416,7 +416,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
         </div>
 
         {/* Controles inferiores */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-6 pb-5 pt-10">
+        <div className="absolute bottom-0 left-0 right-0 bg-linear-to-t from-black/80 to-transparent px-6 pb-5 pt-10">
           {/* La barra del CLIP (antes solo estaba la de la lista, y por eso no
               habia forma de ver cuanto quedaba ni de moverse dentro). */}
           <div className="flex items-center gap-3">
@@ -442,7 +442,7 @@ export default function PresentationMode({ videos, isOpen, onClose }: Presentati
                 />
               </div>
               <span
-                className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-lavanda shadow transition-opacity ${arrastrando ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-lavanda shadow-sm transition-opacity ${arrastrando ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
                 style={{ left: `${duracion > 0 ? (tiempo / duracion) * 100 : 0}%` }}
               />
             </div>

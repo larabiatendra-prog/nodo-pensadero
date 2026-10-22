@@ -676,7 +676,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
                 onFocus={() => searchQuery.length > 0 && setShowSuggestions(true)}
                 onKeyDown={handleSearchKeyDown}
                 placeholder="Buscar etiquetas para gestionar..."
-                className="w-full pl-10 pr-4 py-2 border border-pizarra rounded-full focus:outline-none focus:ring-2 focus:ring-lavanda"
+                className="w-full pl-10 pr-4 py-2 border border-pizarra rounded-full focus:outline-hidden focus:ring-2 focus:ring-lavanda"
               />
 
               {/* Suggestions dropdown */}
@@ -693,7 +693,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
                         onMouseEnter={() => setHighlightedIndex(index)}
                         className={`w-full flex items-center justify-between px-3 py-2 rounded-xl transition-colors text-left ${
                           index === highlightedIndex
-                            ? 'bg-lavanda-claro bg-opacity-30'
+                            ? 'bg-lavanda-claro/30'
                             : 'hover:bg-grafito'
                         }`}
                       >
@@ -725,7 +725,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="px-4 py-2 border border-pizarra rounded-full focus:outline-none focus:ring-2 focus:ring-lavanda"
+              className="px-4 py-2 border border-pizarra rounded-full focus:outline-hidden focus:ring-2 focus:ring-lavanda"
             >
               <option value="name">Ordenar por nombre</option>
               <option value="count">Ordenar por uso</option>
@@ -781,7 +781,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
 
         {/* Active tags chips */}
         {activeTags.length > 0 && (
-          <div className="mt-4 p-3 bg-pizarra bg-opacity-50 rounded-2xl">
+          <div className="mt-4 p-3 bg-pizarra/50 rounded-2xl">
             <div className="flex items-center gap-2 mb-2">
               <Filter className="w-4 h-4 text-lavanda-archivo" />
               <span className="text-sm text-lavanda-archivo font-medium">Etiquetas activas para gestionar:</span>
@@ -873,7 +873,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
                                 type="checkbox"
                                 checked={selectedTags.has(tag.id)}
                                 onChange={() => toggleTagSelection(tag.id)}
-                                className="rounded border-lavanda-archivo text-lavanda focus:ring-lavanda"
+                                className="rounded-sm border-lavanda-archivo text-lavanda focus:ring-lavanda"
                               />
                               <div className="flex-1">
                                 {editingTag === tag.id ? (
@@ -889,7 +889,7 @@ export default function TagManager({ mediaFiles, onFilesUpdate }: TagManagerProp
                                           setEditingTag(null);
                                         }
                                       }}
-                                      className="flex-1 px-2 py-1 border border-lavanda rounded-full text-sm focus:outline-none"
+                                      className="flex-1 px-2 py-1 border border-lavanda rounded-full text-sm focus:outline-hidden"
                                       autoFocus
                                     />
                                     <button

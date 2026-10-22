@@ -438,7 +438,7 @@ export default function GraphView({ files, onTagClick, onPersonClick }: GraphVie
   const emptyPersonas = mode === 'personas' && totalNodes === 0;
 
   return (
-    <div className="bg-tinta rounded-xl p-6 shadow-sm border border-borde-sutil">
+    <div className="bg-tinta rounded-xl p-6 shadow-xs border border-borde-sutil">
       <div className="mb-4">
         <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
           <h2 className="text-xl font-bold text-marfil">
@@ -511,7 +511,7 @@ export default function GraphView({ files, onTagClick, onPersonClick }: GraphVie
             </div>
           )}
 
-          <div className="absolute bottom-4 right-4 text-xs text-humo bg-tinta/90 px-2 py-1 rounded">
+          <div className="absolute bottom-4 right-4 text-xs text-humo bg-tinta/90 px-2 py-1 rounded-sm">
             Arrastra para mover · Scroll para zoom · Click para seleccionar
           </div>
         </div>
@@ -525,7 +525,7 @@ export default function GraphView({ files, onTagClick, onPersonClick }: GraphVie
               <select
                 value={topN}
                 onChange={(e) => setTopN(Number(e.target.value))}
-                className="bg-tinta border border-pizarra rounded-md px-2 py-1 text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda"
+                className="bg-tinta border border-pizarra rounded-md px-2 py-1 text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda"
               >
                 {[50, 100, 150, 200].map(n => <option key={n} value={n}>{n}</option>)}
               </select>
@@ -558,7 +558,7 @@ export default function GraphView({ files, onTagClick, onPersonClick }: GraphVie
                     onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
                     onKeyDown={handleKeyDown}
                     placeholder="Buscar etiqueta..."
-                    className="w-full pl-9 pr-3 py-2 text-sm border border-pizarra rounded-lg focus:outline-none focus:ring-2 focus:ring-lavanda bg-tinta text-marfil placeholder-humo"
+                    className="w-full pl-9 pr-3 py-2 text-sm border border-pizarra rounded-lg focus:outline-hidden focus:ring-2 focus:ring-lavanda bg-tinta text-marfil placeholder-humo"
                   />
                 </div>
                 {showSuggestions && suggestions.length > 0 && (
@@ -616,17 +616,17 @@ export default function GraphView({ files, onTagClick, onPersonClick }: GraphVie
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    {mode === 'personas' ? <Users className="w-4 h-4 text-lavanda flex-shrink-0" /> : <Tag className="w-4 h-4 text-lavanda flex-shrink-0" />}
+                    {mode === 'personas' ? <Users className="w-4 h-4 text-lavanda shrink-0" /> : <Tag className="w-4 h-4 text-lavanda shrink-0" />}
                     <span className="text-sm font-semibold text-marfil truncate">{selectedLabel}</span>
                   </div>
-                  <button onClick={() => setSelectedNode(null)} className="p-1 text-humo hover:text-marfil rounded">
+                  <button onClick={() => setSelectedNode(null)} className="p-1 text-humo hover:text-marfil rounded-sm">
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
                 <p className="text-xs text-humo mb-3">{selectedFiles.length} archivo{selectedFiles.length !== 1 ? 's' : ''}</p>
                 <div className="grid grid-cols-3 gap-1.5 mb-3">
                   {selectedFiles.slice(0, 12).map(f => (
-                    <div key={f.id} className="aspect-square rounded overflow-hidden bg-noche">
+                    <div key={f.id} className="aspect-square rounded-sm overflow-hidden bg-noche">
                       {f.thumbnail && (
                         <img
                           src={f.thumbnail}

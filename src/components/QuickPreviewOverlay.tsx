@@ -37,7 +37,7 @@ export function QuickPreviewOverlay({ file, onClose }: QuickPreviewOverlayProps)
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-noche/60 backdrop-blur-sm"
+      className="fixed inset-0 z-9999 flex items-center justify-center bg-noche/60 backdrop-blur-xs"
       onClick={onClose}
     >
       <div

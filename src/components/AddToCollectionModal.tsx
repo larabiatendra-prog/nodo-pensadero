@@ -39,7 +39,7 @@ export function AddToCollectionModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-noche bg-opacity-70 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-noche/70 flex items-center justify-center p-4 z-50">
       <div className="bg-tinta text-marfil rounded-3xl max-w-md w-full border border-borde-sutil">
         <div className="flex items-center justify-between p-6 border-b border-pizarra">
           <h2 className="text-xl font-semibold flex items-center gap-2">

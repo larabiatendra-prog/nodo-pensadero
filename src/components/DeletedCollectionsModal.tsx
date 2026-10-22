@@ -37,7 +37,7 @@ export function DeletedCollectionsModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-noche bg-opacity-50 flex items-center justify-center p-4 z-50">
+    <div className="fixed inset-0 bg-noche/50 flex items-center justify-center p-4 z-50">
       <div className="bg-tinta rounded-2xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-slate-200">
@@ -122,7 +122,7 @@ export function DeletedCollectionsModal({
                           {!isExpired && (
                             <button
                               onClick={(e) => handleRestore(collection.id, e)}
-                              className="flex items-center space-x-1 px-3 py-2 bg-bruma text-white rounded-lg hover:bg-opacity-90 transition-colors text-sm"
+                              className="flex items-center space-x-1 px-3 py-2 bg-bruma text-white rounded-lg hover:bg-bruma/90 transition-colors text-sm"
                               title="Restaurar colección"
                             >
                               <RotateCcw className="w-4 h-4" />

@@ -771,7 +771,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
 
   return (
     <div ref={searchRef} className="relative w-full">
-      <div className={`rounded-full shadow-sm border p-1 transition-all duration-300 ${
+      <div className={`rounded-full shadow-xs border p-1 transition-all duration-300 ${
         isNatural ? 'bg-lavanda border-lavanda' : 'bg-pizarra border-borde-sutil'
       }`}>
         <div className="flex items-center space-x-2 md:space-x-3 px-3 py-2 md:px-4 md:py-3">
@@ -781,7 +781,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
             onClick={() => switchMode(isNatural ? 'tags' : 'natural')}
             aria-label={isNatural ? 'Cambiar a búsqueda por etiquetas' : 'Cambiar a lenguaje natural'}
             title={isNatural ? 'Cambiar a búsqueda por etiquetas' : 'Cambiar a lenguaje natural (LLM)'}
-            className={`flex-shrink-0 p-1.5 rounded-full transition-colors ${
+            className={`shrink-0 p-1.5 rounded-full transition-colors ${
               isNatural ? 'text-noche hover:bg-noche/15' : 'text-humo hover:bg-grafito hover:text-lavanda'
             }`}
           >
@@ -821,7 +821,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                   className="inline-flex items-center pl-1 pr-3 py-1 rounded-full text-sm bg-lavanda text-noche font-medium select-none"
                   title={`Filtrando por ${display}`}
                 >
-                  <span className="w-6 h-6 rounded-full bg-pizarra overflow-hidden flex items-center justify-center mr-2 flex-shrink-0">
+                  <span className="w-6 h-6 rounded-full bg-pizarra overflow-hidden flex items-center justify-center mr-2 shrink-0">
                     {avatarUrl ? (
                       <img
                         src={avatarUrl}
@@ -942,7 +942,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 px-2 py-1">
-                      <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
+                      <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden shrink-0 flex items-center justify-center">
                         {suggestion.avatar_url ? (
                           <img
                             src={`${config.apiUrl}${suggestion.avatar_url}`}
@@ -979,7 +979,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                     ? "Escribe y pulsa Enter · etiqueta exacta filtra · Shift+Enter crea etiqueta nueva"
                     : "Añade más etiquetas o texto libre…"
                 }
-                className="flex-1 min-w-0 bg-transparent outline-none text-marfil placeholder-humo transition-all"
+                className="flex-1 min-w-0 bg-transparent outline-hidden text-marfil placeholder-humo transition-all"
                 disabled={naturalLoading}
               />
             )}
@@ -998,7 +998,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                   setAiSelectedModel(model);
                   await api.setAiModel(model).catch(() => {});
                 }}
-                className="hidden md:block bg-grafito border border-pizarra rounded-full px-2.5 py-1 text-xs text-marfil focus:outline-none focus:ring-1 focus:ring-lavanda max-w-[180px]"
+                className="hidden md:block bg-grafito border border-pizarra rounded-full px-2.5 py-1 text-xs text-marfil focus:outline-hidden focus:ring-1 focus:ring-lavanda max-w-[180px]"
                 title="Modelo que entiende tus búsquedas en lenguaje natural"
               >
                 {aiAvailableModels.map(m => (
@@ -1139,7 +1139,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                 className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
                   index === selectedSuggestionIndex
                     ? 'bg-lavanda text-white'
-                    : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                    : 'hover:bg-lavanda-claro/20'
                 }`}
               >
                 <Tag className={`w-4 h-4 ${
@@ -1169,7 +1169,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                 className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
                   index === selectedSuggestionIndex
                     ? 'bg-lavanda text-white'
-                    : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                    : 'hover:bg-lavanda-claro/20'
                 }`}
               >
                 <Tag className={`w-4 h-4 ${
@@ -1201,7 +1201,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                   key={`g-${grupo.id}`}
                   onClick={() => addGroup(grupo.id)}
                   className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
-                    activo ? 'bg-lavanda text-white' : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                    activo ? 'bg-lavanda text-white' : 'hover:bg-lavanda-claro/20'
                   }`}
                 >
                   <GrupoAvatares grupo={grupo} persons={persons} tam={28} borde={activo ? 'border-lavanda' : 'border-tinta'} />
@@ -1214,7 +1214,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                       {grupo.modo === 'dia' ? ', el mismo día' : ', en el mismo archivo'}
                     </span>
                   </div>
-                  <Users className={`w-4 h-4 flex-shrink-0 ${activo ? 'text-noche/70' : 'text-humo'}`} />
+                  <Users className={`w-4 h-4 shrink-0 ${activo ? 'text-noche/70' : 'text-humo'}`} />
                 </button>
               );
             })}
@@ -1234,10 +1234,10 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                   className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left ${
                     index === selectedSuggestionIndex
                       ? 'bg-lavanda text-white'
-                      : 'hover:bg-lavanda-claro hover:bg-opacity-20'
+                      : 'hover:bg-lavanda-claro/20'
                   }`}
                 >
-                  <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden flex-shrink-0 flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-full bg-pizarra overflow-hidden shrink-0 flex items-center justify-center">
                     {person.avatar_url ? (
                       <img
                         src={`${config.apiUrl}${person.avatar_url}`}
@@ -1292,7 +1292,7 @@ const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar
                     type="checkbox"
                     checked={filters.favorites || false}
                     onChange={(e) => setFilters({ ...filters, favorites: e.target.checked })}
-                    className="rounded border-borde-sutil text-lavanda focus:ring-lavanda"
+                    className="rounded-sm border-borde-sutil text-lavanda focus:ring-lavanda"
                   />
                   <span className="ml-2 text-sm text-niebla">Mostrar solo archivos favoritos</span>
                 </label>

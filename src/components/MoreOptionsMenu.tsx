@@ -118,7 +118,7 @@ export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom'
           onClick={() => setIsOpen(!isOpen)}
           className={`
             flex items-center justify-center rounded-full
-            transition-all duration-200 shadow-2xl ring-1 backdrop-blur
+            transition-all duration-200 shadow-2xl ring-1 backdrop-blur-sm
             ${isOpen
               ? 'ring-lavanda bg-grafito scale-105'
               : 'ring-borde-sutil bg-tinta/90 hover:ring-lavanda hover:bg-grafito hover:scale-105'
@@ -162,7 +162,7 @@ export function MoreOptionsMenu({ activeView, onViewChange, placement = 'bottom'
               (9 items) se saldria por arriba dejando los primeros inaccesibles. */}
           <div className="relative z-50 bg-tinta rounded-xl shadow-2xl border border-pizarra overflow-y-auto max-h-[calc(100vh-7rem)]">
             {/* Header */}
-            <div className="px-4 py-3 bg-gradient-to-r from-lavanda/10 to-lavanda-claro/10 border-b border-pizarra">
+            <div className="px-4 py-3 bg-linear-to-r from-lavanda/10 to-lavanda-claro/10 border-b border-pizarra">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-marfil">Opciones</h3>
                 <button

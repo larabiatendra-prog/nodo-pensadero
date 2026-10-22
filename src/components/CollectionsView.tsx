@@ -387,7 +387,7 @@ function TarjetaColeccion({
           onClick={onAbrir}
           aria-label={`Abrir ${coleccion.name}`}
           title={`Abrir ${coleccion.name}`}
-          className="absolute inset-0 w-full h-full focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda rounded-xl"
+          className="absolute inset-0 w-full h-full focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda rounded-xl"
         />
 
         {/* Acciones: aparecen sobre la portada, no viven ahi */}
@@ -395,7 +395,7 @@ function TarjetaColeccion({
           <button
             onClick={e => parar(e, () => onDescargar(e))}
             title={descargando ? 'Descargando…' : 'Descargar'}
-            className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-marfil hover:bg-noche"
+            className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-xs flex items-center justify-center text-marfil hover:bg-noche"
           >
             {descargando ? <Loader className="w-3.5 h-3.5 animate-spin text-lavanda" /> : <Download className="w-3.5 h-3.5" />}
           </button>
@@ -404,7 +404,7 @@ function TarjetaColeccion({
               data-premiere-abre
               onClick={e => parar(e, onPremiere)}
               title="Llevar a Premiere"
-              className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-marfil hover:bg-noche"
+              className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-xs flex items-center justify-center text-marfil hover:bg-noche"
             >
               <Clapperboard className="w-3.5 h-3.5" />
             </button>
@@ -413,7 +413,7 @@ function TarjetaColeccion({
             <button
               onClick={e => parar(e, onPortada)}
               title="Cambiar portada"
-              className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-marfil hover:bg-noche"
+              className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-xs flex items-center justify-center text-marfil hover:bg-noche"
             >
               <ImageIcon className="w-3.5 h-3.5" />
             </button>
@@ -421,14 +421,14 @@ function TarjetaColeccion({
           <button
             onClick={e => parar(e, onEditar)}
             title="Editar"
-            className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-marfil hover:bg-noche"
+            className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-xs flex items-center justify-center text-marfil hover:bg-noche"
           >
             <Pencil className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={e => parar(e, onBorrar)}
             title="Eliminar"
-            className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-estado-error hover:bg-noche"
+            className="w-7 h-7 rounded-full bg-noche/75 backdrop-blur-xs flex items-center justify-center text-estado-error hover:bg-noche"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -441,7 +441,7 @@ function TarjetaColeccion({
           {...listeners}
           onClick={e => e.stopPropagation()}
           title="Arrastra para ordenar"
-          className="absolute bottom-2 right-2 z-10 w-7 h-7 rounded-full bg-noche/75 backdrop-blur-sm flex items-center justify-center text-humo opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+          className="absolute bottom-2 right-2 z-10 w-7 h-7 rounded-full bg-noche/75 backdrop-blur-xs flex items-center justify-center text-humo opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
         >
           <GripVertical className="w-3.5 h-3.5" />
         </button>

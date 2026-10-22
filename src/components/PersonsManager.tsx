@@ -1082,7 +1082,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="Busca una persona…"
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-marfil text-sm placeholder:text-lavanda-archivo"
+            className="flex-1 min-w-0 bg-transparent border-none outline-hidden text-marfil text-sm placeholder:text-lavanda-archivo"
           />
         </div>
       </header>
@@ -1221,11 +1221,11 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             : 'bg-pizarra border-bruma/40'
         }`}>
           {faceStatus.ready ? (
-            <Brain className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5" />
+            <Brain className="w-5 h-5 text-lavanda shrink-0 mt-0.5" />
           ) : faceStatus.unavailable ? (
-            <AlertTriangle className="w-5 h-5 text-bruma flex-shrink-0 mt-0.5" />
+            <AlertTriangle className="w-5 h-5 text-bruma shrink-0 mt-0.5" />
           ) : (
-            <Brain className="w-5 h-5 text-lavanda flex-shrink-0 mt-0.5 animate-pulse" />
+            <Brain className="w-5 h-5 text-lavanda shrink-0 mt-0.5 animate-pulse" />
           )}
           <div className="flex-1 text-sm">
             {faceStatus.ready ? (
@@ -1288,7 +1288,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
             <>
               <div className="w-full bg-grafito rounded-full h-2 overflow-hidden mb-1">
                 <div
-                  className="bg-gradient-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
+                  className="bg-linear-to-r from-lavanda to-lavanda-claro h-full transition-all duration-300"
                   style={{ width: `${Math.round((reidJob.done / reidJob.total) * 100)}%` }}
                 />
               </div>
@@ -1330,7 +1330,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
       {/* Modal: crear persona */}
       {showCreate && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">Nueva persona</h2>
@@ -1348,7 +1348,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   value={newDisplayName}
                   onChange={e => setNewDisplayName(e.target.value)}
                   placeholder="Ester Garcia, Jose Carlos..."
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                   autoFocus
                 />
                 {newDisplayName.trim() && (
@@ -1364,7 +1364,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   value={newAliases}
                   onChange={e => setNewAliases(e.target.value)}
                   placeholder="Ester, Esti"
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                 />
                 <p className="text-xs text-lavanda-archivo mt-1">Otros nombres con los que se le conoce. Ayuda al LLM en busquedas.</p>
               </div>
@@ -1449,7 +1449,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                     />
                     {selectMode && (
                       <div className={`absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center border-2 ${
-                        selected ? 'bg-melocoton border-melocoton' : 'bg-noche/60 border-marfil/60 backdrop-blur-sm'
+                        selected ? 'bg-melocoton border-melocoton' : 'bg-noche/60 border-marfil/60 backdrop-blur-xs'
                       }`}>
                         {selected && <CheckCircle className="w-5 h-5 text-noche" />}
                       </div>
@@ -1621,7 +1621,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
 
       {/* Modal: promote cluster a persona */}
       {promotingCluster && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-3xl my-8">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">Convertir en persona</h2>
@@ -1684,7 +1684,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                           type="button"
                           onClick={(e) => { e.stopPropagation(); openSampleFile(meta!); }}
                           title={`Abrir ${meta!.basename} en la galeria`}
-                          className="absolute top-1 right-1 p-1 rounded-md bg-noche/70 hover:bg-lavanda text-marfil hover:text-noche backdrop-blur-sm transition-colors"
+                          className="absolute top-1 right-1 p-1 rounded-md bg-noche/70 hover:bg-lavanda text-marfil hover:text-noche backdrop-blur-xs transition-colors"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
                         </button>
@@ -1704,7 +1704,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   value={promoteForm.display_name}
                   onChange={e => setPromoteForm(f => ({ ...f, display_name: e.target.value }))}
                   placeholder="Ester Garcia, Jose Carlos..."
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                   autoFocus
                 />
                 {promoteForm.display_name.trim() && (() => {
@@ -1730,7 +1730,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                   value={promoteForm.aliases}
                   onChange={e => setPromoteForm(f => ({ ...f, aliases: e.target.value }))}
                   placeholder="Ester, Esti"
-                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+                  className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
                 />
               </div>
             </div>
@@ -1788,7 +1788,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
       )}
 
       {mergePersonOpen && selectedPerson && (
-        <div className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-70 flex items-center justify-center p-4">
           <div className="bg-tinta rounded-3xl border border-pizarra p-6 w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-marfil">Fusionar en {selectedPerson.display_name}</h2>
@@ -1802,7 +1802,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
               value={mergeQuery}
               onChange={e => setMergeQuery(e.target.value)}
               placeholder="Buscar persona..."
-              className="w-full mb-3 px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda"
+              className="w-full mb-3 px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda"
               autoFocus
             />
             <div className="max-h-64 overflow-y-auto space-y-1">
@@ -2117,7 +2117,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         return (
           <div
             onClick={() => setAvatarPicker(null)}
-            className="fixed inset-0 z-[70] flex items-center justify-center p-6"
+            className="fixed inset-0 z-70 flex items-center justify-center p-6"
             style={{ background: 'rgba(8,9,14,0.86)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
           >
             <div
@@ -2240,7 +2240,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
         return (
           <div
             onClick={() => setSelectedPerson(null)}
-            className="fixed inset-0 z-[60] flex items-center justify-center p-6"
+            className="fixed inset-0 z-60 flex items-center justify-center p-6"
             style={{ background: 'rgba(8,9,14,0.82)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
           >
             <div
@@ -2401,7 +2401,7 @@ export default function PersonsManager({ onBack, mediaFiles, onSelectFile, onFil
                           className="relative aspect-square rounded-lg overflow-hidden bg-pizarra hover:ring-2 hover:ring-lavanda transition-all"
                         >
                           <img src={file.thumbnail || file.url} alt={file.name} className="w-full h-full object-cover" loading="lazy" onError={e => { (e.target as HTMLImageElement).style.opacity = '0.3'; }} />
-                          {file.type === 'video' && <span className="absolute bottom-1 right-1 text-[9px] bg-noche/80 text-marfil px-1 rounded">VIDEO</span>}
+                          {file.type === 'video' && <span className="absolute bottom-1 right-1 text-[9px] bg-noche/80 text-marfil px-1 rounded-sm">VIDEO</span>}
                         </button>
                       ))}
                     </div>
@@ -2551,7 +2551,7 @@ function Cifra({ valor, etiqueta, acento, aviso, titulo, onClick }: {
     <button
       onClick={onClick}
       title={titulo}
-      className="text-left rounded-lg -mx-2 px-2 py-1 hover:bg-pizarra/60 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-lavanda"
+      className="text-left rounded-lg -mx-2 px-2 py-1 hover:bg-pizarra/60 transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-lavanda"
     >
       {cuerpo}
     </button>
@@ -2591,7 +2591,7 @@ function AliasesEditor({ initialAliases, onSave }: { initialAliases: string[]; o
       // Un ejemplo con nombres reales del archivo se lee como un valor ya
       // escrito, no como un ejemplo. Mejor decir para que sirve el campo.
       placeholder="Otros nombres con los que la buscas…"
-      className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-none focus:ring-2 focus:ring-lavanda text-sm"
+      className="w-full px-3 py-2 bg-pizarra text-marfil border border-grafito rounded-2xl focus:outline-hidden focus:ring-2 focus:ring-lavanda text-sm"
     />
   );
 }
@@ -2631,7 +2631,7 @@ function DisplayNameEditor({ initial, onSave }: { initial: string; onSave: (name
           if (e.key === 'Enter') { e.preventDefault(); commit(); }
           if (e.key === 'Escape') { e.preventDefault(); cancel(); }
         }}
-        className="text-xl font-bold bg-pizarra text-marfil border border-lavanda rounded-xl px-2 py-1 focus:outline-none focus:ring-2 focus:ring-lavanda min-w-0 w-full max-w-xs"
+        className="text-xl font-bold bg-pizarra text-marfil border border-lavanda rounded-xl px-2 py-1 focus:outline-hidden focus:ring-2 focus:ring-lavanda min-w-0 w-full max-w-xs"
       />
     );
   }

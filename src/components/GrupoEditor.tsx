@@ -84,7 +84,7 @@ export default function GrupoEditor({ grupo, persons, apariciones, iniciales = [
 
   return (
     <div
-      className="fixed inset-0 bg-noche/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-noche/80 backdrop-blur-xs z-50 flex items-center justify-center p-4"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="bg-tinta rounded-3xl border border-pizarra w-full max-w-lg max-h-[88vh] flex flex-col">
@@ -108,7 +108,7 @@ export default function GrupoEditor({ grupo, persons, apariciones, iniciales = [
               maxLength={40}
               autoFocus
               placeholder="Familia, Rodaje, Los del pueblo…"
-              className="w-full bg-pizarra rounded-xl px-3 py-2 text-marfil outline-none focus:ring-2 focus:ring-lavanda placeholder:text-humo"
+              className="w-full bg-pizarra rounded-xl px-3 py-2 text-marfil outline-hidden focus:ring-2 focus:ring-lavanda placeholder:text-humo"
             />
             {nombre.trim() && (
               <p className="mt-1 text-[11px] text-humo">
@@ -149,7 +149,7 @@ export default function GrupoEditor({ grupo, persons, apariciones, iniciales = [
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
                 placeholder="Busca una persona…"
-                className="flex-1 bg-transparent outline-none text-sm text-marfil placeholder:text-humo"
+                className="flex-1 bg-transparent outline-hidden text-sm text-marfil placeholder:text-humo"
               />
             </div>
             <div className="max-h-[36vh] overflow-y-auto rounded-xl border border-pizarra divide-y divide-pizarra">
@@ -165,7 +165,7 @@ export default function GrupoEditor({ grupo, persons, apariciones, iniciales = [
                     onClick={() => alternar(p.person_id)}
                     className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${dentro ? 'bg-lavanda/10' : 'hover:bg-pizarra/60'}`}
                   >
-                    <span className="w-8 h-8 rounded-full overflow-hidden bg-pizarra flex items-center justify-center flex-shrink-0">
+                    <span className="w-8 h-8 rounded-full overflow-hidden bg-pizarra flex items-center justify-center shrink-0">
                       {p.avatar_url
                         ? <img src={`${config.apiUrl}${p.avatar_url}`} alt="" className="w-full h-full object-cover" loading="lazy" />
                         : <span className="text-xs text-lavanda-archivo">{p.display_name.slice(0, 1).toUpperCase()}</span>}
